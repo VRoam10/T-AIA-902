@@ -3,3 +3,7 @@ numpy==2.2.3
 matplotlib==3.10.1
 gymnasium[toy-text]
 pygame
+
+# BeamNG.drive RL dependencies
+beamngpy>=1.28
+torch>=2.2.0        # install the CUDA build: pip install torch --index-url https://download.pytorch.org/whl/cu121
