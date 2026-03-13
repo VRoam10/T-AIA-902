@@ -1,0 +1,4 @@
+.venv
+__pycache__
+q_table.npy
+training_results.png
