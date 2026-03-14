@@ -56,7 +56,7 @@ class BeamNGDrivingEnv:
 
     SPAWN_POS = (-391.0, -110.0, 1.0)
     SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)  # ~45-degree heading
-    WAYPOINT_RADIUS = 15.0  # metres — how close before advancing to next waypoint
+    WAYPOINT_RADIUS = 10.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 1000
     MAX_DAMAGE = 500.0  # damage threshold that ends the episode
 
@@ -100,7 +100,7 @@ class BeamNGDrivingEnv:
         if self.bng is None:
             self._launch()
         else:
-            self._respawn()
+            self._load_scenario()
 
         self._waypoint_idx = 1
         self._last_damage = 0.0
@@ -135,6 +135,24 @@ class BeamNGDrivingEnv:
         info = {"steps": self._steps, "waypoint_idx": self._waypoint_idx}
         return obs, reward, done, info
 
+    def human_play(self):
+        """Load the scenario and give control back to the human player.
+
+        The simulation runs in real-time — drive with your keyboard/controller
+        inside BeamNG as normal.
+        """
+        if self.bng is None:
+            self._launch()
+        else:
+            self._load_scenario()
+
+        self._waypoint_idx = 1
+        self._update_active_marker(1)
+
+        # Re&lease the sim from step-mode so it runs freely in real-time.
+        self.bng.resume()
+        print("[BeamNGDrivingEnv] Human control active — drive in-game.")
+
     def close(self):
         """Shut down the BeamNG connection."""
         if self.bng is not None:
@@ -165,7 +183,7 @@ class BeamNGDrivingEnv:
         )
 
         self.vehicle = Vehicle(
-            "ego_vehicle", model="etk800", licence="RL", color="Blue"
+            "ego_vehicle", model="burnside", licence="Taxi", color="Yellow", part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc"
         )
         self.electrics = Electrics()
         self.damage_sensor = Damage()
@@ -179,26 +197,14 @@ class BeamNGDrivingEnv:
         )
 
         # Add visual checkpoint rings for every waypoint (visible in-game as hoops).
-        # beamngpy API varies by version — try each known signature.
-        ids    = [f"wp_{i}" for i in range(len(self.WAYPOINTS))]
-        scales = [(4.0, 4.0, 0.5)] * len(self.WAYPOINTS)
-        try:
-            # Current API: add_checkpoints(positions, scales, ids)
-            self.scenario.add_checkpoints(self.WAYPOINTS, scales, ids)
-        except TypeError:
-            try:
-                self.scenario.add_checkpoints(
-                    positions=self.WAYPOINTS,
-                    sizes=scales,
-                    ids=ids,
-                )
-            except TypeError:
-                self.scenario.add_checkpoints(self.WAYPOINTS, scales)
+        scales = [(5.0, 5.0, 1.0)] * len(self.WAYPOINTS)
+        # Current API: add_checkpoints(positions, scales)
+        self.scenario.add_checkpoints(self.WAYPOINTS, scales)
 
         self.scenario.make(self.bng)
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
-        time.sleep(1.0)  # let the game settle before polling
+        time.sleep(5.0)  # let the game settle before polling
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(1)

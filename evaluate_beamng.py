@@ -10,16 +10,16 @@ import numpy as np
 
 from beamng_env import BeamNGDrivingEnv
 from dqn_agent import DQNAgent
+from config import BEAMNG_HOME, BEAMNG_USER
 
 # ---------------------------------------------------------------------------
-BEAMNG_HOME     = r'C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive'
 MODEL_PATH      = 'beamng_dqn.pth'
 N_EVAL_EPISODES = 10
 # ---------------------------------------------------------------------------
 
 
 def evaluate():
-    env = BeamNGDrivingEnv(beamng_home=BEAMNG_HOME)
+    env = BeamNGDrivingEnv(beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER)
     agent = DQNAgent(
         n_states=BeamNGDrivingEnv.N_STATES,
         n_actions=BeamNGDrivingEnv.N_ACTIONS,

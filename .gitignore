@@ -2,3 +2,5 @@
 __pycache__
 q_table.npy
 training_results.png
+config.py
+beamng_dqn.pth

@@ -14,12 +14,7 @@ import matplotlib.pyplot as plt
 
 from beamng_env import BeamNGDrivingEnv
 from dqn_agent import DQNAgent
-
-# ---------------------------------------------------------------------------
-# Configuration — edit these before running
-# ---------------------------------------------------------------------------
-BEAMNG_HOME = r'C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive'
-# BEAMNG_USER = r'C:\Users\YourName\AppData\Local\BeamNG.drive'  # optional
+from config import BEAMNG_HOME, BEAMNG_USER
 
 N_EPISODES   = 500    # total training episodes
 SAVE_EVERY   = 50     # save checkpoint every N episodes
@@ -39,7 +34,7 @@ TARGET_UPDATE  = 100
 
 
 def train():
-    env = BeamNGDrivingEnv(beamng_home=BEAMNG_HOME)
+    env = BeamNGDrivingEnv(beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER)
     agent = DQNAgent(
         n_states=BeamNGDrivingEnv.N_STATES,
         n_actions=BeamNGDrivingEnv.N_ACTIONS,
