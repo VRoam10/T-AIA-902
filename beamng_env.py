@@ -1,4 +1,5 @@
 import time
+import random
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
@@ -39,24 +40,17 @@ class BeamNGDrivingEnv:
     N_ACTIONS = len(ACTIONS)
     N_STATES = 5
 
-    # Waypoints tracing a loop around the automation test track start/finish straight.
-    # Adjust these coordinates if you use a different spawn or map.
-    WAYPOINTS = [
-        # (-391.0, -110.0, 1.0),
-        (-360.0, -85.0, 1.0),
-        (-320.0, -60.0, 1.0),
-        (-270.0, -40.0, 1.0),
-        (-220.0, -30.0, 1.0),
-        (-170.0, -40.0, 1.0),
-        (-120.0, -60.0, 1.0),
-        (-70.0, -90.0, 1.0),
-        (-20.0, -120.0, 1.0),
-        # (-391.0, -110.0, 1.0),  # back to start — triggers lap bonus
+    # Base waypoints tracing a loop around the automation test track start/finish straight.
+    # Random offsets are applied on each scenario load via _randomize_waypoints().
+    BASE_WAYPOINTS = [
+        (70.0, -736.0, 100.0),
+        (116.0, -730.0, 100.0),
+        (116.0, -612.0, 100.0),
     ]
 
-    SPAWN_POS = (-391.0, -110.0, 1.0)
+    SPAWN_POS = (61.0, -788.0, 101.0)
     SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)  # ~45-degree heading
-    WAYPOINT_RADIUS = 10.0  # metres — how close before advancing to next waypoint
+    WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 1000
     MAX_DAMAGE = 500.0  # damage threshold that ends the episode
 
@@ -90,6 +84,7 @@ class BeamNGDrivingEnv:
         self._last_damage = 0.0
         self._steps = 0
         self._active_marker_id: str | None = None
+        self.waypoints = list(self.BASE_WAYPOINTS)
 
     # ------------------------------------------------------------------
     # Public API
@@ -102,9 +97,10 @@ class BeamNGDrivingEnv:
         else:
             self._load_scenario()
 
-        self._waypoint_idx = 1
+        self._waypoint_idx = 0
         self._last_damage = 0.0
         self._steps = 0
+        self._checkpoint_hit = False
 
         # Hold still for a moment so physics settle
         self.vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
@@ -146,10 +142,10 @@ class BeamNGDrivingEnv:
         else:
             self._load_scenario()
 
-        self._waypoint_idx = 1
+        self._waypoint_idx = 0
         self._update_active_marker(1)
 
-        # Re&lease the sim from step-mode so it runs freely in real-time.
+        # Release the sim from step-mode so it runs freely in real-time.
         self.bng.resume()
         print("[BeamNGDrivingEnv] Human control active — drive in-game.")
 
@@ -175,9 +171,16 @@ class BeamNGDrivingEnv:
         self.bng.open(launch=True)
         self._load_scenario()
 
+    def _randomize_waypoints(self):
+        self.waypoints = [
+            (x + random.randint(-10, 10), y + random.randint(-10, 10), z)
+            for x, y, z in self.BASE_WAYPOINTS
+        ]
+
     def _load_scenario(self):
+        # self._randomize_waypoints()
         self.scenario = Scenario(
-            "smallgrid",
+            "gridmap_v2",
             "rl_driving",
             description="RL Training Scenario",
         )
@@ -197,14 +200,14 @@ class BeamNGDrivingEnv:
         )
 
         # Add visual checkpoint rings for every waypoint (visible in-game as hoops).
-        scales = [(5.0, 5.0, 1.0)] * len(self.WAYPOINTS)
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
         # Current API: add_checkpoints(positions, scales)
-        self.scenario.add_checkpoints(self.WAYPOINTS, scales)
+        self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
-        time.sleep(5.0)  # let the game settle before polling
+        time.sleep(3.0)  # let the game settle before polling
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(1)
@@ -245,10 +248,10 @@ class BeamNGDrivingEnv:
 
     def _path_errors(self, pos, state):
         """Return (heading_error_rad, lateral_error_m) relative to next waypoint."""
-        if not self.WAYPOINTS or not state:
+        if not self.waypoints or not state:
             return 0.0, 0.0
 
-        target = self.WAYPOINTS[self._waypoint_idx % len(self.WAYPOINTS)]
+        target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
         dx = target[0] - pos[0]
         dy = target[1] - pos[1]
         dist = float(np.hypot(dx, dy))
@@ -256,7 +259,9 @@ class BeamNGDrivingEnv:
         # Advance waypoint when close enough
         if dist < self.WAYPOINT_RADIUS:
             self._waypoint_idx += 1
+            self._checkpoint_hit = True
             self._update_active_marker(self._waypoint_idx)
+            print("checkpoint hit")
 
         vel = state.get("vel", (1.0, 0.0, 0.0))
         vehicle_heading = np.arctan2(vel[1], vel[0])
@@ -300,8 +305,13 @@ class BeamNGDrivingEnv:
         if self._steps >= self.MAX_STEPS:
             done = True
 
+        # Checkpoint bonus
+        if self._checkpoint_hit:
+            reward += 50.0
+            self._checkpoint_hit = False
+
         # Lap completion bonus
-        if self._waypoint_idx >= len(self.WAYPOINTS):
+        if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             self._waypoint_idx = 0
             done = True
@@ -324,7 +334,7 @@ class BeamNGDrivingEnv:
                 except Exception:
                     pass
 
-            target = self.WAYPOINTS[idx % len(self.WAYPOINTS)]
+            target = self.waypoints[idx % len(self.waypoints)]
             marker_id = f"active_wp_{idx}"
             # Bright green sphere, 3 m radius, slightly above ground
             pos = (target[0], target[1], target[2] + 2.0)
