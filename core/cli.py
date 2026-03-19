@@ -46,8 +46,11 @@ def _ask_float(prompt: str, default: float) -> float:
             print("  Invalid input.")
 
 
-def _build_agent(algo_info: dict, env_info: dict):
-    """Instantiate an agent from registry info, prompting for hyperparams."""
+def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
+    """Instantiate an agent from registry info.
+
+    If prompt_params is False, use default config without asking (for eval).
+    """
     cls = algo_info["class"]
     defaults = dict(algo_info["default_config"])
     meta = env_info["metadata"]
@@ -55,6 +58,9 @@ def _build_agent(algo_info: dict, env_info: dict):
     # Inject n_states / n_actions from env metadata
     defaults["n_states"] = meta.get("n_states", 5)
     defaults["n_actions"] = meta.get("n_actions", 6)
+
+    if not prompt_params:
+        return cls(**defaults)
 
     print("\nHyperparameters (press Enter for default):")
     params = {}
@@ -140,19 +146,18 @@ def _eval_menu():
     algo_info = registry.get_algorithm(algo_name)
     env_info = registry.get_environment(env_name)
 
-    agent = _build_agent(algo_info, env_info)
-    env = env_info["factory"]()
-
-    model_path = input(f"Model path [outputs/{algo_name}_{env_name}.pth]: ").strip()
+    model_path = input(f"\nModel path [outputs/{algo_name}_{env_name}.pth]: ").strip()
     if not model_path:
         model_path = f"outputs/{algo_name}_{env_name}.pth"
 
     if not os.path.exists(model_path):
         print(f"Model not found at '{model_path}'.")
-        env.close()
         return
 
+    agent = _build_agent(algo_info, env_info, prompt_params=False)
     agent.load(model_path)
+    env = env_info["factory"]()
+
     n_episodes = _ask_int("Number of evaluation episodes", 10)
 
     runner = PipelineRunner()
