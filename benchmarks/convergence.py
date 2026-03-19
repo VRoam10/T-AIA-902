@@ -24,7 +24,7 @@ class ConvergenceBenchmark(BaseBenchmark):
         window = config.get("window", 100)
 
         runner = PipelineRunner()
-        history = runner.train(agent, env, n_episodes=max_episodes, log_interval=max_episodes)
+        history = runner.train(agent, env, n_episodes=max_episodes)
 
         rewards = history["rewards"]
         convergence_ep = None

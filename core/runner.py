@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from core.base_agent import BaseAgent
 
@@ -17,7 +18,6 @@ class PipelineRunner:
         n_episodes: int,
         save_path: str = None,
         save_every: int = 50,
-        log_interval: int = 20,
         time_limit: float = None,
         plot_path: str = None,
     ) -> dict:
@@ -26,10 +26,12 @@ class PipelineRunner:
         steps = []
         start = time.time()
 
+        pbar = tqdm(range(1, n_episodes + 1), desc="Training", unit="ep")
+
         try:
-            for ep in range(1, n_episodes + 1):
+            for ep in pbar:
                 if time_limit and (time.time() - start) >= time_limit:
-                    print(f"\nTime limit reached after {ep - 1} episodes.")
+                    pbar.write(f"Time limit reached after {ep - 1} episodes.")
                     break
 
                 state = self._reset_env(env)
@@ -51,16 +53,15 @@ class PipelineRunner:
                 ep_steps = info.get("steps", 0) if isinstance(info, dict) else 0
                 steps.append(ep_steps)
 
-                if ep % log_interval == 0:
-                    avg_r = np.mean(rewards[-log_interval:])
-                    avg_loss = np.mean(ep_losses) if ep_losses else float("nan")
-                    print(
-                        f"Ep {ep:4d}/{n_episodes} | "
-                        f"Reward {ep_reward:8.1f} | "
-                        f"Avg{log_interval} {avg_r:8.1f} | "
-                        f"eps {agent.epsilon:.3f} | "
-                        f"Loss {avg_loss:.4f}"
-                    )
+                # Update progress bar
+                avg_r = np.mean(rewards[-20:])
+                avg_loss = np.mean(ep_losses) if ep_losses else float("nan")
+                pbar.set_postfix(
+                    reward=f"{ep_reward:.1f}",
+                    avg20=f"{avg_r:.1f}",
+                    eps=f"{agent.epsilon:.3f}",
+                    loss=f"{avg_loss:.4f}",
+                )
 
                 if save_path and ep % save_every == 0:
                     agent.save(save_path)
@@ -68,9 +69,10 @@ class PipelineRunner:
                         self._save_plot(rewards, steps, "Training", plot_path, ep)
 
         except KeyboardInterrupt:
-            print("\nTraining interrupted by user.")
+            pbar.write("Training interrupted by user.")
 
         finally:
+            pbar.close()
             if save_path:
                 agent.save(save_path)
             if plot_path:
@@ -93,8 +95,10 @@ class PipelineRunner:
         rewards = []
         steps = []
 
+        pbar = tqdm(range(1, n_episodes + 1), desc="Evaluating", unit="ep")
+
         try:
-            for ep in range(1, n_episodes + 1):
+            for ep in pbar:
                 state = self._reset_env(env)
                 ep_reward = 0.0
                 done = False
@@ -108,9 +112,12 @@ class PipelineRunner:
                 ep_steps = info.get("steps", 0) if isinstance(info, dict) else 0
                 rewards.append(ep_reward)
                 steps.append(ep_steps)
-                print(f"  Eval {ep}/{n_episodes} | Reward {ep_reward:.1f} | Steps {ep_steps}")
+
+                avg = np.mean(rewards)
+                pbar.set_postfix(reward=f"{ep_reward:.1f}", avg=f"{avg:.1f}")
 
         finally:
+            pbar.close()
             agent.epsilon = old_eps
 
         avg = np.mean(rewards)
@@ -146,7 +153,7 @@ class PipelineRunner:
         eps = range(1, len(rewards) + 1)
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-        subtitle = f" — Episode {episode}" if episode else ""
+        subtitle = f" - Episode {episode}" if episode else ""
         fig.suptitle(f"{title}{subtitle}")
 
         ax1.plot(eps, rewards, alpha=0.3, label="Reward")
@@ -171,4 +178,3 @@ class PipelineRunner:
         plt.tight_layout()
         plt.savefig(path)
         plt.close()
-        print(f"Plot saved -> {path}")
