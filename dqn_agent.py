@@ -110,10 +110,12 @@ class DQNAgent:
         # Current Q(s, a)
         current_q = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # Target: r + γ · max_a' Q_target(s', a')
+        # Double DQN target: q_net selects the action, target_net evaluates it.
+        # Prevents overestimation bias of vanilla DQN.
         with torch.no_grad():
-            next_q   = self.target_net(next_states).max(dim=1)[0]
-            target_q = rewards + self.gamma * next_q * (1.0 - dones)
+            next_actions = self.q_net(next_states).argmax(dim=1)
+            next_q       = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            target_q     = rewards + self.gamma * next_q * (1.0 - dones)
 
         loss = self.loss_fn(current_q, target_q)
 
