@@ -8,7 +8,7 @@ Ajouter un nouvel algorithme = **1 fichier + 1 ligne de registration**. Il appar
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11
 - BeamNG.drive (optionnel, uniquement pour l'environnement BeamNG)
 
 ---
@@ -246,6 +246,17 @@ Formater le code :
 ```bash
 ruff format .
 ```
+
+---
+
+## CI
+
+Le projet utilise GitHub Actions pour l'integration continue (`.github/workflows/ci.yml`).
+
+Le pipeline se declenche sur chaque push/PR vers `main` ou `romain_test` et execute :
+
+1. **Lint & Format** - `ruff check .` + `ruff format --check .`
+2. **Test** - Smoke tests (imports, registry, entrainement Q-Learning sur Taxi)
 
 ---
 

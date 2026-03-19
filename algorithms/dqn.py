@@ -78,8 +78,7 @@ class DQNAgent(BaseAgent):
         self.target_update_freq = target_update_freq
         self.train_steps = 0
 
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[DQNAgent] Using device: {self.device}")
 
         self.q_net = DQNNetwork(n_states, n_actions).to(self.device)
@@ -107,8 +106,7 @@ class DQNAgent(BaseAgent):
         return self._train_step()
 
     def decay_epsilon(self):
-        self._epsilon = max(
-            self.epsilon_min, self._epsilon * self.epsilon_decay)
+        self._epsilon = max(self.epsilon_min, self._epsilon * self.epsilon_decay)
 
     @property
     def epsilon(self) -> float:
@@ -137,8 +135,7 @@ class DQNAgent(BaseAgent):
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self._epsilon = ckpt.get("epsilon", self.epsilon_min)
         self.train_steps = ckpt.get("train_steps", 0)
-        print(
-            f"[DQNAgent] Loaded <- {path}  (eps={self._epsilon:.3f}, steps={self.train_steps})")
+        print(f"[DQNAgent] Loaded <- {path}  (eps={self._epsilon:.3f}, steps={self.train_steps})")
 
     def get_config(self) -> dict:
         return {
@@ -177,15 +174,13 @@ class DQNAgent(BaseAgent):
         next_states = torch.FloatTensor(np.stack(next_states)).to(self.device)
         dones = torch.FloatTensor(dones).to(self.device)
 
-        current_q = self.q_net(states).gather(
-            1, actions.unsqueeze(1)).squeeze(1)
+        current_q = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # Double DQN target: q_net selects the action, target_net evaluates it.
         # Prevents overestimation bias of vanilla DQN.
         with torch.no_grad():
             next_actions = self.q_net(next_states).argmax(dim=1)
-            next_q = self.target_net(next_states).gather(
-                1, next_actions.unsqueeze(1)).squeeze(1)
+            next_q = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
             target_q = rewards + self.gamma * next_q * (1.0 - dones)
 
         loss = self.loss_fn(current_q, target_q)

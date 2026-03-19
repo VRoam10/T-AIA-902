@@ -6,7 +6,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = ["E501", "B027", "SIM105"]
 
 [lint.isort]
-known-first-party = ["core", "algorithms", "environments", "benchmarks"]
+known-first-party = ["core", "algorithms", "environments", "benchmarks", "config"]
 
 [format]
 quote-style = "double"
