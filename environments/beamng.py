@@ -108,18 +108,33 @@ class BeamNGDrivingEnv:
 
         return self._observe()
 
-    def step(self, action_idx: int):
+    def step(self, action):
         """
         Apply a discrete action and advance the simulation.
 
         Returns:
             obs (np.ndarray), reward (float), done (bool), info (dict)
         """
-        action = self.ACTIONS[action_idx]
+        if isinstance(action, (int, np.integer)):
+            ctrl = self.ACTIONS[action]
+            throttle = ctrl["throttle"]
+            steering = ctrl["steering"]
+            brake = ctrl["brake"]
+        else:
+            action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+            accel = float(action[0])
+            steering = float(action[1])
+            if accel >= 0:
+                throttle = accel
+                brake = 0.0
+            else:
+                throttle = 0.0
+                brake = -accel
+
         self.vehicle.control(
-            throttle=action["throttle"],
-            steering=action["steering"],
-            brake=action["brake"],
+            throttle=throttle,
+            steering=steering,
+            brake=brake,
         )
 
         # 10 physics steps ≈ 100 ms of simulation time
@@ -284,12 +299,13 @@ class BeamNGDrivingEnv:
         done = False
         reward = 0.0
 
-        # Encourage forward speed
-        reward += speed * 2.0
+        # Encourage speed TOWARD the waypoint (cos(heading_err) is negative when going away)
+        heading_cos = np.cos(heading_err * np.pi)  # heading_err is already normalized to [-1,1]
+        reward += speed * heading_cos * 3.0
 
         # Penalise drifting off path
         reward -= abs(lateral_err) * 1.5
-        reward -= abs(heading_err) * 0.5
+        reward -= abs(heading_err) * 1.0
 
         # Penalise wobbling the wheel unnecessarily
         reward -= abs(steering) * 0.1
