@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  test:
+    name: Test
+    needs: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install python-dotenv tqdm gymnasium numpy matplotlib pygame
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Smoke test - imports & registry
+        run: |
+          python -c "
+          import algorithms
+          import environments
+          import benchmarks
+          from core.registry import registry
+          assert 'q_learning' in registry.list_algorithms()
+          assert 'dqn' in registry.list_algorithms()
+          assert 'taxi' in registry.list_environments()
+          assert 'convergence' in registry.list_benchmarks()
+          print('All registrations OK')
+          "
+
+      - name: Smoke test - Q-Learning training
+        run: |
+          python -c "
+          import algorithms, environments
+          from core.registry import registry
+          from core.runner import PipelineRunner
+          algo = registry.get_algorithm('q_learning')
+          env_info = registry.get_environment('taxi')
+          meta = env_info['metadata']
+          agent = algo['class'](n_states=meta['n_states'], n_actions=meta['n_actions'], **algo['default_config'])
+          env = env_info['factory']()
+          runner = PipelineRunner()
+          history = runner.train(agent, env, n_episodes=50)
+          assert len(history['rewards']) == 50
+          result = runner.evaluate(agent, env, n_episodes=3)
+          assert len(result['rewards']) == 3
+          env.close()
+          print('Training pipeline OK')
+          "
