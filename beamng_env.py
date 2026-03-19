@@ -1,5 +1,5 @@
-import time
 import random
+import time
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
@@ -43,15 +43,15 @@ class BeamNGDrivingEnv:
     # Base waypoints tracing a loop around the automation test track start/finish straight.
     # Random offsets are applied on each scenario load via _randomize_waypoints().
     BASE_WAYPOINTS = [
-        (70.0, -736.0, 100.0),
-        (116.0, -730.0, 100.0),
+        (61.0, -744.0, 100.0),
+        (102.0, -734.0, 100.0),
         (116.0, -612.0, 100.0),
     ]
 
     SPAWN_POS = (61.0, -788.0, 101.0)
-    SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)  # ~45-degree heading
+    SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
-    MAX_STEPS = 1000
+    MAX_STEPS = 400
     MAX_DAMAGE = 500.0  # damage threshold that ends the episode
 
     def __init__(
@@ -186,7 +186,11 @@ class BeamNGDrivingEnv:
         )
 
         self.vehicle = Vehicle(
-            "ego_vehicle", model="burnside", licence="Taxi", color="Yellow", part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc"
+            "ego_vehicle",
+            model="burnside",
+            licence="Taxi",
+            color="Yellow",
+            part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc",
         )
         self.electrics = Electrics()
         self.damage_sensor = Damage()
@@ -205,6 +209,7 @@ class BeamNGDrivingEnv:
         self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
+        self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
         time.sleep(3.0)  # let the game settle before polling
@@ -307,7 +312,7 @@ class BeamNGDrivingEnv:
 
         # Checkpoint bonus
         if self._checkpoint_hit:
-            reward += 50.0
+            reward += 50.0 * self._waypoint_idx
             self._checkpoint_hit = False
 
         # Lap completion bonus
