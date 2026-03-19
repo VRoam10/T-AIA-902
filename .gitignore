@@ -1,6 +1,12 @@
 .venv
 __pycache__
-q_table.npy
-training_results.png
 config.py
-beamng_dqn.pth
+.env
+
+# Outputs (models, plots)
+outputs/
+*.npy
+*.pth
+*_training_results.png
+training_results.png
+beamng_training_results.png
