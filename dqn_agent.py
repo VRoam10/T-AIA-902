@@ -8,20 +8,44 @@ import torch.optim as optim
 
 
 class DQNNetwork(nn.Module):
-    """Simple fully-connected Q-network."""
+    """Dueling fully-connected Q-network.
+
+    Splits the last layer into a Value stream V(s) and an Advantage stream A(s,a).
+    Q(s,a) = V(s) + A(s,a) - mean(A(s,·))
+    This helps the agent learn the state value independently of action selection.
+    """
 
     def __init__(self, n_states: int, n_actions: int, hidden: int = 128):
         super().__init__()
-        self.net = nn.Sequential(
+        self.n_actions = n_actions
+
+        self.feature = nn.Sequential(
             nn.Linear(n_states, hidden),
             nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+        )
+
+        # Value stream: how good is this state?
+        self.value = nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, 1),
+        )
+
+        # Advantage stream: how much better is each action vs average?
+        self.advantage = nn.Sequential(
             nn.Linear(hidden, hidden),
             nn.ReLU(),
             nn.Linear(hidden, n_actions),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        f = self.feature(x)
+        v = self.value(f)
+        a = self.advantage(f)
+        # Subtract mean advantage for identifiability
+        return v + (a - a.mean(dim=1, keepdim=True))
 
 
 class DQNAgent:
