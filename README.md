@@ -225,6 +225,30 @@ Creer `benchmarks/mon_benchmark.py` en heritant de `BaseBenchmark`, puis enregis
 
 ---
 
+## Linting (Ruff)
+
+Le projet utilise [Ruff](https://docs.astral.sh/ruff/) pour le linting et le formatage. La config est dans `ruff.toml`.
+
+Verifier le code :
+
+```bash
+ruff check .
+```
+
+Corriger automatiquement les erreurs :
+
+```bash
+ruff check --fix .
+```
+
+Formater le code :
+
+```bash
+ruff format .
+```
+
+---
+
 ## Algorithmes disponibles
 
 | Algorithme   | Description                | Environnements compatibles |

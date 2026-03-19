@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Type
+from collections.abc import Callable
 
 
 class BaseBenchmark(ABC):
@@ -9,7 +9,7 @@ class BaseBenchmark(ABC):
     description: str = ""
 
     @abstractmethod
-    def run(self, agent_cls: Type, env_factory: Callable, config: dict) -> dict:
+    def run(self, agent_cls: type, env_factory: Callable, config: dict) -> dict:
         """Run the benchmark. Returns a results dict."""
         ...
 

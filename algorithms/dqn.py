@@ -101,8 +101,7 @@ class DQNAgent(BaseAgent):
         with torch.no_grad():
             return int(self.q_net(s).argmax(dim=1).item())
 
-    def update(self, state, action: int, reward: float,
-               next_state, done: bool) -> float | None:
+    def update(self, state, action: int, reward: float, next_state, done: bool) -> float | None:
         """Store transition and run one training step."""
         self._store(state, action, reward, next_state, done)
         return self._train_step()
@@ -154,20 +153,22 @@ class DQNAgent(BaseAgent):
     # -- Internal ------------------------------------------------------------
 
     def _store(self, state, action, reward, next_state, done):
-        self.memory.append((
-            np.array(state, dtype=np.float32),
-            int(action),
-            float(reward),
-            np.array(next_state, dtype=np.float32),
-            float(done),
-        ))
+        self.memory.append(
+            (
+                np.array(state, dtype=np.float32),
+                int(action),
+                float(reward),
+                np.array(next_state, dtype=np.float32),
+                float(done),
+            )
+        )
 
     def _train_step(self) -> float | None:
         if len(self.memory) < self.batch_size:
             return None
 
         states, actions, rewards, next_states, dones = zip(
-            *random.sample(self.memory, self.batch_size)
+            *random.sample(self.memory, self.batch_size), strict=False
         )
 
         states = torch.FloatTensor(np.stack(states)).to(self.device)

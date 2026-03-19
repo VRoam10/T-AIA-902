@@ -1,8 +1,8 @@
 import os
 import time
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from tqdm import tqdm
 
 from core.base_agent import BaseAgent
@@ -98,7 +98,7 @@ class PipelineRunner:
         pbar = tqdm(range(1, n_episodes + 1), desc="Evaluating", unit="ep")
 
         try:
-            for ep in pbar:
+            for _ep in pbar:
                 state = self._reset_env(env)
                 ep_reward = 0.0
                 done = False
@@ -167,8 +167,12 @@ class PipelineRunner:
         ax2.plot(eps, steps, alpha=0.3, label="Steps", color="orange")
         if len(steps) >= window:
             roll = np.convolve(steps, np.ones(window) / window, mode="valid")
-            ax2.plot(range(window, len(steps) + 1), roll,
-                     label=f"Rolling avg ({window})", color="darkorange")
+            ax2.plot(
+                range(window, len(steps) + 1),
+                roll,
+                label=f"Rolling avg ({window})",
+                color="darkorange",
+            )
         ax2.set_xlabel("Episode")
         ax2.set_ylabel("Steps per Episode")
         ax2.legend()

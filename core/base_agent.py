@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 
 class BaseAgent(ABC):
@@ -11,8 +11,9 @@ class BaseAgent(ABC):
         ...
 
     @abstractmethod
-    def update(self, state: Any, action: int, reward: float,
-               next_state: Any, done: bool) -> Optional[float]:
+    def update(
+        self, state: Any, action: int, reward: float, next_state: Any, done: bool
+    ) -> float | None:
         """Process one transition. Returns loss/metric or None.
 
         For tabular agents: directly updates the value table.
@@ -26,12 +27,10 @@ class BaseAgent(ABC):
         ...
 
     @abstractmethod
-    def save(self, path: str) -> None:
-        ...
+    def save(self, path: str) -> None: ...
 
     @abstractmethod
-    def load(self, path: str) -> None:
-        ...
+    def load(self, path: str) -> None: ...
 
     def get_config(self) -> dict:
         """Return a dict of hyperparameters for logging."""

@@ -31,8 +31,7 @@ class QLearningAgent(BaseAgent):
             return np.random.randint(self.n_actions)
         return int(np.argmax(self.q_table[state]))
 
-    def update(self, state: int, action: int, reward: float,
-               next_state: int, done: bool):
+    def update(self, state: int, action: int, reward: float, next_state: int, done: bool):
         current_q = self.q_table[state, action]
         target = reward if done else reward + self.gamma * np.max(self.q_table[next_state])
         self.q_table[state, action] += self.lr * (target - current_q)

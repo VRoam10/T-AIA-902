@@ -1,9 +1,8 @@
 """Register all algorithms with the pipeline registry."""
 
-from core.registry import registry
-from algorithms.q_learning import QLearningAgent
 from algorithms.dqn import DQNAgent
-
+from algorithms.q_learning import QLearningAgent
+from core.registry import registry
 
 registry.register_algorithm(
     "q_learning",

@@ -1,4 +1,4 @@
-from typing import Callable, Type, Optional
+from collections.abc import Callable
 
 
 class Registry:
@@ -14,9 +14,9 @@ class Registry:
     def register_algorithm(
         self,
         name: str,
-        cls: Type,
+        cls: type,
         default_config: dict = None,
-        compatible_envs: Optional[list[str]] = None,
+        compatible_envs: list[str] | None = None,
     ):
         self._algorithms[name] = {
             "class": cls,
@@ -51,7 +51,7 @@ class Registry:
 
     # -- Benchmarks ----------------------------------------------------------
 
-    def register_benchmark(self, name: str, cls: Type):
+    def register_benchmark(self, name: str, cls: type):
         self._benchmarks[name] = {"class": cls}
 
     def get_benchmark(self, name: str) -> dict:

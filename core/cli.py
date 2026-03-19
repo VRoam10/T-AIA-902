@@ -111,7 +111,8 @@ def _train_menu():
     runner = PipelineRunner()
     print(f"\n--- Training {algo_name} on {env_name} ({n_episodes} episodes) ---\n")
     runner.train(
-        agent, env,
+        agent,
+        env,
         n_episodes=n_episodes,
         save_path=save_path,
         plot_path=plot_path,
@@ -217,8 +218,8 @@ def main_menu():
     """Main interactive CLI loop."""
     # Trigger auto-registration by importing packages
     import algorithms  # noqa: F401
-    import environments  # noqa: F401
     import benchmarks  # noqa: F401
+    import environments  # noqa: F401
 
     while True:
         print("\n" + "=" * 50)

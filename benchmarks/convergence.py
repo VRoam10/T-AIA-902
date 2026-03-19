@@ -39,6 +39,8 @@ class ConvergenceBenchmark(BaseBenchmark):
         return {
             "converged": convergence_ep is not None,
             "convergence_episode": convergence_ep,
-            "final_avg_reward": float(np.mean(rewards[-window:])) if len(rewards) >= window else float(np.mean(rewards)),
+            "final_avg_reward": float(np.mean(rewards[-window:]))
+            if len(rewards) >= window
+            else float(np.mean(rewards)),
             "total_episodes": len(rewards),
         }
