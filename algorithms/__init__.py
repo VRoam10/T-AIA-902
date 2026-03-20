@@ -25,7 +25,7 @@ registry.register_algorithm(
         "gamma": 0.99,
         "epsilon": 1.0,
         "epsilon_min": 0.05,
-        "epsilon_decay": 0.995,
+        "epsilon_decay": 0.95,
         "batch_size": 64,
         "memory_size": 20_000,
         "target_update_freq": 100,
