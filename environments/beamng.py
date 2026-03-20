@@ -41,7 +41,7 @@ class BeamNGDrivingEnv:
     N_ACTIONS = len(ACTIONS)
 
     # LiDAR configuration
-    LIDAR_RAYS = 8         # number of angular bins
+    LIDAR_RAYS = 8  # number of angular bins
     LIDAR_FOV_DEG = 120.0  # total forward-facing field of view in degrees
     LIDAR_MAX_DIST = 50.0  # metres — normalization range
 
@@ -344,16 +344,16 @@ class BeamNGDrivingEnv:
                 nearest = float(dists[in_bin].min())
                 distances[i] = np.clip(nearest / self.LIDAR_MAX_DIST, 0.0, 1.0)
 
-        self.bng.queue_lua_command("log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances)))
+        self.bng.queue_lua_command(
+            "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
+        )
         return distances
 
     def _is_out_of_bounds(self, pos):
         """Check if the vehicle is outside the defined boundary."""
         x, y, _ = pos
         b = self.BOUNDARY
-        self._out_of_bounds = not (
-            b["minx"] <= x <= b["maxx"] and b["miny"] <= y <= b["maxy"]
-        )
+        self._out_of_bounds = not (b["minx"] <= x <= b["maxx"] and b["miny"] <= y <= b["maxy"])
 
     def _path_errors(self, pos, state):
         """Return (heading_error_rad, lateral_error_m) relative to next waypoint."""
