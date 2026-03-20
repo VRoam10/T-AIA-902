@@ -343,7 +343,7 @@ class BeamNGDrivingEnv:
             if in_bin.any():
                 nearest = float(dists[in_bin].min())
                 distances[i] = np.clip(nearest / self.LIDAR_MAX_DIST, 0.0, 1.0)
-        
+
         self.bng.queue_lua_command("log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances)))
         return distances
 
