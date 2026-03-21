@@ -213,7 +213,7 @@ def _human_play_menu():
         return
 
     env_info = registry.get_environment("beamng")
-    env = env_info["factory"]()
+    env = env_info["factory"](headless=False)
 
     print("Launching BeamNG for human play...")
     env.human_play()

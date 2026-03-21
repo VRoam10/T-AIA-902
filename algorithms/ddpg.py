@@ -87,6 +87,7 @@ class DDPGAgent(BaseAgent):
         memory_size: int = 100_000,
         noise_theta: float = 0.15,
         noise_sigma: float = 0.2,
+        warmup_steps: int = 500,
     ):
         self.n_states = n_states
         self.n_actions = n_actions
@@ -96,6 +97,7 @@ class DDPGAgent(BaseAgent):
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
+        self.warmup_steps = warmup_steps
         self.train_steps = 0
 
         # Discrete states (e.g. Taxi) need one-hot encoding for the network
@@ -227,7 +229,8 @@ class DDPGAgent(BaseAgent):
         )
 
     def _train_step(self) -> float | None:
-        if len(self.memory) < self.batch_size:
+        # Wait for enough diverse experiences before training
+        if len(self.memory) < max(self.batch_size, self.warmup_steps):
             return None
 
         states, actions, rewards, next_states, dones = zip(
@@ -239,6 +242,10 @@ class DDPGAgent(BaseAgent):
         rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
         next_states = torch.FloatTensor(np.stack(next_states)).to(self.device)
         dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
+
+        # Normalize rewards to stabilize critic training
+        reward_std = rewards.std() + 1e-8
+        rewards = (rewards - rewards.mean()) / reward_std
 
         # Critic update
         with torch.no_grad():

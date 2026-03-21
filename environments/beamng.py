@@ -1,8 +1,16 @@
+import logging
 import random
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
 from beamngpy.sensors import Damage, Electrics
+
+log = logging.getLogger("beamng_env")
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[BeamNG] %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
 
 
 class BeamNGDrivingEnv:
@@ -57,6 +65,11 @@ class BeamNGDrivingEnv:
     MAX_DAMAGE = 1000.0  # damage threshold that ends the episode
     DAMAGE_SPIKE = 150.0  # single-step damage spike that ends the episode
 
+    # Map boundary — rectangle around the waypoint area + margin.
+    # Car gets penalised and episode ends if it leaves this zone.
+    BOUNDARY_MIN = (20.0, -830.0)   # (x_min, y_min)
+    BOUNDARY_MAX = (160.0, -570.0)  # (x_max, y_max)
+
     def __init__(
         self,
         beamng_home: str,
@@ -88,7 +101,8 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = 0
         self._last_damage = 0.0
         self._steps = 0
-        self._is_reversing = False
+        self._is_moving_backward = False
+        self._forward_speed = 0.0
         self._active_marker_id: str | None = None
         self.waypoints = list(self.BASE_WAYPOINTS)
 
@@ -106,14 +120,31 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = 0
         self._last_damage = 0.0
         self._steps = 0
-        self._is_reversing = False
+        self._is_moving_backward = False
         self._checkpoint_hit = False
 
-        # Hold still for a moment so physics settle
+        # Teleport back to spawn and kill all velocity
+        self.vehicle.teleport(pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
+        self.vehicle.queue_lua_command("obj:setVelocity(Point3F(0, 0, 0))")
+        self.vehicle.queue_lua_command("obj:setAngularVelocity(Point3F(0, 0, 0))")
         self.vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
         self.bng.step(20)
 
-        return self._observe()
+        obs = self._observe()
+        # Log car direction vs waypoint direction to diagnose rotation
+        state = self.vehicle.state or {}
+        vdir = state.get("dir", (0, 0, 0))
+        wp = self.waypoints[0]
+        dx = wp[0] - self._pos[0]
+        dy = wp[1] - self._pos[1]
+        log.info(
+            "RESET  pos=(%.1f, %.1f)  car_dir=(%.2f, %.2f)  wp_dir=(%.1f, %.1f)  fwd_speed=%.2f",
+            self._pos[0], self._pos[1],
+            vdir[0], vdir[1],
+            dx, dy,
+            self._forward_speed,
+        )
+        return obs
 
     def step(self, action):
         """
@@ -141,6 +172,12 @@ class BeamNGDrivingEnv:
                 throttle = 0.0
                 brake = -accel
 
+        # Hard block: if car is moving backward, override everything with full brake
+        if self._is_moving_backward:
+            throttle = 0.0
+            brake = 1.0
+            steering = 0.0
+
         self.vehicle.control(
             throttle=throttle,
             steering=steering,
@@ -153,6 +190,22 @@ class BeamNGDrivingEnv:
 
         obs = self._observe()
         reward, done = self._compute_reward(obs)
+
+        # Log every 10 steps to track what the car is doing
+        if self._steps % 10 == 1:
+            log.info(
+                "ep_step=%3d  fwd=%.2f  spd=%.2f  act=%s  rew=%.1f  pos=(%.0f,%.0f)  wp=%d%s",
+                self._steps,
+                self._forward_speed,
+                obs[0] * 50.0,
+                action,
+                reward,
+                self._pos[0],
+                self._pos[1],
+                self._waypoint_idx,
+                "  !! BACKWARD" if self._is_moving_backward else "",
+            )
+
         info = {"steps": self._steps, "waypoint_idx": self._waypoint_idx}
         return obs, reward, done, info
 
@@ -260,12 +313,17 @@ class BeamNGDrivingEnv:
         steering = float(elec.get("steering", 0.0))
         damage = float(dmg.get("damage", 0.0))
 
-        # Detect reverse: negative gear index means reverse
-        self._is_reversing = int(elec.get("gear_index", 0)) < 0
-
         state = self.vehicle.state or {}
         pos = state.get("pos", (0.0, 0.0, 0.0))
 
+        # Detect backward movement: dot(facing_direction, velocity).
+        # Negative = moving opposite to where the car is facing.
+        vdir = state.get("dir", (1.0, 0.0, 0.0))
+        vel = state.get("vel", (0.0, 0.0, 0.0))
+        self._forward_speed = vdir[0] * vel[0] + vdir[1] * vel[1]
+        self._is_moving_backward = self._forward_speed < -0.1
+
+        self._pos = pos  # store for boundary check in _compute_reward
         heading_err, lateral_err, dist = self._path_errors(pos, state)
 
         obs = np.array(
@@ -332,8 +390,8 @@ class BeamNGDrivingEnv:
         # 5. Penalise excessive steering
         reward -= abs(steering) * 0.2
 
-        # 6. Penalise reversing — the car should always go forward
-        if self._is_reversing:
+        # 6. Penalise moving backward
+        if self._is_moving_backward:
             reward -= 5.0
 
         # 7. Time penalty — encourages the agent to reach waypoints quickly
@@ -350,16 +408,27 @@ class BeamNGDrivingEnv:
             done = True
         self._last_damage = damage
 
-        # 9. Step limit
+        # 9. Boundary check — end episode if car leaves the allowed zone
+        px, py = self._pos[0], self._pos[1]
+        if (
+            px < self.BOUNDARY_MIN[0]
+            or px > self.BOUNDARY_MAX[0]
+            or py < self.BOUNDARY_MIN[1]
+            or py > self.BOUNDARY_MAX[1]
+        ):
+            reward -= 50.0
+            done = True
+
+        # 10. Step limit
         if self._steps >= self.MAX_STEPS:
             done = True
 
-        # 10. Checkpoint bonus (big reward for reaching waypoints)
+        # 11. Checkpoint bonus (big reward for reaching waypoints)
         if self._checkpoint_hit:
             reward += 100.0 * self._waypoint_idx
             self._checkpoint_hit = False
 
-        # 11. Lap completion bonus
+        # 12. Lap completion bonus
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             self._waypoint_idx = 0
