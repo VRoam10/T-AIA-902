@@ -20,5 +20,5 @@ def _make_beamng():
 registry.register_environment(
     "beamng",
     factory=_make_beamng,
-    metadata={"n_states": 5, "n_actions": 7, "state_type": "continuous"},
+    metadata={"n_states": 13, "n_actions": 7, "state_type": "continuous"},
 )

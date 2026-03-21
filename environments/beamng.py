@@ -3,19 +3,20 @@ import time
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
-from beamngpy.sensors import Damage, Electrics
+from beamngpy.sensors import Damage, Electrics, Lidar
 
 
 class BeamNGDrivingEnv:
     """
     Gymnasium-style environment wrapping BeamNG.drive via beamngpy.
 
-    State  (5 floats, all normalized to ~[-1, 1]):
+    State  (5 + LIDAR_RAYS floats, all normalized to ~[-1, 1] or [0, 1]):
         speed          - wheel speed normalized to 50 m/s
         steering       - current steering angle (-1 to 1)
         heading_error  - angle between vehicle heading and next waypoint direction
         lateral_error  - perpendicular distance from path (normalized to 5 m)
         damage         - cumulative vehicle damage (normalized)
+        lidar[0..N-1]  - nearest obstacle distance in each angular bin (0 = close, 1 = clear)
 
     Actions (discrete, 7):
         0 - idle / coast
@@ -38,7 +39,13 @@ class BeamNGDrivingEnv:
     ]
 
     N_ACTIONS = len(ACTIONS)
-    N_STATES = 5
+
+    # LiDAR configuration
+    LIDAR_RAYS = 8  # number of angular bins
+    LIDAR_FOV_DEG = 120.0  # total forward-facing field of view in degrees
+    LIDAR_MAX_DIST = 50.0  # metres — normalization range
+
+    N_STATES = 5 + LIDAR_RAYS  # 5 kinematic + 8 lidar = 13
 
     # Base waypoints tracing a loop around the automation test track start/finish straight.
     # Random offsets are applied on each scenario load via _randomize_waypoints().
@@ -47,6 +54,13 @@ class BeamNGDrivingEnv:
         (102.0, -734.0, 100.0),
         (116.0, -612.0, 100.0),
     ]
+
+    BOUNDARY = {
+        "minx": -100.0,
+        "maxx": 200.0,
+        "miny": -800.0,
+        "maxy": -600.0,
+    }
 
     SPAWN_POS = (61.0, -788.0, 101.0)
     SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)
@@ -79,12 +93,14 @@ class BeamNGDrivingEnv:
         self.scenario: Scenario = None
         self.electrics: Electrics = None
         self.damage_sensor: Damage = None
+        self.lidar: Lidar = None
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
         self._steps = 0
         self._active_marker_id: str | None = None
         self.waypoints = list(self.BASE_WAYPOINTS)
+        self._out_of_bounds = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -152,6 +168,9 @@ class BeamNGDrivingEnv:
     def close(self):
         """Shut down the BeamNG connection."""
         if self.bng is not None:
+            if self.lidar is not None:
+                self.lidar.remove()
+                self.lidar = None
             self.bng.close()
             self.bng = None
             self.vehicle = None
@@ -172,10 +191,7 @@ class BeamNGDrivingEnv:
         self._load_scenario()
 
     def _randomize_waypoints(self):
-        self.waypoints = [
-            (x + random.randint(-10, 10), y + random.randint(-10, 10), z)
-            for x, y, z in self.BASE_WAYPOINTS
-        ]
+        self.waypoints = random.sample(self.BASE_WAYPOINTS, len(self.BASE_WAYPOINTS))
 
     def _load_scenario(self):
         # self._randomize_waypoints()
@@ -214,13 +230,28 @@ class BeamNGDrivingEnv:
         self.bng.start_scenario()
         time.sleep(3.0)  # let the game settle before polling
 
+        # Lidar must be created after the scenario starts (it communicates with the sim directly)
+        if self.lidar is not None:
+            self.lidar.remove()
+        self.lidar = Lidar(
+            "lidar",
+            self.bng,
+            self.vehicle,
+            pos=(0, 0, 1.7),
+            dir=(0, -1, 0),
+            up=(0, 0, 1),
+            vertical_resolution=16,
+            vertical_angle=26.9,
+            horizontal_angle=self.LIDAR_FOV_DEG,
+            max_distance=self.LIDAR_MAX_DIST,
+            is_360_mode=False,
+            is_rotate_mode=False,
+            is_using_shared_memory=False,
+            is_visualised=False,
+        )
+
         # Draw the initial active-waypoint marker
         self._update_active_marker(1)
-
-    def _respawn(self):
-        """Teleport the vehicle back to the start without reloading the scenario."""
-        self.vehicle.teleport(pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
-        time.sleep(0.3)
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return a normalized state vector."""
@@ -235,21 +266,94 @@ class BeamNGDrivingEnv:
 
         state = self.vehicle.state or {}
         pos = state.get("pos", (0.0, 0.0, 0.0))
+        vel = state.get("vel", (1.0, 0.0, 0.0))
+        vehicle_heading = float(np.arctan2(vel[1], vel[0]))
 
         heading_err, lateral_err = self._path_errors(pos, state)
 
-        obs = np.array(
+        lidar_bins = self._process_lidar(
+            self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None,
+            pos,
+            vehicle_heading,
+        )
+
+        self._is_out_of_bounds(pos)
+
+        obs = np.concatenate(
             [
-                np.clip(speed / 50.0, -1.0, 1.0),
-                np.clip(steering, -1.0, 1.0),
-                np.clip(heading_err / np.pi, -1.0, 1.0),
-                np.clip(lateral_err / 5.0, -1.0, 1.0),
-                np.clip(damage / 1000.0, 0.0, 1.0),
-            ],
-            dtype=np.float32,
+                np.array(
+                    [
+                        np.clip(speed / 50.0, -1.0, 1.0),
+                        np.clip(steering, -1.0, 1.0),
+                        np.clip(heading_err / np.pi, -1.0, 1.0),
+                        np.clip(lateral_err / 5.0, -1.0, 1.0),
+                        np.clip(damage / 1000.0, 0.0, 1.0),
+                    ],
+                    dtype=np.float32,
+                ),
+                lidar_bins,
+            ]
         )
 
         return obs
+
+    def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
+        """Bin a raw LiDAR point cloud into LIDAR_RAYS angular distance slices.
+
+        Points are in world space and are transformed to vehicle-local coordinates
+        using the vehicle's position and heading before binning.
+        Returns a float32 array of shape (LIDAR_RAYS,) with values in [0, 1],
+        where 0 means an obstacle is right there and 1 means the bin is clear.
+        """
+        distances = np.ones(self.LIDAR_RAYS, dtype=np.float32)  # default: clear
+
+        if point_cloud is None or len(point_cloud) == 0:
+            self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
+            return distances
+
+        pts = np.array(point_cloud, dtype=np.float32).reshape(-1, 3)
+
+        # Translate: move points relative to vehicle position
+        rel_x = pts[:, 0] - vehicle_pos[0]
+        rel_y = pts[:, 1] - vehicle_pos[1]
+
+        # Rotate: transform into vehicle-local frame (x=forward, y=left)
+        cos_h = np.cos(-vehicle_heading)
+        sin_h = np.sin(-vehicle_heading)
+        local_x = rel_x * cos_h - rel_y * sin_h
+        local_y = rel_x * sin_h + rel_y * cos_h
+
+        # Work in the horizontal (XY) plane only
+        angles = np.arctan2(local_y, local_x)
+        dists = np.hypot(local_x, local_y)
+
+        # Keep only points within the forward FOV
+        half_fov = np.radians(self.LIDAR_FOV_DEG / 2.0)
+        mask = np.abs(angles) <= half_fov
+        angles = angles[mask]
+        dists = dists[mask]
+
+        if len(angles) == 0:
+            self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
+            return distances
+
+        bin_edges = np.linspace(-half_fov, half_fov, self.LIDAR_RAYS + 1)
+        for i in range(self.LIDAR_RAYS):
+            in_bin = (angles >= bin_edges[i]) & (angles < bin_edges[i + 1])
+            if in_bin.any():
+                nearest = float(dists[in_bin].min())
+                distances[i] = np.clip(nearest / self.LIDAR_MAX_DIST, 0.0, 1.0)
+
+        self.bng.queue_lua_command(
+            "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
+        )
+        return distances
+
+    def _is_out_of_bounds(self, pos):
+        """Check if the vehicle is outside the defined boundary."""
+        x, y, _ = pos
+        b = self.BOUNDARY
+        self._out_of_bounds = not (b["minx"] <= x <= b["maxx"] and b["miny"] <= y <= b["maxy"])
 
     def _path_errors(self, pos, state):
         """Return (heading_error_rad, lateral_error_m) relative to next waypoint."""
@@ -266,7 +370,7 @@ class BeamNGDrivingEnv:
             self._waypoint_idx += 1
             self._checkpoint_hit = True
             self._update_active_marker(self._waypoint_idx)
-            print("checkpoint hit")
+            self.bng.queue_lua_command("log('I', 'RL', 'checkpoint hit')")
 
         vel = state.get("vel", (1.0, 0.0, 0.0))
         vehicle_heading = np.arctan2(vel[1], vel[0])
@@ -278,7 +382,7 @@ class BeamNGDrivingEnv:
 
     def _compute_reward(self, obs):
         """Compute per-step reward and termination flag."""
-        speed, steering, heading_err, lateral_err, damage_norm = obs
+        speed, steering, heading_err, lateral_err, damage_norm = obs[:5]
         damage = damage_norm * 1000.0
 
         done = False
@@ -301,7 +405,6 @@ class BeamNGDrivingEnv:
         # Penalise (and terminate on) significant damage
         if damage > self._last_damage + 50:
             reward -= 50.0
-            done = True
         if damage >= self.MAX_DAMAGE:
             done = True
         self._last_damage = damage
@@ -319,6 +422,10 @@ class BeamNGDrivingEnv:
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             self._waypoint_idx = 0
+            done = True
+
+        if self._out_of_bounds:
+            reward -= 200.0
             done = True
 
         return float(reward), done
