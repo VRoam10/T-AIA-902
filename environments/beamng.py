@@ -1,21 +1,30 @@
+import logging
 import random
-import time
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
 from beamngpy.sensors import Damage, Electrics
+
+log = logging.getLogger("beamng_env")
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[BeamNG] %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
 
 
 class BeamNGDrivingEnv:
     """
     Gymnasium-style environment wrapping BeamNG.drive via beamngpy.
 
-    State  (5 floats, all normalized to ~[-1, 1]):
+    State  (7 floats, all normalized to ~[-1, 1]):
         speed          - wheel speed normalized to 50 m/s
         steering       - current steering angle (-1 to 1)
         heading_error  - angle between vehicle heading and next waypoint direction
-        lateral_error  - perpendicular distance from path (normalized to 5 m)
+        lateral_error  - perpendicular distance from path (normalized to 20 m)
         damage         - cumulative vehicle damage (normalized)
+        dist           - distance to next waypoint (normalized to 150 m)
+        alignment      - cos(heading_error), directional alignment signal
 
     Actions (discrete, 7):
         0 - idle / coast
@@ -25,6 +34,8 @@ class BeamNGDrivingEnv:
         4 - brake
         5 - throttle + sharp left
         6 - throttle + sharp right
+
+    Also accepts continuous actions as [accel, steering] in [-1, 1].
     """
 
     ACTIONS = [
@@ -40,19 +51,24 @@ class BeamNGDrivingEnv:
     N_ACTIONS = len(ACTIONS)
     N_STATES = 7
 
-    # Base waypoints tracing a loop around the automation test track start/finish straight.
-    # Random offsets are applied on each scenario load via _randomize_waypoints().
+    # Base waypoints (from main branch — updated positions).
     BASE_WAYPOINTS = [
-        (61.0, -744.0, 100.0),
-        (102.0, -734.0, 100.0),
+        (70.0, -736.0, 100.0),
+        (116.0, -730.0, 100.0),
         (116.0, -612.0, 100.0),
     ]
 
     SPAWN_POS = (61.0, -788.0, 101.0)
     SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
-    MAX_STEPS = 400
-    MAX_DAMAGE = 500.0  # damage threshold that ends the episode
+    MAX_STEPS = 1000
+    MAX_DAMAGE = 1000.0  # damage threshold that ends the episode
+    DAMAGE_SPIKE = 150.0  # single-step damage spike that ends the episode
+
+    # Map boundary — rectangle around the waypoint area + margin.
+    # Car gets penalised and episode ends if it leaves this zone.
+    BOUNDARY_MIN = (20.0, -830.0)   # (x_min, y_min)
+    BOUNDARY_MAX = (160.0, -570.0)  # (x_max, y_max)
 
     def __init__(
         self,
@@ -60,19 +76,21 @@ class BeamNGDrivingEnv:
         beamng_user: str = None,
         host: str = "localhost",
         port: int = 64256,
+        headless: bool = True,
     ):
         """
         Args:
             beamng_home: Path to BeamNG.drive installation directory.
-                         e.g. r'C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive'
             beamng_user: Optional path to BeamNG user folder (where mods/configs live).
             host: BeamNG server host (default localhost).
             port: BeamNG server port (default 64256).
+            headless: If True, launch without rendering (faster training).
         """
         self.beamng_home = beamng_home
         self.beamng_user = beamng_user
         self.host = host
         self.port = port
+        self.headless = headless
 
         self.bng: BeamNGpy = None
         self.vehicle: Vehicle = None
@@ -83,6 +101,8 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = 0
         self._last_damage = 0.0
         self._steps = 0
+        self._is_moving_backward = False
+        self._forward_speed = 0.0
         self._active_marker_id: str | None = None
         self.waypoints = list(self.BASE_WAYPOINTS)
 
@@ -100,17 +120,38 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = 0
         self._last_damage = 0.0
         self._steps = 0
+        self._is_moving_backward = False
         self._checkpoint_hit = False
 
-        # Hold still for a moment so physics settle
+        # Teleport back to spawn and kill all velocity
+        self.vehicle.teleport(pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
+        self.vehicle.queue_lua_command("obj:setVelocity(Point3F(0, 0, 0))")
+        self.vehicle.queue_lua_command("obj:setAngularVelocity(Point3F(0, 0, 0))")
         self.vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
         self.bng.step(20)
 
-        return self._observe()
+        obs = self._observe()
+        # Log car direction vs waypoint direction to diagnose rotation
+        state = self.vehicle.state or {}
+        vdir = state.get("dir", (0, 0, 0))
+        wp = self.waypoints[0]
+        dx = wp[0] - self._pos[0]
+        dy = wp[1] - self._pos[1]
+        log.info(
+            "RESET  pos=(%.1f, %.1f)  car_dir=(%.2f, %.2f)  wp_dir=(%.1f, %.1f)  fwd_speed=%.2f",
+            self._pos[0], self._pos[1],
+            vdir[0], vdir[1],
+            dx, dy,
+            self._forward_speed,
+        )
+        return obs
 
     def step(self, action):
         """
-        Apply a discrete action and advance the simulation.
+        Apply an action and advance the simulation.
+
+        Accepts either an integer (discrete action index) or a numpy array
+        of shape (2,) for continuous [accel, steering] in [-1, 1].
 
         Returns:
             obs (np.ndarray), reward (float), done (bool), info (dict)
@@ -131,18 +172,40 @@ class BeamNGDrivingEnv:
                 throttle = 0.0
                 brake = -accel
 
+        # Hard block: if car is moving backward, override everything with full brake
+        if self._is_moving_backward:
+            throttle = 0.0
+            brake = 1.0
+            steering = 0.0
+
         self.vehicle.control(
             throttle=throttle,
             steering=steering,
             brake=brake,
         )
 
-        # 10 physics steps ≈ 100 ms of simulation time
-        self.bng.step(10)
+        # 20 physics steps ≈ 200 ms sim time — fewer round-trips for faster training
+        self.bng.step(20)
         self._steps += 1
 
         obs = self._observe()
         reward, done = self._compute_reward(obs)
+
+        # Log every 10 steps to track what the car is doing
+        if self._steps % 10 == 1:
+            log.info(
+                "ep_step=%3d  fwd=%.2f  spd=%.2f  act=%s  rew=%.1f  pos=(%.0f,%.0f)  wp=%d%s",
+                self._steps,
+                self._forward_speed,
+                obs[0] * 50.0,
+                action,
+                reward,
+                self._pos[0],
+                self._pos[1],
+                self._waypoint_idx,
+                "  !! BACKWARD" if self._is_moving_backward else "",
+            )
+
         info = {"steps": self._steps, "waypoint_idx": self._waypoint_idx}
         return obs, reward, done, info
 
@@ -182,8 +245,9 @@ class BeamNGDrivingEnv:
             self.port,
             home=self.beamng_home,
             user=self.beamng_user,
+            quit_on_close=True,
         )
-        self.bng.open(launch=True)
+        self.bng.open(launch=True, headless=self.headless)
         self._load_scenario()
 
     def _randomize_waypoints(self):
@@ -224,10 +288,11 @@ class BeamNGDrivingEnv:
         self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
-        self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
+        self.bng.settings.set_deterministic(steps_per_second=30, speed_factor=4)
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
-        time.sleep(3.0)  # let the game settle before polling
+        # Let physics settle instead of wall-clock sleep
+        self.bng.step(60)
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(1)
@@ -235,7 +300,7 @@ class BeamNGDrivingEnv:
     def _respawn(self):
         """Teleport the vehicle back to the start without reloading the scenario."""
         self.vehicle.teleport(pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
-        time.sleep(0.3)
+        self.bng.step(10)
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return a normalized state vector (7 floats)."""
@@ -251,6 +316,14 @@ class BeamNGDrivingEnv:
         state = self.vehicle.state or {}
         pos = state.get("pos", (0.0, 0.0, 0.0))
 
+        # Detect backward movement: dot(facing_direction, velocity).
+        # Negative = moving opposite to where the car is facing.
+        vdir = state.get("dir", (1.0, 0.0, 0.0))
+        vel = state.get("vel", (0.0, 0.0, 0.0))
+        self._forward_speed = vdir[0] * vel[0] + vdir[1] * vel[1]
+        self._is_moving_backward = self._forward_speed < -0.1
+
+        self._pos = pos  # store for boundary check in _compute_reward
         heading_err, lateral_err, dist = self._path_errors(pos, state)
 
         obs = np.array(
@@ -317,24 +390,45 @@ class BeamNGDrivingEnv:
         # 5. Penalise excessive steering
         reward -= abs(steering) * 0.2
 
-        # 6. Penalise (and terminate on) significant damage
-        if damage > self._last_damage + 50:
-            reward -= 50.0
+        # 6. Penalise moving backward
+        if self._is_moving_backward:
+            reward -= 5.0
+
+        # 7. Time penalty — encourages the agent to reach waypoints quickly
+        reward -= 0.1
+
+        # 8. Damage: penalise proportionally, only terminate on big spikes
+        damage_delta = damage - self._last_damage
+        if damage_delta > 0:
+            reward -= damage_delta * 0.3  # proportional penalty
+        if damage_delta > self.DAMAGE_SPIKE:
+            reward -= 30.0
             done = True
         if damage >= self.MAX_DAMAGE:
             done = True
         self._last_damage = damage
 
-        # 7. Step limit
+        # 9. Boundary check — end episode if car leaves the allowed zone
+        px, py = self._pos[0], self._pos[1]
+        if (
+            px < self.BOUNDARY_MIN[0]
+            or px > self.BOUNDARY_MAX[0]
+            or py < self.BOUNDARY_MIN[1]
+            or py > self.BOUNDARY_MAX[1]
+        ):
+            reward -= 50.0
+            done = True
+
+        # 10. Step limit
         if self._steps >= self.MAX_STEPS:
             done = True
 
-        # 8. Checkpoint bonus (big reward for reaching waypoints)
+        # 11. Checkpoint bonus (big reward for reaching waypoints)
         if self._checkpoint_hit:
             reward += 100.0 * self._waypoint_idx
             self._checkpoint_hit = False
 
-        # 9. Lap completion bonus
+        # 12. Lap completion bonus
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             self._waypoint_idx = 0
