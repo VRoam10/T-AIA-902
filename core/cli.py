@@ -55,9 +55,10 @@ def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
     defaults = dict(algo_info["default_config"])
     meta = env_info["metadata"]
 
-    # Inject n_states / n_actions from env metadata
+    # Inject n_states / n_actions from env metadata (don't override if algo defines its own)
     defaults["n_states"] = meta.get("n_states", 5)
-    defaults["n_actions"] = meta.get("n_actions", 6)
+    if "n_actions" not in defaults:
+        defaults["n_actions"] = meta.get("n_actions", 6)
 
     if not prompt_params:
         return cls(**defaults)
@@ -200,6 +201,7 @@ def _benchmark_menu():
     print(f"\n--- Running {bench_name}: {algo_name} + {env_name} ---\n")
     results = bench.run(algo_info["class"], env_info["factory"], config)
     print("\n" + bench.report(results))
+    bench.export(results, algo_name, env_name)
 
 
 def _human_play_menu():

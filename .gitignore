@@ -1,6 +1,11 @@
 .venv
+venv/
 __pycache__
 .env
+
+# IDE
+.idea/
+.claude/
 
 # Outputs (models, plots)
 outputs/

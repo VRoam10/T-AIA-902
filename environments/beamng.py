@@ -38,7 +38,7 @@ class BeamNGDrivingEnv:
     ]
 
     N_ACTIONS = len(ACTIONS)
-    N_STATES = 5
+    N_STATES = 7
 
     # Base waypoints tracing a loop around the automation test track start/finish straight.
     # Random offsets are applied on each scenario load via _randomize_waypoints().
@@ -108,18 +108,33 @@ class BeamNGDrivingEnv:
 
         return self._observe()
 
-    def step(self, action_idx: int):
+    def step(self, action):
         """
         Apply a discrete action and advance the simulation.
 
         Returns:
             obs (np.ndarray), reward (float), done (bool), info (dict)
         """
-        action = self.ACTIONS[action_idx]
+        if isinstance(action, int | np.integer):
+            ctrl = self.ACTIONS[action]
+            throttle = ctrl["throttle"]
+            steering = ctrl["steering"]
+            brake = ctrl["brake"]
+        else:
+            action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+            accel = float(action[0])
+            steering = float(action[1])
+            if accel >= 0:
+                throttle = accel
+                brake = 0.0
+            else:
+                throttle = 0.0
+                brake = -accel
+
         self.vehicle.control(
-            throttle=action["throttle"],
-            steering=action["steering"],
-            brake=action["brake"],
+            throttle=throttle,
+            steering=steering,
+            brake=brake,
         )
 
         # 10 physics steps ≈ 100 ms of simulation time
@@ -223,7 +238,7 @@ class BeamNGDrivingEnv:
         time.sleep(0.3)
 
     def _observe(self) -> np.ndarray:
-        """Poll sensors and return a normalized state vector."""
+        """Poll sensors and return a normalized state vector (7 floats)."""
         self.vehicle.poll_sensors()
 
         elec = self.electrics.data or {}
@@ -236,15 +251,17 @@ class BeamNGDrivingEnv:
         state = self.vehicle.state or {}
         pos = state.get("pos", (0.0, 0.0, 0.0))
 
-        heading_err, lateral_err = self._path_errors(pos, state)
+        heading_err, lateral_err, dist = self._path_errors(pos, state)
 
         obs = np.array(
             [
                 np.clip(speed / 50.0, -1.0, 1.0),
                 np.clip(steering, -1.0, 1.0),
                 np.clip(heading_err / np.pi, -1.0, 1.0),
-                np.clip(lateral_err / 5.0, -1.0, 1.0),
+                np.clip(lateral_err / 20.0, -1.0, 1.0),
                 np.clip(damage / 1000.0, 0.0, 1.0),
+                np.clip(dist / 150.0, 0.0, 1.0),  # distance to waypoint
+                np.cos(heading_err),  # alignment signal
             ],
             dtype=np.float32,
         )
@@ -252,9 +269,9 @@ class BeamNGDrivingEnv:
         return obs
 
     def _path_errors(self, pos, state):
-        """Return (heading_error_rad, lateral_error_m) relative to next waypoint."""
+        """Return (heading_error_rad, lateral_error_m, distance_m) relative to next waypoint."""
         if not self.waypoints or not state:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
         target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
         dx = target[0] - pos[0]
@@ -274,31 +291,33 @@ class BeamNGDrivingEnv:
         heading_err = (target_heading - vehicle_heading + np.pi) % (2 * np.pi) - np.pi
 
         lateral_err = dist * np.sin(heading_err)
-        return float(heading_err), float(lateral_err)
+        return float(heading_err), float(lateral_err), dist
 
     def _compute_reward(self, obs):
         """Compute per-step reward and termination flag."""
-        speed, steering, heading_err, lateral_err, damage_norm = obs
+        speed, steering, heading_err, lateral_err, damage_norm, dist_norm, alignment = obs
         damage = damage_norm * 1000.0
 
         done = False
         reward = 0.0
 
-        # Encourage forward speed
-        reward += speed * 2.0
+        # 1. Speed toward waypoint: alignment [-1,1] * speed → strong directional signal
+        reward += speed * alignment * 5.0
 
-        # Penalise drifting off path
-        reward -= abs(lateral_err) * 1.5
-        reward -= abs(heading_err) * 0.5
+        # 2. Penalise bad heading (facing away from waypoint)
+        reward -= (1.0 - alignment) * 1.0
 
-        # Penalise wobbling the wheel unnecessarily
-        reward -= abs(steering) * 0.1
+        # 3. Penalise being far from waypoint
+        reward -= dist_norm * 0.5
 
-        # Penalise being stationary
+        # 4. Penalise being stationary — the agent must move
         if speed < 0.05:
-            reward -= 0.5
+            reward -= 2.0
 
-        # Penalise (and terminate on) significant damage
+        # 5. Penalise excessive steering
+        reward -= abs(steering) * 0.2
+
+        # 6. Penalise (and terminate on) significant damage
         if damage > self._last_damage + 50:
             reward -= 50.0
             done = True
@@ -306,16 +325,16 @@ class BeamNGDrivingEnv:
             done = True
         self._last_damage = damage
 
-        # Step limit
+        # 7. Step limit
         if self._steps >= self.MAX_STEPS:
             done = True
 
-        # Checkpoint bonus
+        # 8. Checkpoint bonus (big reward for reaching waypoints)
         if self._checkpoint_hit:
-            reward += 50.0 * self._waypoint_idx
+            reward += 100.0 * self._waypoint_idx
             self._checkpoint_hit = False
 
-        # Lap completion bonus
+        # 9. Lap completion bonus
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             self._waypoint_idx = 0
