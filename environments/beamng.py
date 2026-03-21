@@ -115,7 +115,7 @@ class BeamNGDrivingEnv:
         Returns:
             obs (np.ndarray), reward (float), done (bool), info (dict)
         """
-        if isinstance(action, (int, np.integer)):
+        if isinstance(action, int | np.integer):
             ctrl = self.ACTIONS[action]
             throttle = ctrl["throttle"]
             steering = ctrl["steering"]
@@ -260,8 +260,8 @@ class BeamNGDrivingEnv:
                 np.clip(heading_err / np.pi, -1.0, 1.0),
                 np.clip(lateral_err / 20.0, -1.0, 1.0),
                 np.clip(damage / 1000.0, 0.0, 1.0),
-                np.clip(dist / 150.0, 0.0, 1.0),             # distance to waypoint
-                np.cos(heading_err),                           # alignment signal
+                np.clip(dist / 150.0, 0.0, 1.0),  # distance to waypoint
+                np.cos(heading_err),  # alignment signal
             ],
             dtype=np.float32,
         )

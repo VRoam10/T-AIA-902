@@ -23,12 +23,14 @@ class BaseBenchmark(ABC):
         """Format results as a human-readable string."""
         lines = [f"=== {self.name} ==="]
         for k, v in results.items():
-            if isinstance(v, (list, np.ndarray)):
+            if isinstance(v, list | np.ndarray):
                 continue
             lines.append(f"  {k}: {v}")
         return "\n".join(lines)
 
-    def export(self, results: dict, algo_name: str, env_name: str, output_dir: str = "outputs/benchmarks"):
+    def export(
+        self, results: dict, algo_name: str, env_name: str, output_dir: str = "outputs/benchmarks"
+    ):
         """Export full benchmark results: JSON, Markdown report, and plots."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = os.path.join(output_dir, f"{self.name}_{algo_name}_{env_name}_{timestamp}")
@@ -50,12 +52,13 @@ class BaseBenchmark(ABC):
 
     def _save_json(self, results: dict, path: str):
         """Save results as JSON (convert numpy types)."""
+
         def _convert(obj):
             if isinstance(obj, np.ndarray):
                 return obj.tolist()
-            if isinstance(obj, (np.integer,)):
+            if isinstance(obj, np.integer):
                 return int(obj)
-            if isinstance(obj, (np.floating,)):
+            if isinstance(obj, np.floating):
                 return float(obj)
             if isinstance(obj, dict):
                 return {k: _convert(v) for k, v in obj.items()}
@@ -103,7 +106,7 @@ class BaseBenchmark(ABC):
             "|--------|-------|",
         ]
         for k, v in results.items():
-            if isinstance(v, (list, np.ndarray)):
+            if isinstance(v, list | np.ndarray):
                 continue
             if isinstance(v, float):
                 lines.append(f"| {k} | {v:.4f} |")

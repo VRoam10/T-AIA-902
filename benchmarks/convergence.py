@@ -130,10 +130,20 @@ class ConvergenceBenchmark(BaseBenchmark):
         ax.plot(eps, rewards, alpha=0.2, color="steelblue", label="Reward")
         if rolling_avgs:
             ra_eps = range(window, window + len(rolling_avgs))
-            ax.plot(ra_eps, rolling_avgs, color="navy", linewidth=1.5, label=f"Rolling avg ({window})")
-        ax.axhline(y=threshold, color="red", linestyle="--", alpha=0.7, label=f"Threshold ({threshold})")
+            ax.plot(
+                ra_eps, rolling_avgs, color="navy", linewidth=1.5, label=f"Rolling avg ({window})"
+            )
+        ax.axhline(
+            y=threshold, color="red", linestyle="--", alpha=0.7, label=f"Threshold ({threshold})"
+        )
         if convergence_ep:
-            ax.axvline(x=convergence_ep, color="green", linestyle="--", alpha=0.7, label=f"Converged (ep {convergence_ep})")
+            ax.axvline(
+                x=convergence_ep,
+                color="green",
+                linestyle="--",
+                alpha=0.7,
+                label=f"Converged (ep {convergence_ep})",
+            )
         ax.set_xlabel("Episode")
         ax.set_ylabel("Reward")
         ax.set_title("Reward Curve")
@@ -146,7 +156,13 @@ class ConvergenceBenchmark(BaseBenchmark):
         step_window = min(50, len(steps))
         if len(steps) >= step_window:
             roll = np.convolve(steps, np.ones(step_window) / step_window, mode="valid")
-            ax.plot(range(step_window, len(steps) + 1), roll, color="darkorange", linewidth=1.5, label=f"Rolling avg ({step_window})")
+            ax.plot(
+                range(step_window, len(steps) + 1),
+                roll,
+                color="darkorange",
+                linewidth=1.5,
+                label=f"Rolling avg ({step_window})",
+            )
         ax.set_xlabel("Episode")
         ax.set_ylabel("Steps")
         ax.set_title("Steps per Episode")
@@ -156,8 +172,15 @@ class ConvergenceBenchmark(BaseBenchmark):
         # 1c. Reward distribution histogram
         ax = axes[1, 0]
         ax.hist(rewards, bins=50, color="steelblue", alpha=0.7, edgecolor="navy")
-        ax.axvline(x=np.mean(rewards), color="red", linestyle="--", label=f"Mean ({np.mean(rewards):.1f})")
-        ax.axvline(x=np.median(rewards), color="green", linestyle="--", label=f"Median ({np.median(rewards):.1f})")
+        ax.axvline(
+            x=np.mean(rewards), color="red", linestyle="--", label=f"Mean ({np.mean(rewards):.1f})"
+        )
+        ax.axvline(
+            x=np.median(rewards),
+            color="green",
+            linestyle="--",
+            label=f"Median ({np.median(rewards):.1f})",
+        )
         ax.set_xlabel("Reward")
         ax.set_ylabel("Frequency")
         ax.set_title("Reward Distribution")
@@ -174,7 +197,7 @@ class ConvergenceBenchmark(BaseBenchmark):
             start = i * seg_size
             end = start + seg_size if i < n_segments - 1 else len(rewards)
             segments.append(rewards[start:end])
-            labels.append(f"Ep {start+1}-{end}")
+            labels.append(f"Ep {start + 1}-{end}")
         ax.boxplot(segments, labels=labels)
         ax.set_ylabel("Reward")
         ax.set_title("Reward by Training Phase")
@@ -201,7 +224,7 @@ class ConvergenceBenchmark(BaseBenchmark):
         block_size = max(1, len(rewards) // 20)
         if block_size > 0 and len(rewards) >= block_size:
             n_blocks = len(rewards) // block_size
-            blocked = np.array(rewards[:n_blocks * block_size]).reshape(n_blocks, block_size)
+            blocked = np.array(rewards[: n_blocks * block_size]).reshape(n_blocks, block_size)
             fig, ax = plt.subplots(figsize=(12, 4))
             im = ax.imshow(blocked.T, aspect="auto", cmap="RdYlGn", interpolation="nearest")
             ax.set_xlabel("Block")
@@ -265,22 +288,25 @@ class ConvergenceBenchmark(BaseBenchmark):
         ]
 
         import json
+
         lines.append(json.dumps(results.get("agent_config", {}), indent=2))
-        lines.extend([
-            "```",
-            "",
-            "## Plots",
-            "",
-            "### Training Overview",
-            "![Overview](overview.png)",
-            "",
-            "### Cumulative Reward",
-            "![Cumulative](cumulative_reward.png)",
-            "",
-            "### Reward Heatmap",
-            "![Heatmap](reward_heatmap.png)",
-            "",
-        ])
+        lines.extend(
+            [
+                "```",
+                "",
+                "## Plots",
+                "",
+                "### Training Overview",
+                "![Overview](overview.png)",
+                "",
+                "### Cumulative Reward",
+                "![Cumulative](cumulative_reward.png)",
+                "",
+                "### Reward Heatmap",
+                "![Heatmap](reward_heatmap.png)",
+                "",
+            ]
+        )
 
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
