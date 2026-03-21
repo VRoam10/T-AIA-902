@@ -5,3 +5,5 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+        args: [--check]
+        pass_filenames: false
