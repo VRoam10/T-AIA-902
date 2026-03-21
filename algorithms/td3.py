@@ -271,5 +271,5 @@ class TD3Agent(BaseAgent):
         return critic_loss.item()
 
     def _soft_update(self, source: nn.Module, target: nn.Module):
-        for param, target_param in zip(source.parameters(), target.parameters()):
+        for param, target_param in zip(source.parameters(), target.parameters(), strict=True):
             target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
