@@ -55,10 +55,11 @@ def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
     defaults = dict(algo_info["default_config"])
     meta = env_info["metadata"]
 
-    # Inject n_states / n_actions from env metadata (don't override if algo defines its own)
+    # Inject environment metadata into agent constructor params
     defaults["n_states"] = meta.get("n_states", 5)
     if "n_actions" not in defaults:
         defaults["n_actions"] = meta.get("n_actions", 6)
+    defaults["state_type"] = meta.get("state_type", "continuous")
 
     if not prompt_params:
         return cls(**defaults)
@@ -66,7 +67,7 @@ def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
     print("\nHyperparameters (press Enter for default):")
     params = {}
     for key, default_val in defaults.items():
-        if key in ("n_states", "n_actions"):
+        if key in ("n_states", "n_actions", "state_type"):
             params[key] = default_val
             continue
         if isinstance(default_val, int):

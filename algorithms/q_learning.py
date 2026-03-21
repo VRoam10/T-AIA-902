@@ -10,6 +10,7 @@ class QLearningAgent(BaseAgent):
         self,
         n_states: int,
         n_actions: int,
+        state_type: str = "discrete",
         learning_rate: float = 0.1,
         discount_factor: float = 0.99,
         epsilon: float = 1.0,

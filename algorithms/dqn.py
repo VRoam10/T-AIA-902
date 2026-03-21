@@ -60,6 +60,7 @@ class DQNAgent(BaseAgent):
         self,
         n_states: int,
         n_actions: int,
+        state_type: str = "continuous",
         lr: float = 1e-3,
         gamma: float = 0.99,
         epsilon: float = 1.0,
