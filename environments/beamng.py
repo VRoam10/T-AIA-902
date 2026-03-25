@@ -225,7 +225,7 @@ class BeamNGDrivingEnv:
             model="burnside",
             licence="Taxi",
             color="Yellow",
-            # part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc",
+            part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc",
         )
         self.electrics = Electrics()
         self.damage_sensor = Damage()
@@ -247,7 +247,7 @@ class BeamNGDrivingEnv:
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
-        time.sleep(3.0)  # let the game settle before polling
+        time.sleep(1.0)  # let the game settle before polling
 
         # Lidar must be created after the scenario starts (it communicates with the sim directly)
         if self.lidar is not None:
@@ -260,7 +260,7 @@ class BeamNGDrivingEnv:
             dir=(0, -1, 0),
             up=(0, 0, 1),
             vertical_resolution=16,
-            vertical_angle=26.9,
+            vertical_angle=10,
             horizontal_angle=self.LIDAR_FOV_DEG,
             max_distance=self.LIDAR_MAX_DIST,
             is_360_mode=False,
