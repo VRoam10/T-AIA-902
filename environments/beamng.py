@@ -119,8 +119,8 @@ class BeamNGDrivingEnv:
         self._checkpoint_hit = False
 
         # Hold still for a moment so physics settle
-        self.vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
-        self.bng.step(20)
+        self.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
+        self.bng.step(5)
 
         return self._observe()
 
