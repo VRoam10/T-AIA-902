@@ -50,8 +50,8 @@ class BeamNGDrivingEnv:
     # Base waypoints tracing a loop around the automation test track start/finish straight.
     # Random offsets are applied on each scenario load via _randomize_waypoints().
     BASE_WAYPOINTS = [
-        (61.0, -744.0, 100.0),
-        (102.0, -734.0, 100.0),
+        (61.0, -755.0, 100.0),
+        (90.0, -734.0, 100.0),
         (116.0, -612.0, 100.0),
     ]
 
@@ -119,8 +119,8 @@ class BeamNGDrivingEnv:
         self._checkpoint_hit = False
 
         # Hold still for a moment so physics settle
-        self.vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
-        self.bng.step(20)
+        self.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
+        self.bng.step(5)
 
         return self._observe()
 
@@ -163,7 +163,26 @@ class BeamNGDrivingEnv:
 
         # Release the sim from step-mode so it runs freely in real-time.
         self.bng.resume()
-        print("[BeamNGDrivingEnv] Human control active — drive in-game.")
+        print("[BeamNGDrivingEnv] Human control active — drive in-game. Press Ctrl+C to stop.")
+
+        try:
+            while True:
+                self.vehicle.poll_sensors()
+                state = self.vehicle.state or {}
+                pos = state.get("pos", (0.0, 0.0, 0.0))
+                vel = state.get("vel", (1.0, 0.0, 0.0))
+                dir_vec = state.get("dir", vel)
+                vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
+
+                lidar_data = (
+                    self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None
+                )
+                lidar_bins = self._process_lidar(lidar_data, pos, vehicle_heading)
+                print(f"[LiDAR bins] {' '.join(f'{v:.2f}' for v in lidar_bins)}")
+
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("[BeamNGDrivingEnv] Human play stopped.")
 
     def close(self):
         """Shut down the BeamNG connection."""
@@ -228,7 +247,7 @@ class BeamNGDrivingEnv:
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
-        time.sleep(3.0)  # let the game settle before polling
+        time.sleep(1.0)  # let the game settle before polling
 
         # Lidar must be created after the scenario starts (it communicates with the sim directly)
         if self.lidar is not None:
@@ -241,13 +260,13 @@ class BeamNGDrivingEnv:
             dir=(0, -1, 0),
             up=(0, 0, 1),
             vertical_resolution=16,
-            vertical_angle=26.9,
+            vertical_angle=10,
             horizontal_angle=self.LIDAR_FOV_DEG,
             max_distance=self.LIDAR_MAX_DIST,
             is_360_mode=False,
             is_rotate_mode=False,
             is_using_shared_memory=False,
-            is_visualised=False,
+            is_visualised=True,
         )
 
         # Draw the initial active-waypoint marker
@@ -267,7 +286,8 @@ class BeamNGDrivingEnv:
         state = self.vehicle.state or {}
         pos = state.get("pos", (0.0, 0.0, 0.0))
         vel = state.get("vel", (1.0, 0.0, 0.0))
-        vehicle_heading = float(np.arctan2(vel[1], vel[0]))
+        dir_vec = state.get("dir", vel)
+        vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
         heading_err, lateral_err = self._path_errors(pos, state)
 
@@ -415,7 +435,7 @@ class BeamNGDrivingEnv:
 
         # Checkpoint bonus
         if self._checkpoint_hit:
-            reward += 50.0 * self._waypoint_idx
+            reward += 100.0 * self._waypoint_idx
             self._checkpoint_hit = False
 
         # Lap completion bonus
@@ -425,7 +445,6 @@ class BeamNGDrivingEnv:
             done = True
 
         if self._out_of_bounds:
-            reward -= 200.0
             done = True
 
         return float(reward), done
