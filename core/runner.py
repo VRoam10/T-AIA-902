@@ -20,13 +20,16 @@ class PipelineRunner:
         save_every: int = 50,
         time_limit: float = None,
         plot_path: str = None,
+        start_episode: int = 0,
     ) -> dict:
         """Run the training loop. Returns history dict."""
         rewards = []
         steps = []
         start = time.time()
 
-        pbar = tqdm(range(1, n_episodes + 1), desc="Training", unit="ep")
+        ep_begin = start_episode + 1
+        ep_end = start_episode + n_episodes + 1
+        pbar = tqdm(range(ep_begin, ep_end), desc="Training", unit="ep")
 
         try:
             for ep in pbar:
@@ -49,6 +52,8 @@ class PipelineRunner:
                     ep_reward += reward
 
                 agent.decay_epsilon()
+                if hasattr(agent, "episode"):
+                    agent.episode = ep
                 rewards.append(ep_reward)
                 ep_steps = info.get("steps", 0) if isinstance(info, dict) else 0
                 steps.append(ep_steps)
