@@ -173,10 +173,14 @@ class BeamNGDrivingEnv:
             brake = ctrl["brake"]
         else:
             action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
-            # Remap accel from [-1, 1] to throttle [0, 1], no braking
-            throttle = (float(action[0]) + 1.0) / 2.0
+            accel = float(action[0])
             steering = float(action[1])
-            brake = 0.0
+            if accel >= 0:
+                throttle = accel
+                brake = 0.0
+            else:
+                throttle = 0.0
+                brake = -accel
 
         self.vehicle.control(
             throttle=throttle,
@@ -294,6 +298,12 @@ class BeamNGDrivingEnv:
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
         time.sleep(1.0)  # let the game settle before polling
+
+        # Force realistic_automatic so brake = brake only, never auto-reverse.
+        # See: https://github.com/BeamNG/BeamNGpy/issues/1
+        self.vehicle.queue_lua_command(
+            'controller.getController("shiftLogic").setGearboxMode("realistic_automatic")'
+        )
 
         # Lidar must be created after the scenario starts (it communicates with the sim directly)
         if self.lidar is not None:
