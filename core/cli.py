@@ -138,7 +138,9 @@ def _train_menu():
 
     total = start_episode + n_episodes
     runner = PipelineRunner()
-    print(f"\n--- Training {algo_name} on {env_name} (episodes {start_episode + 1} -> {total}) ---\n")
+    print(
+        f"\n--- Training {algo_name} on {env_name} (episodes {start_episode + 1} -> {total}) ---\n"
+    )
     runner.train(
         agent,
         env,
