@@ -55,12 +55,8 @@ class BeamNGDrivingEnv:
         (116.0, -612.0, 100.0),
     ]
 
-    BOUNDARY = {
-        "minx": -100.0,
-        "maxx": 200.0,
-        "miny": -800.0,
-        "maxy": -600.0,
-    }
+    CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
+    CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
 
     SPAWN_POS = (61.0, -788.0, 101.0)
     SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)
@@ -100,7 +96,8 @@ class BeamNGDrivingEnv:
         self._steps = 0
         self._active_marker_id: str | None = None
         self.waypoints = list(self.BASE_WAYPOINTS)
-        self._out_of_bounds = False
+        self._current_pos = self.SPAWN_POS
+        self._checkpoint_dist = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -297,7 +294,10 @@ class BeamNGDrivingEnv:
             vehicle_heading,
         )
 
-        self._is_out_of_bounds(pos)
+        self._current_pos = pos
+        if self.waypoints:
+            target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
+            self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
         obs = np.concatenate(
             [
@@ -369,12 +369,6 @@ class BeamNGDrivingEnv:
         )
         return distances
 
-    def _is_out_of_bounds(self, pos):
-        """Check if the vehicle is outside the defined boundary."""
-        x, y, _ = pos
-        b = self.BOUNDARY
-        self._out_of_bounds = not (b["minx"] <= x <= b["maxx"] and b["miny"] <= y <= b["maxy"])
-
     def _path_errors(self, pos, state):
         """Return (heading_error_rad, lateral_error_m) relative to next waypoint."""
         if not self.waypoints or not state:
@@ -444,8 +438,24 @@ class BeamNGDrivingEnv:
             self._waypoint_idx = 0
             done = True
 
-        if self._out_of_bounds:
-            done = True
+        # Distance-from-checkpoint penalty
+        dist = self._checkpoint_dist
+        if dist >= self.CHECKPOINT_RESET_DIST:
+            # Too far from checkpoint: big malus and teleport back to spawn
+            reward -= 100.0
+            self.vehicle.teleport(self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
+            self.bng.step(5)
+            self._waypoint_idx = 0
+            self._checkpoint_dist = 0.0
+            self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — respawned')")
+        elif dist >= self.CHECKPOINT_WARN_DIST:
+            # Getting off track: proportional penalty
+            reward -= (
+                (dist - self.CHECKPOINT_WARN_DIST)
+                / (self.CHECKPOINT_RESET_DIST - self.CHECKPOINT_WARN_DIST)
+                * 10.0
+            )
+            self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — minus')")
 
         return float(reward), done
 
