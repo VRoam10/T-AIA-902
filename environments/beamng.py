@@ -73,7 +73,7 @@ class BeamNGDrivingEnv:
         beamng_home: str,
         beamng_user: str = None,
         host: str = "localhost",
-        port: int = 64256,
+        port: int = 25252,
     ):
         """
         Args:
@@ -111,7 +111,7 @@ class BeamNGDrivingEnv:
         if self.bng is None:
             self._launch()
         else:
-            self._load_scenario()
+            self.bng.scenario.restart()
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
@@ -245,6 +245,67 @@ class BeamNGDrivingEnv:
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
+        self.bng.load_scenario(self.scenario)
+        self.bng.start_scenario()
+        time.sleep(1.0)  # let the game settle before polling
+
+        # Lidar must be created after the scenario starts (it communicates with the sim directly)
+        if self.lidar is not None:
+            self.lidar.remove()
+        self.lidar = Lidar(
+            "lidar",
+            self.bng,
+            self.vehicle,
+            pos=(0, 0, 1.7),
+            dir=(0, -1, 0),
+            up=(0, 0, 1),
+            vertical_resolution=16,
+            vertical_angle=10,
+            horizontal_angle=self.LIDAR_FOV_DEG,
+            max_distance=self.LIDAR_MAX_DIST,
+            is_360_mode=False,
+            is_rotate_mode=False,
+            is_using_shared_memory=False,
+            is_visualised=True,
+        )
+
+        # Draw the initial active-waypoint marker
+        self._update_active_marker(1)
+
+    def _reset_scenario(self):
+        self._randomize_waypoints()
+        self.scenario = Scenario(
+            "gridmap_v2",
+            "rl_driving",
+            description="RL Training Scenario",
+        )
+
+        self.vehicle = Vehicle(
+            "ego_vehicle",
+            model="burnside",
+            licence="Taxi",
+            color="Yellow",
+            part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc",
+        )
+        self.electrics = Electrics()
+        self.damage_sensor = Damage()
+        self.vehicle.attach_sensor("electrics", self.electrics)
+        self.vehicle.attach_sensor("damage", self.damage_sensor)
+
+        self.scenario.add_vehicle(
+            self.vehicle,
+            pos=self.SPAWN_POS,
+            rot_quat=self.SPAWN_ROT,
+        )
+
+        # Add visual checkpoint rings for every waypoint (visible in-game as hoops).
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        # Current API: add_checkpoints(positions, scales)
+        self.scenario.add_checkpoints(self.waypoints, scales)
+
+        self.scenario.make(self.bng)
+        self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
+        # self.bng.scenario.restart()
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
         time.sleep(1.0)  # let the game settle before polling
