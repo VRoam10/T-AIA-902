@@ -151,9 +151,9 @@ class BeamNGDrivingEnv:
         inside BeamNG as normal.
         """
         if self.bng is None:
-            self._launch()
+            self._launch(human_control=True)
         else:
-            self._load_scenario()
+            self._load_scenario(human_control=True)
 
         self._waypoint_idx = 0
         self._update_active_marker(1)
@@ -195,7 +195,7 @@ class BeamNGDrivingEnv:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _launch(self):
+    def _launch(self, human_control=False):
         """Start BeamNG.drive and load the scenario for the first time."""
         self.bng = BeamNGpy(
             self.host,
@@ -204,12 +204,12 @@ class BeamNGDrivingEnv:
             user=self.beamng_user,
         )
         self.bng.open(launch=True)
-        self._load_scenario()
+        self._load_scenario(human_control=human_control)
 
     def _randomize_waypoints(self):
         self.waypoints = random.sample(self.BASE_WAYPOINTS, len(self.BASE_WAYPOINTS))
 
-    def _load_scenario(self):
+    def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
         self.scenario = Scenario(
             "gridmap_v2",
@@ -235,10 +235,10 @@ class BeamNGDrivingEnv:
             rot_quat=self.SPAWN_ROT,
         )
 
-        # Add visual checkpoint rings for every waypoint (visible in-game as hoops).
-        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-        # Current API: add_checkpoints(positions, scales)
-        self.scenario.add_checkpoints(self.waypoints, scales)
+        # Add visual checkpoint rings for every waypoint only for human control (visible in-game as hoops).
+        if human_control:
+            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+            self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
