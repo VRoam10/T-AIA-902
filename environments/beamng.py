@@ -5,6 +5,13 @@ import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
 from beamngpy.sensors import Damage, Electrics, Lidar
 
+from config import (
+    LOG_CHECKPOINT_HIT,
+    LOG_CHECKPOINT_RESPAWN,
+    LOG_CHECKPOINT_WARN,
+    LOG_LIDAR,
+)
+
 
 class BeamNGDrivingEnv:
     """
@@ -55,17 +62,13 @@ class BeamNGDrivingEnv:
         (116.0, -612.0, 100.0),
     ]
 
-    BOUNDARY = {
-        "minx": -100.0,
-        "maxx": 200.0,
-        "miny": -800.0,
-        "maxy": -600.0,
-    }
+    CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
+    CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
 
     SPAWN_POS = (61.0, -788.0, 101.0)
     SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
-    MAX_STEPS = 400
+    MAX_STEPS = 500
     MAX_DAMAGE = 500.0  # damage threshold that ends the episode
 
     def __init__(
@@ -74,6 +77,7 @@ class BeamNGDrivingEnv:
         beamng_user: str = None,
         host: str = "localhost",
         port: int = 25252,
+        headless: bool = False,
     ):
         """
         Args:
@@ -81,7 +85,7 @@ class BeamNGDrivingEnv:
                          e.g. r'C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive'
             beamng_user: Optional path to BeamNG user folder (where mods/configs live).
             host: BeamNG server host (default localhost).
-            port: BeamNG server port (default 64256).
+            port: BeamNG server port (default 25252).
         """
         self.beamng_home = beamng_home
         self.beamng_user = beamng_user
@@ -100,7 +104,9 @@ class BeamNGDrivingEnv:
         self._steps = 0
         self._active_marker_id: str | None = None
         self.waypoints = list(self.BASE_WAYPOINTS)
-        self._out_of_bounds = False
+        self._current_pos = self.SPAWN_POS
+        self._checkpoint_dist = 0.0
+        self.headless = headless
 
     # ------------------------------------------------------------------
     # Public API
@@ -111,6 +117,7 @@ class BeamNGDrivingEnv:
         if self.bng is None:
             self._launch()
         else:
+            # self._randomize_waypoints()
             self.bng.scenario.restart()
 
         self._waypoint_idx = 0
@@ -154,9 +161,9 @@ class BeamNGDrivingEnv:
         inside BeamNG as normal.
         """
         if self.bng is None:
-            self._launch()
+            self._launch(human_control=True)
         else:
-            self._load_scenario()
+            self._load_scenario(human_control=True)
 
         self._waypoint_idx = 0
         self._update_active_marker(1)
@@ -198,21 +205,22 @@ class BeamNGDrivingEnv:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _launch(self):
+    def _launch(self, human_control=False):
         """Start BeamNG.drive and load the scenario for the first time."""
         self.bng = BeamNGpy(
             self.host,
             self.port,
             home=self.beamng_home,
             user=self.beamng_user,
+            headless=self.headless,
         )
         self.bng.open(launch=True)
-        self._load_scenario()
+        self._load_scenario(human_control=human_control)
 
     def _randomize_waypoints(self):
         self.waypoints = random.sample(self.BASE_WAYPOINTS, len(self.BASE_WAYPOINTS))
 
-    def _load_scenario(self):
+    def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
         self.scenario = Scenario(
             "gridmap_v2",
@@ -238,74 +246,13 @@ class BeamNGDrivingEnv:
             rot_quat=self.SPAWN_ROT,
         )
 
-        # Add visual checkpoint rings for every waypoint (visible in-game as hoops).
-        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-        # Current API: add_checkpoints(positions, scales)
-        self.scenario.add_checkpoints(self.waypoints, scales)
+        # Add visual checkpoint rings for every waypoint only for human control (visible in-game as hoops).
+        if human_control:
+            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+            self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
-        self.bng.load_scenario(self.scenario)
-        self.bng.start_scenario()
-        time.sleep(1.0)  # let the game settle before polling
-
-        # Lidar must be created after the scenario starts (it communicates with the sim directly)
-        if self.lidar is not None:
-            self.lidar.remove()
-        self.lidar = Lidar(
-            "lidar",
-            self.bng,
-            self.vehicle,
-            pos=(0, 0, 1.7),
-            dir=(0, -1, 0),
-            up=(0, 0, 1),
-            vertical_resolution=16,
-            vertical_angle=10,
-            horizontal_angle=self.LIDAR_FOV_DEG,
-            max_distance=self.LIDAR_MAX_DIST,
-            is_360_mode=False,
-            is_rotate_mode=False,
-            is_using_shared_memory=False,
-            is_visualised=True,
-        )
-
-        # Draw the initial active-waypoint marker
-        self._update_active_marker(1)
-
-    def _reset_scenario(self):
-        self._randomize_waypoints()
-        self.scenario = Scenario(
-            "gridmap_v2",
-            "rl_driving",
-            description="RL Training Scenario",
-        )
-
-        self.vehicle = Vehicle(
-            "ego_vehicle",
-            model="burnside",
-            licence="Taxi",
-            color="Yellow",
-            part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc",
-        )
-        self.electrics = Electrics()
-        self.damage_sensor = Damage()
-        self.vehicle.attach_sensor("electrics", self.electrics)
-        self.vehicle.attach_sensor("damage", self.damage_sensor)
-
-        self.scenario.add_vehicle(
-            self.vehicle,
-            pos=self.SPAWN_POS,
-            rot_quat=self.SPAWN_ROT,
-        )
-
-        # Add visual checkpoint rings for every waypoint (visible in-game as hoops).
-        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-        # Current API: add_checkpoints(positions, scales)
-        self.scenario.add_checkpoints(self.waypoints, scales)
-
-        self.scenario.make(self.bng)
-        self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
-        # self.bng.scenario.restart()
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
         time.sleep(1.0)  # let the game settle before polling
@@ -358,7 +305,10 @@ class BeamNGDrivingEnv:
             vehicle_heading,
         )
 
-        self._is_out_of_bounds(pos)
+        self._current_pos = pos
+        if self.waypoints:
+            target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
+            self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
         obs = np.concatenate(
             [
@@ -389,7 +339,8 @@ class BeamNGDrivingEnv:
         distances = np.ones(self.LIDAR_RAYS, dtype=np.float32)  # default: clear
 
         if point_cloud is None or len(point_cloud) == 0:
-            self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
+            if LOG_LIDAR:
+                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
             return distances
 
         pts = np.array(point_cloud, dtype=np.float32).reshape(-1, 3)
@@ -415,7 +366,8 @@ class BeamNGDrivingEnv:
         dists = dists[mask]
 
         if len(angles) == 0:
-            self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
+            if LOG_LIDAR:
+                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
             return distances
 
         bin_edges = np.linspace(-half_fov, half_fov, self.LIDAR_RAYS + 1)
@@ -425,16 +377,11 @@ class BeamNGDrivingEnv:
                 nearest = float(dists[in_bin].min())
                 distances[i] = np.clip(nearest / self.LIDAR_MAX_DIST, 0.0, 1.0)
 
-        self.bng.queue_lua_command(
-            "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
-        )
+        if LOG_LIDAR:
+            self.bng.queue_lua_command(
+                "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
+            )
         return distances
-
-    def _is_out_of_bounds(self, pos):
-        """Check if the vehicle is outside the defined boundary."""
-        x, y, _ = pos
-        b = self.BOUNDARY
-        self._out_of_bounds = not (b["minx"] <= x <= b["maxx"] and b["miny"] <= y <= b["maxy"])
 
     def _path_errors(self, pos, state):
         """Return (heading_error_rad, lateral_error_m) relative to next waypoint."""
@@ -451,7 +398,8 @@ class BeamNGDrivingEnv:
             self._waypoint_idx += 1
             self._checkpoint_hit = True
             self._update_active_marker(self._waypoint_idx)
-            self.bng.queue_lua_command("log('I', 'RL', 'checkpoint hit')")
+            if LOG_CHECKPOINT_HIT:
+                self.bng.queue_lua_command("log('I', 'RL', 'checkpoint hit')")
 
         vel = state.get("vel", (1.0, 0.0, 0.0))
         vehicle_heading = np.arctan2(vel[1], vel[0])
@@ -502,11 +450,25 @@ class BeamNGDrivingEnv:
         # Lap completion bonus
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
-            self._waypoint_idx = 0
             done = True
 
-        if self._out_of_bounds:
+        # Distance-from-checkpoint penalty
+        dist = self._checkpoint_dist
+        if dist >= self.CHECKPOINT_RESET_DIST:
+            # Too far from checkpoint: big malus and teleport back to spawn
+            reward -= 100.0
             done = True
+            if LOG_CHECKPOINT_RESPAWN:
+                self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — respawned')")
+        elif dist >= self.CHECKPOINT_WARN_DIST:
+            # Getting off track: proportional penalty
+            reward -= (
+                (dist - self.CHECKPOINT_WARN_DIST)
+                / (self.CHECKPOINT_RESET_DIST - self.CHECKPOINT_WARN_DIST)
+                * 10.0
+            )
+            if LOG_CHECKPOINT_WARN:
+                self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — minus')")
 
         return float(reward), done
 

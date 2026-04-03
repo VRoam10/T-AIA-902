@@ -11,10 +11,10 @@ registry.register_environment(
 
 
 def _make_beamng():
-    from config import BEAMNG_HOME, BEAMNG_USER
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
     from environments.beamng import BeamNGDrivingEnv
 
-    return BeamNGDrivingEnv(beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER)
+    return BeamNGDrivingEnv(beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS)
 
 
 registry.register_environment(
