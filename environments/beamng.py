@@ -5,12 +5,7 @@ import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
 from beamngpy.sensors import Damage, Electrics, Lidar
 
-from config import (
-    LOG_CHECKPOINT_HIT,
-    LOG_CHECKPOINT_RESPAWN,
-    LOG_CHECKPOINT_WARN,
-    LOG_LIDAR,
-)
+from config import LOG_CHECKPOINT_HIT, LOG_CHECKPOINT_RESPAWN, LOG_CHECKPOINT_WARN, LOG_LIDAR
 
 
 class BeamNGDrivingEnv:
@@ -79,7 +74,7 @@ class BeamNGDrivingEnv:
         (116.0, -620.0, 100.0),
         (116.0, -612.0, 100.0),
     ]
-    
+
     CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
     CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
 
@@ -125,7 +120,7 @@ class BeamNGDrivingEnv:
         self._last_dist = 0.0
         self._steps = 0
         self._active_marker_id: str | None = None
-        self.waypoints = list(self.BASE_WAYPOINTS)
+        self.waypoints = list(self.DEFAULT_WAYPOINTS)
         self._current_pos = self.SPAWN_POS
         self._checkpoint_dist = 0.0
         self.headless = headless
@@ -269,7 +264,7 @@ class BeamNGDrivingEnv:
         self._load_scenario(human_control=human_control)
 
     def _randomize_waypoints(self):
-        self.waypoints = random.sample(self.BASE_WAYPOINTS, len(self.BASE_WAYPOINTS))
+        self.waypoints = random.sample(self.DEFAULT_WAYPOINTS, len(self.DEFAULT_WAYPOINTS))
 
     def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
@@ -606,11 +601,6 @@ class BeamNGDrivingEnv:
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             self._waypoint_idx = 0
-            done = True
-
-        # 10. Out of bounds
-        if self._out_of_bounds:
-            reward -= 30.0
             done = True
 
         return float(reward), done
