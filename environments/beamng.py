@@ -482,15 +482,6 @@ class BeamNGDrivingEnv:
         done = False
         reward = 0.0
 
-        # 1. Speed toward waypoint: alignment [-1,1] * speed → strong directional signal
-        reward += speed * alignment * 5.0
-
-        # 2. Penalise bad heading (facing away from waypoint)
-        reward -= (1.0 - alignment) * 1.0
-
-        # 3. Penalise being far from waypoint
-        reward -= dist_norm * 0.5
-
         # 4. Penalise being stationary — the agent must move
         if speed < 0.05:
             reward -= 2.0
