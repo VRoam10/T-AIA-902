@@ -3,19 +3,22 @@ import time
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
-from beamngpy.sensors import Damage, Electrics
+from beamngpy.sensors import Damage, Electrics, Lidar
+
+from config import LOG_CHECKPOINT_HIT, LOG_CHECKPOINT_RESPAWN, LOG_CHECKPOINT_WARN, LOG_LIDAR
 
 
 class BeamNGDrivingEnv:
     """
     Gymnasium-style environment wrapping BeamNG.drive via beamngpy.
 
-    State  (5 floats, all normalized to ~[-1, 1]):
+    State  (5 + LIDAR_RAYS floats, all normalized to ~[-1, 1] or [0, 1]):
         speed          - wheel speed normalized to 50 m/s
         steering       - current steering angle (-1 to 1)
         heading_error  - angle between vehicle heading and next waypoint direction
         lateral_error  - perpendicular distance from path (normalized to 5 m)
         damage         - cumulative vehicle damage (normalized)
+        lidar[0..N-1]  - nearest obstacle distance in each angular bin (0 = close, 1 = clear)
 
     Actions (discrete, 7):
         0 - idle / coast
@@ -38,20 +41,47 @@ class BeamNGDrivingEnv:
     ]
 
     N_ACTIONS = len(ACTIONS)
-    N_STATES = 7
 
-    # Base waypoints tracing a loop around the automation test track start/finish straight.
-    # Random offsets are applied on each scenario load via _randomize_waypoints().
-    BASE_WAYPOINTS = [
-        (61.0, -744.0, 100.0),
-        (102.0, -734.0, 100.0),
+    # LiDAR configuration
+    LIDAR_RAYS = 8  # number of angular bins
+    LIDAR_FOV_DEG = 120.0  # total forward-facing field of view in degrees
+    LIDAR_MAX_DIST = 50.0  # metres — normalization range
+
+    N_STATES = 5 + LIDAR_RAYS  # 5 kinematic + 8 lidar = 13
+
+    # Original sparse waypoints (for discrete-action algos: DQN, Q-learning)
+    DEFAULT_WAYPOINTS = [
+        (61.0, -755.0, 100.0),
+        (90.0, -734.0, 100.0),
         (116.0, -612.0, 100.0),
     ]
+
+    # Dense waypoints for continuous-action algos (DDPG, TD3)
+    DDPG_WAYPOINTS = [
+        (61.0, -773.0, 100.0),
+        (63.0, -758.0, 100.0),
+        (67.0, -745.0, 100.0),
+        (73.0, -738.0, 100.0),
+        (81.0, -734.0, 100.0),
+        (90.0, -734.0, 100.0),
+        (100.0, -734.0, 100.0),
+        (110.0, -730.0, 100.0),
+        (116.0, -720.0, 100.0),
+        (116.0, -700.0, 100.0),
+        (116.0, -680.0, 100.0),
+        (116.0, -660.0, 100.0),
+        (116.0, -640.0, 100.0),
+        (116.0, -620.0, 100.0),
+        (116.0, -612.0, 100.0),
+    ]
+
+    CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
+    CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
 
     SPAWN_POS = (61.0, -788.0, 101.0)
     SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
-    MAX_STEPS = 400
+    MAX_STEPS = 500
     MAX_DAMAGE = 500.0  # damage threshold that ends the episode
 
     def __init__(
@@ -59,7 +89,9 @@ class BeamNGDrivingEnv:
         beamng_home: str,
         beamng_user: str = None,
         host: str = "localhost",
-        port: int = 64256,
+        port: int = 25252,
+        headless: bool = False,
+        reward_mode: str = "default",
     ):
         """
         Args:
@@ -67,7 +99,7 @@ class BeamNGDrivingEnv:
                          e.g. r'C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive'
             beamng_user: Optional path to BeamNG user folder (where mods/configs live).
             host: BeamNG server host (default localhost).
-            port: BeamNG server port (default 64256).
+            port: BeamNG server port (default 25252).
         """
         self.beamng_home = beamng_home
         self.beamng_user = beamng_user
@@ -79,12 +111,24 @@ class BeamNGDrivingEnv:
         self.scenario: Scenario = None
         self.electrics: Electrics = None
         self.damage_sensor: Damage = None
+        self.lidar: Lidar = None
+
+        self.reward_mode = reward_mode  # "default" or "ddpg"
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
+        self._last_dist = 0.0
         self._steps = 0
         self._active_marker_id: str | None = None
-        self.waypoints = list(self.BASE_WAYPOINTS)
+        self.waypoints = list(self.DEFAULT_WAYPOINTS)
+        self._current_pos = self.SPAWN_POS
+        self._checkpoint_dist = 0.0
+        self.headless = headless
+
+        if self.reward_mode in ("ddpg", "td3"):
+            self.waypoints = list(self.DDPG_WAYPOINTS)
+        else:
+            self.waypoints = list(self.DEFAULT_WAYPOINTS)
 
     # ------------------------------------------------------------------
     # Public API
@@ -95,27 +139,37 @@ class BeamNGDrivingEnv:
         if self.bng is None:
             self._launch()
         else:
-            self._load_scenario()
+            # self._randomize_waypoints()
+            self.bng.scenario.restart()
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
+        self._last_dist = 0.0
         self._steps = 0
         self._checkpoint_hit = False
 
         # Hold still for a moment so physics settle
-        self.vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
-        self.bng.step(20)
+        self.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
+        self.bng.step(5)
 
-        return self._observe()
+        obs = self._observe()
+        # Initialize last_dist after first observe so progress reward starts at 0
+        self._last_dist = self._current_dist
+        return obs
 
     def step(self, action):
         """
-        Apply a discrete action and advance the simulation.
+        Apply an action and advance the simulation.
+
+        Accepts either:
+          - int: discrete action index (from ACTIONS table)
+          - np.ndarray of shape (2,): continuous [accel, steering] in [-1, 1]
+            where accel >= 0 -> throttle, accel < 0 -> brake
 
         Returns:
             obs (np.ndarray), reward (float), done (bool), info (dict)
         """
-        if isinstance(action, int | np.integer):
+        if isinstance(action, (int, np.integer)):
             ctrl = self.ACTIONS[action]
             throttle = ctrl["throttle"]
             steering = ctrl["steering"]
@@ -153,20 +207,42 @@ class BeamNGDrivingEnv:
         inside BeamNG as normal.
         """
         if self.bng is None:
-            self._launch()
+            self._launch(human_control=True)
         else:
-            self._load_scenario()
+            self._load_scenario(human_control=True)
 
         self._waypoint_idx = 0
         self._update_active_marker(1)
 
         # Release the sim from step-mode so it runs freely in real-time.
         self.bng.resume()
-        print("[BeamNGDrivingEnv] Human control active — drive in-game.")
+        print("[BeamNGDrivingEnv] Human control active — drive in-game. Press Ctrl+C to stop.")
+
+        try:
+            while True:
+                self.vehicle.poll_sensors()
+                state = self.vehicle.state or {}
+                pos = state.get("pos", (0.0, 0.0, 0.0))
+                vel = state.get("vel", (1.0, 0.0, 0.0))
+                dir_vec = state.get("dir", vel)
+                vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
+
+                lidar_data = (
+                    self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None
+                )
+                lidar_bins = self._process_lidar(lidar_data, pos, vehicle_heading)
+                print(f"[LiDAR bins] {' '.join(f'{v:.2f}' for v in lidar_bins)}")
+
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("[BeamNGDrivingEnv] Human play stopped.")
 
     def close(self):
         """Shut down the BeamNG connection."""
         if self.bng is not None:
+            if self.lidar is not None:
+                self.lidar.remove()
+                self.lidar = None
             self.bng.close()
             self.bng = None
             self.vehicle = None
@@ -175,24 +251,22 @@ class BeamNGDrivingEnv:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _launch(self):
+    def _launch(self, human_control=False):
         """Start BeamNG.drive and load the scenario for the first time."""
         self.bng = BeamNGpy(
             self.host,
             self.port,
             home=self.beamng_home,
             user=self.beamng_user,
+            headless=self.headless,
         )
         self.bng.open(launch=True)
-        self._load_scenario()
+        self._load_scenario(human_control=human_control)
 
     def _randomize_waypoints(self):
-        self.waypoints = [
-            (x + random.randint(-10, 10), y + random.randint(-10, 10), z)
-            for x, y, z in self.BASE_WAYPOINTS
-        ]
+        self.waypoints = random.sample(self.DEFAULT_WAYPOINTS, len(self.DEFAULT_WAYPOINTS))
 
-    def _load_scenario(self):
+    def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
         self.scenario = Scenario(
             "gridmap_v2",
@@ -218,24 +292,45 @@ class BeamNGDrivingEnv:
             rot_quat=self.SPAWN_ROT,
         )
 
-        # Add visual checkpoint rings for every waypoint (visible in-game as hoops).
-        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-        # Current API: add_checkpoints(positions, scales)
-        self.scenario.add_checkpoints(self.waypoints, scales)
+        # Add visual checkpoint rings for every waypoint only for human control (visible in-game as hoops).
+        if human_control:
+            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+            self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
-        time.sleep(3.0)  # let the game settle before polling
+        time.sleep(1.0)  # let the game settle before polling
+
+        # Force realistic_automatic so brake = brake only, never auto-reverse.
+        # See: https://github.com/BeamNG/BeamNGpy/issues/1
+        self.vehicle.queue_lua_command(
+            'controller.getController("shiftLogic").setGearboxMode("realistic_automatic")'
+        )
+
+        # Lidar must be created after the scenario starts (it communicates with the sim directly)
+        if self.lidar is not None:
+            self.lidar.remove()
+        self.lidar = Lidar(
+            "lidar",
+            self.bng,
+            self.vehicle,
+            pos=(0, 0, 1.7),
+            dir=(0, -1, 0),
+            up=(0, 0, 1),
+            vertical_resolution=16,
+            vertical_angle=10,
+            horizontal_angle=self.LIDAR_FOV_DEG,
+            max_distance=self.LIDAR_MAX_DIST,
+            is_360_mode=False,
+            is_rotate_mode=False,
+            is_using_shared_memory=False,
+            is_visualised=True,
+        )
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(1)
-
-    def _respawn(self):
-        """Teleport the vehicle back to the start without reloading the scenario."""
-        self.vehicle.teleport(pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
-        time.sleep(0.3)
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return a normalized state vector (7 floats)."""
@@ -250,40 +345,121 @@ class BeamNGDrivingEnv:
 
         state = self.vehicle.state or {}
         pos = state.get("pos", (0.0, 0.0, 0.0))
+        vel = state.get("vel", (1.0, 0.0, 0.0))
+        dir_vec = state.get("dir", vel)
+        vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
         heading_err, lateral_err, dist = self._path_errors(pos, state)
 
-        obs = np.array(
+        lidar_bins = self._process_lidar(
+            self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None,
+            pos,
+            vehicle_heading,
+        )
+
+        self._current_pos = pos
+        if self.waypoints:
+            target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
+            self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
+
+        obs = np.concatenate(
             [
-                np.clip(speed / 50.0, -1.0, 1.0),
-                np.clip(steering, -1.0, 1.0),
-                np.clip(heading_err / np.pi, -1.0, 1.0),
-                np.clip(lateral_err / 20.0, -1.0, 1.0),
-                np.clip(damage / 1000.0, 0.0, 1.0),
-                np.clip(dist / 150.0, 0.0, 1.0),  # distance to waypoint
-                np.cos(heading_err),  # alignment signal
-            ],
-            dtype=np.float32,
+                np.array(
+                    [
+                        np.clip(speed / 50.0, -1.0, 1.0),
+                        np.clip(steering, -1.0, 1.0),
+                        np.clip(heading_err / np.pi, -1.0, 1.0),
+                        np.clip(lateral_err / 5.0, -1.0, 1.0),
+                        np.clip(damage / 1000.0, 0.0, 1.0),
+                    ],
+                    dtype=np.float32,
+                ),
+                lidar_bins,
+            ]
         )
 
         return obs
 
+    def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
+        """Bin a raw LiDAR point cloud into LIDAR_RAYS angular distance slices.
+
+        Points are in world space and are transformed to vehicle-local coordinates
+        using the vehicle's position and heading before binning.
+        Returns a float32 array of shape (LIDAR_RAYS,) with values in [0, 1],
+        where 0 means an obstacle is right there and 1 means the bin is clear.
+        """
+        distances = np.ones(self.LIDAR_RAYS, dtype=np.float32)  # default: clear
+
+        if point_cloud is None or len(point_cloud) == 0:
+            if LOG_LIDAR:
+                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
+            return distances
+
+        pts = np.array(point_cloud, dtype=np.float32).reshape(-1, 3)
+
+        # Translate: move points relative to vehicle position
+        rel_x = pts[:, 0] - vehicle_pos[0]
+        rel_y = pts[:, 1] - vehicle_pos[1]
+
+        # Rotate: transform into vehicle-local frame (x=forward, y=left)
+        cos_h = np.cos(-vehicle_heading)
+        sin_h = np.sin(-vehicle_heading)
+        local_x = rel_x * cos_h - rel_y * sin_h
+        local_y = rel_x * sin_h + rel_y * cos_h
+
+        # Work in the horizontal (XY) plane only
+        angles = np.arctan2(local_y, local_x)
+        dists = np.hypot(local_x, local_y)
+
+        # Keep only points within the forward FOV
+        half_fov = np.radians(self.LIDAR_FOV_DEG / 2.0)
+        mask = np.abs(angles) <= half_fov
+        angles = angles[mask]
+        dists = dists[mask]
+
+        if len(angles) == 0:
+            if LOG_LIDAR:
+                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
+            return distances
+
+        bin_edges = np.linspace(-half_fov, half_fov, self.LIDAR_RAYS + 1)
+        for i in range(self.LIDAR_RAYS):
+            in_bin = (angles >= bin_edges[i]) & (angles < bin_edges[i + 1])
+            if in_bin.any():
+                nearest = float(dists[in_bin].min())
+                distances[i] = np.clip(nearest / self.LIDAR_MAX_DIST, 0.0, 1.0)
+
+        if LOG_LIDAR:
+            self.bng.queue_lua_command(
+                "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
+            )
+        return distances
+
     def _path_errors(self, pos, state):
-        """Return (heading_error_rad, lateral_error_m, distance_m) relative to next waypoint."""
+        """Return (heading_error_rad, lateral_error_m) relative to next waypoint.
+
+        Also stores self._current_dist for progress reward computation.
+        """
         if not self.waypoints or not state:
-            return 0.0, 0.0, 0.0
+            self._current_dist = 0.0
+            return 0.0, 0.0
 
         target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
         dx = target[0] - pos[0]
         dy = target[1] - pos[1]
         dist = float(np.hypot(dx, dy))
+        self._current_dist = dist
 
         # Advance waypoint when close enough
         if dist < self.WAYPOINT_RADIUS:
             self._waypoint_idx += 1
             self._checkpoint_hit = True
             self._update_active_marker(self._waypoint_idx)
-            print("checkpoint hit")
+            if LOG_CHECKPOINT_HIT:
+                self.bng.queue_lua_command("log('I', 'RL', 'checkpoint hit')")
+            if self._waypoint_idx < len(self.waypoints):
+                new_t = self.waypoints[self._waypoint_idx]
+                self._current_dist = float(np.hypot(new_t[0] - pos[0], new_t[1] - pos[1]))
 
         vel = state.get("vel", (1.0, 0.0, 0.0))
         vehicle_heading = np.arctan2(vel[1], vel[0])
@@ -294,8 +470,13 @@ class BeamNGDrivingEnv:
         return float(heading_err), float(lateral_err), dist
 
     def _compute_reward(self, obs):
-        """Compute per-step reward and termination flag."""
-        speed, steering, heading_err, lateral_err, damage_norm, dist_norm, alignment = obs
+        if self.reward_mode == "ddpg":
+            return self._compute_reward_ddpg(obs)
+        return self._compute_reward_default(obs)
+
+    def _compute_reward_default(self, obs):
+        """Original reward function for discrete-action algorithms (DQN, Q-learning)."""
+        speed, steering, heading_err, lateral_err, damage_norm = obs[:5]
         damage = damage_norm * 1000.0
 
         done = False
@@ -320,7 +501,6 @@ class BeamNGDrivingEnv:
         # 6. Penalise (and terminate on) significant damage
         if damage > self._last_damage + 50:
             reward -= 50.0
-            done = True
         if damage >= self.MAX_DAMAGE:
             done = True
         self._last_damage = damage
@@ -335,6 +515,91 @@ class BeamNGDrivingEnv:
             self._checkpoint_hit = False
 
         # 9. Lap completion bonus
+        if self._waypoint_idx >= len(self.waypoints):
+            reward += 200.0
+            done = True
+
+        # Distance-from-checkpoint penalty
+        dist = self._checkpoint_dist
+        if dist >= self.CHECKPOINT_RESET_DIST:
+            # Too far from checkpoint: big malus and teleport back to spawn
+            reward -= 100.0
+            done = True
+            if LOG_CHECKPOINT_RESPAWN:
+                self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — respawned')")
+        elif dist >= self.CHECKPOINT_WARN_DIST:
+            # Getting off track: proportional penalty
+            reward -= (
+                (dist - self.CHECKPOINT_WARN_DIST)
+                / (self.CHECKPOINT_RESET_DIST - self.CHECKPOINT_WARN_DIST)
+                * 10.0
+            )
+            if LOG_CHECKPOINT_WARN:
+                self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — minus')")
+
+        return float(reward), done
+
+    def _compute_reward_ddpg(self, obs):
+        """Reward function optimized for continuous-action algorithms (DDPG, TD3).
+
+        Main signals:
+        1. Progress toward next waypoint (getting closer = good)
+        2. Speed projected onto waypoint direction (driving toward it = good)
+        3. Checkpoint bonuses (reaching waypoints = very good)
+        4. Penalties: obstacles, damage, out of bounds
+        """
+        speed, _steering, heading_err, _lateral_err, damage_norm = obs[:5]
+        lidar_bins = obs[5:]
+        damage = damage_norm * 1000.0
+        # heading_err is normalized by pi in obs, undo it for cos
+        alignment = np.cos(heading_err * np.pi)
+
+        done = False
+        reward = 0.0
+
+        # 1. Progress reward: bonus for getting closer to waypoint, penalty for drifting away
+        dist_delta = self._last_dist - self._current_dist  # positive = getting closer
+        reward += dist_delta * 3.0
+        self._last_dist = self._current_dist
+
+        # 2. Speed projected toward waypoint: speed * cos(heading_error)
+        reward += speed * alignment * 3.0
+
+        # 3. Small alignment bonus even when slow
+        reward += alignment * 0.5
+
+        # 4. Penalise being stationary
+        if speed < 0.05:
+            reward -= 1.0
+
+        # 5. Penalise obstacle proximity (LiDAR)
+        min_lidar = float(np.min(lidar_bins))
+        if min_lidar < 0.2:
+            reward -= (1.0 - min_lidar) * 5.0
+        elif min_lidar < 0.4:
+            reward -= (1.0 - min_lidar) * 2.0
+
+        # 6. Damage
+        damage_delta = damage - self._last_damage
+        if damage_delta > 0:
+            reward -= damage_delta * 0.3
+        if damage_delta > 150:
+            reward -= 30.0
+            done = True
+        if damage >= self.MAX_DAMAGE:
+            done = True
+        self._last_damage = damage
+
+        # 7. Step limit
+        if self._steps >= self.MAX_STEPS:
+            done = True
+
+        # 8. Checkpoint bonus
+        if self._checkpoint_hit:
+            reward += 50.0
+            self._checkpoint_hit = False
+
+        # 9. Lap completion
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             self._waypoint_idx = 0
