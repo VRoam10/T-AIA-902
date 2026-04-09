@@ -11,12 +11,10 @@ registry.register_environment(
 
 
 def _make_beamng(reward_mode="default"):
-    from config import BEAMNG_HOME, BEAMNG_USER
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
     from environments.beamng import BeamNGDrivingEnv
 
-    return BeamNGDrivingEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, reward_mode=reward_mode
-    )
+    return BeamNGDrivingEnv(beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS, reward_mode=reward_mode)
 
 
 registry.register_environment(
