@@ -55,9 +55,11 @@ def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
     defaults = dict(algo_info["default_config"])
     meta = env_info["metadata"]
 
-    # Inject n_states / n_actions from env metadata
+    # Inject environment metadata into agent constructor params
     defaults["n_states"] = meta.get("n_states", 5)
-    defaults["n_actions"] = meta.get("n_actions", 6)
+    if "n_actions" not in defaults:
+        defaults["n_actions"] = meta.get("n_actions", 6)
+    defaults["state_type"] = meta.get("state_type", "continuous")
 
     if not prompt_params:
         return cls(**defaults)
@@ -65,7 +67,7 @@ def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
     print("\nHyperparameters (press Enter for default):")
     params = {}
     for key, default_val in defaults.items():
-        if key in ("n_states", "n_actions"):
+        if key in ("n_states", "n_actions", "state_type"):
             params[key] = default_val
             continue
         if isinstance(default_val, int):
@@ -99,7 +101,9 @@ def _train_menu():
     env_info = registry.get_environment(env_name)
 
     agent = _build_agent(algo_info, env_info)
-    env = env_info["factory"]()
+    # Continuous-action algorithms get their own reward mode
+    reward_mode = algo_name if algo_name in ("ddpg", "td3") else "default"
+    env = env_info["factory"](reward_mode=reward_mode)
 
     n_episodes = _ask_int("\nNumber of episodes", 500)
     save_path = input(f"Save model path [outputs/{algo_name}_{env_name}.pth]: ").strip()
@@ -107,21 +111,43 @@ def _train_menu():
         save_path = f"outputs/{algo_name}_{env_name}.pth"
     plot_path = f"outputs/{algo_name}_{env_name}_training.png"
 
-    # Resume from checkpoint if it exists
+    start_episode = 0
+
+    # Resume or reset if checkpoint exists
     if os.path.exists(save_path):
-        print(f"Found existing model at '{save_path}', resuming.")
-        agent.load(save_path)
+        prev_ep = "?"
+        # Peek at saved episode count
+        try:
+            import torch
+
+            ckpt = torch.load(save_path, map_location="cpu")
+            prev_ep = ckpt.get("episode", "?")
+        except Exception:
+            pass
+        print(f"\nFound existing model at '{save_path}' (episode {prev_ep}).")
+        choice = input("  [C]ontinue training  /  [R]eset from scratch? [C/R]: ").strip().lower()
+        if choice == "r":
+            os.remove(save_path)
+            print("  Checkpoint deleted — starting fresh.")
+        else:
+            agent.load(save_path)
+            start_episode = getattr(agent, "episode", 0)
+            print(f"  Resuming from episode {start_episode}.")
 
     os.makedirs("outputs", exist_ok=True)
 
+    total = start_episode + n_episodes
     runner = PipelineRunner()
-    print(f"\n--- Training {algo_name} on {env_name} ({n_episodes} episodes) ---\n")
+    print(
+        f"\n--- Training {algo_name} on {env_name} (episodes {start_episode + 1} -> {total}) ---\n"
+    )
     runner.train(
         agent,
         env,
         n_episodes=n_episodes,
         save_path=save_path,
         plot_path=plot_path,
+        start_episode=start_episode,
     )
     env.close()
 
