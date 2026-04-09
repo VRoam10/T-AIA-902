@@ -333,7 +333,7 @@ class BeamNGDrivingEnv:
         self._update_active_marker(1)
 
     def _observe(self) -> np.ndarray:
-        """Poll sensors and return a normalized state vector."""
+        """Poll sensors and return a normalized state vector (7 floats)."""
         self.vehicle.poll_sensors()
 
         elec = self.electrics.data or {}
@@ -349,7 +349,7 @@ class BeamNGDrivingEnv:
         dir_vec = state.get("dir", vel)
         vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
-        heading_err, lateral_err = self._path_errors(pos, state)
+        heading_err, lateral_err, dist = self._path_errors(pos, state)
 
         lidar_bins = self._process_lidar(
             self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None,
@@ -467,7 +467,7 @@ class BeamNGDrivingEnv:
         heading_err = (target_heading - vehicle_heading + np.pi) % (2 * np.pi) - np.pi
 
         lateral_err = dist * np.sin(heading_err)
-        return float(heading_err), float(lateral_err)
+        return float(heading_err), float(lateral_err), dist
 
     def _compute_reward(self, obs):
         if self.reward_mode == "ddpg":
@@ -482,37 +482,30 @@ class BeamNGDrivingEnv:
         done = False
         reward = 0.0
 
-        # Encourage forward speed
-        reward += speed * 2.0
-
-        # Penalise drifting off path
-        reward -= abs(lateral_err) * 1.5
-        reward -= abs(heading_err) * 0.5
-
-        # Penalise wobbling the wheel unnecessarily
-        reward -= abs(steering) * 0.1
-
-        # Penalise being stationary
+        # 4. Penalise being stationary — the agent must move
         if speed < 0.05:
-            reward -= 0.5
+            reward -= 2.0
 
-        # Penalise (and terminate on) significant damage
+        # 5. Penalise excessive steering
+        reward -= abs(steering) * 0.2
+
+        # 6. Penalise (and terminate on) significant damage
         if damage > self._last_damage + 50:
             reward -= 50.0
         if damage >= self.MAX_DAMAGE:
             done = True
         self._last_damage = damage
 
-        # Step limit
+        # 7. Step limit
         if self._steps >= self.MAX_STEPS:
             done = True
 
-        # Checkpoint bonus
+        # 8. Checkpoint bonus (big reward for reaching waypoints)
         if self._checkpoint_hit:
             reward += 100.0 * self._waypoint_idx
             self._checkpoint_hit = False
 
-        # Lap completion bonus
+        # 9. Lap completion bonus
         if self._waypoint_idx >= len(self.waypoints):
             reward += 200.0
             done = True

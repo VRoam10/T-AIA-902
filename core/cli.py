@@ -226,6 +226,7 @@ def _benchmark_menu():
     print(f"\n--- Running {bench_name}: {algo_name} + {env_name} ---\n")
     results = bench.run(algo_info["class"], env_info["factory"], config)
     print("\n" + bench.report(results))
+    bench.export(results, algo_name, env_name)
 
 
 def _human_play_menu():
