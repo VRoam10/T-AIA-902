@@ -62,12 +62,15 @@ def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
     defaults["state_type"] = meta.get("state_type", "continuous")
 
     if not prompt_params:
+        defaults.pop("state_type", None)
         return cls(**defaults)
 
     print("\nHyperparameters (press Enter for default):")
     params = {}
     for key, default_val in defaults.items():
-        if key in ("n_states", "n_actions", "state_type"):
+        if key == "state_type":
+            continue
+        if key in ("n_states", "n_actions"):
             params[key] = default_val
             continue
         if isinstance(default_val, int):
