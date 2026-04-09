@@ -303,12 +303,6 @@ class BeamNGDrivingEnv:
         self.bng.start_scenario()
         time.sleep(1.0)  # let the game settle before polling
 
-        # Force realistic_automatic so brake = brake only, never auto-reverse.
-        # See: https://github.com/BeamNG/BeamNGpy/issues/1
-        self.vehicle.queue_lua_command(
-            'controller.getController("shiftLogic").setGearboxMode("realistic_automatic")'
-        )
-
         # Lidar must be created after the scenario starts (it communicates with the sim directly)
         if self.lidar is not None:
             self.lidar.remove()
