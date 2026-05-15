@@ -2,6 +2,7 @@
 
 import os
 
+from core.grid_search import GridSearch
 from core.registry import registry
 from core.runner import PipelineRunner
 
@@ -232,6 +233,81 @@ def _benchmark_menu():
     bench.export(results, algo_name, env_name)
 
 
+def _ask_values(prompt: str, default_val) -> list:
+    """Ask for a comma-separated list of values for a hyperparameter."""
+    type_fn = type(default_val)
+    raw = input(f"  {prompt} (comma-separated, default={default_val}): ").strip()
+    if not raw:
+        return [default_val]
+    parts = [p.strip() for p in raw.split(",")]
+    try:
+        return [type_fn(p) for p in parts]
+    except ValueError:
+        print(f"  Could not parse values, using default [{default_val}].")
+        return [default_val]
+
+
+def _grid_search_menu():
+    print("\n--- Grid Search (BeamNG) ---")
+
+    if "beamng" not in registry.list_environments():
+        print("BeamNG environment not registered.")
+        return
+
+    algos = registry.list_algorithms()
+    if not algos:
+        print("No algorithms registered.")
+        return
+    print("\nAvailable algorithms:")
+    algo_name = _pick(algos, "Algorithm")
+    algo_info = registry.get_algorithm(algo_name)
+    env_info = registry.get_environment("beamng")
+    meta = env_info["metadata"]
+    n_states = meta.get("n_states", 13)
+    n_actions = meta.get("n_actions", 7)
+
+    defaults = dict(algo_info["default_config"])
+    sweep_keys = [k for k in defaults if k not in ("n_states", "n_actions")]
+
+    print("\nDefine the search grid (press Enter to fix a param at its default):")
+    param_grid = {}
+    for key in sweep_keys:
+        values = _ask_values(key, defaults[key])
+        param_grid[key] = values
+
+    n_episodes = _ask_int("\nEpisodes per configuration", 100)
+    base_port = _ask_int("Base BeamNG port", 25253)
+    max_parallel = _ask_int("Max parallel instances", 2)
+
+    output_dir = input("Output directory [outputs/grid_search]: ").strip()
+    if not output_dir:
+        output_dir = "outputs/grid_search"
+
+    from config import BEAMNG_HOME, BEAMNG_USER
+    from environments.beamng import BeamNGDrivingEnv
+
+    def make_env(port: int):
+        return BeamNGDrivingEnv(
+            beamng_home=BEAMNG_HOME,
+            beamng_user=BEAMNG_USER,
+            port=port,
+            headless=True,
+        )
+
+    gs = GridSearch()
+    gs.run(
+        algo_cls=algo_info["class"],
+        make_env=make_env,
+        param_grid=param_grid,
+        n_states=n_states,
+        n_actions=n_actions,
+        n_episodes=n_episodes,
+        base_port=base_port,
+        max_parallel=max_parallel,
+        output_dir=output_dir,
+    )
+
+
 def _human_play_menu():
     print("\n--- Human Play (BeamNG) ---")
     envs = registry.list_environments()
@@ -264,7 +340,8 @@ def main_menu():
         print("2. Evaluate an agent")
         print("3. Run a benchmark")
         print("4. Human play (BeamNG)")
-        print("5. Quit")
+        print("5. Grid search (BeamNG)")
+        print("6. Quit")
 
         choice = input("\nSelect: ").strip()
 
@@ -277,6 +354,8 @@ def main_menu():
         elif choice == "4":
             _human_play_menu()
         elif choice == "5":
+            _grid_search_menu()
+        elif choice == "6":
             print("Bye!")
             break
         else:
