@@ -35,6 +35,34 @@ def _ask_int(prompt: str, default: int) -> int:
             print("  Invalid input.")
 
 
+_BEAMNG_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "smallgrid"]
+
+_BEAMNG_VEHICLES = {
+    "taxi": "Burnside (Taxi)",
+    "gavril_t_series": "Gavril T-Series",
+    "ibishu_pigeon": "Ibishu Pigeon",
+}
+
+
+def _pick_beamng_options() -> tuple[str, str]:
+    """Prompt for map and vehicle when launching a BeamNG environment."""
+    print("\nAvailable maps:")
+    map_name = _pick(_BEAMNG_MAPS, "Map")
+    print(f"\n  Selected map : {map_name}")
+    if map_name != "gridmap_v2":
+        print("  Note: spawn position and checkpoints are defined for gridmap_v2 only.")
+        print("        The map will load but waypoints may be misplaced.")
+
+    vehicle_labels = list(_BEAMNG_VEHICLES.values())
+    vehicle_keys = list(_BEAMNG_VEHICLES.keys())
+    print("\nAvailable vehicles:")
+    vehicle_label = _pick(vehicle_labels, "Vehicle")
+    vehicle_id = vehicle_keys[vehicle_labels.index(vehicle_label)]
+    print(f"  Selected vehicle: {vehicle_label}")
+
+    return map_name, vehicle_id
+
+
 def _ask_float(prompt: str, default: float) -> float:
     while True:
         raw = input(f"{prompt} [{default}]: ").strip()
@@ -57,8 +85,7 @@ def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
 
     # Inject environment metadata into agent constructor params
     defaults["n_states"] = meta.get("n_states", 5)
-    if "n_actions" not in defaults:
-        defaults["n_actions"] = meta.get("n_actions", 6)
+    defaults["n_actions"] = meta.get("n_actions", defaults.get("n_actions", 6))
     defaults["state_type"] = meta.get("state_type", "continuous")
 
     if not prompt_params:
@@ -104,9 +131,15 @@ def _train_menu():
     env_info = registry.get_environment(env_name)
 
     agent = _build_agent(algo_info, env_info)
+
+    beamng_kwargs = {}
+    if env_name.startswith("beamng"):
+        map_name, vehicle_id = _pick_beamng_options()
+        beamng_kwargs = {"map_name": map_name, "vehicle_id": vehicle_id}
+
     # Continuous-action algorithms get their own reward mode
     reward_mode = algo_name if algo_name in ("ddpg", "td3") else "default"
-    env = env_info["factory"](reward_mode=reward_mode)
+    env = env_info["factory"](reward_mode=reward_mode, **beamng_kwargs)
 
     n_episodes = _ask_int("\nNumber of episodes", 500)
     save_path = input(f"Save model path [outputs/{algo_name}_{env_name}.pth]: ").strip()
@@ -144,15 +177,17 @@ def _train_menu():
     print(
         f"\n--- Training {algo_name} on {env_name} (episodes {start_episode + 1} -> {total}) ---\n"
     )
-    runner.train(
-        agent,
-        env,
-        n_episodes=n_episodes,
-        save_path=save_path,
-        plot_path=plot_path,
-        start_episode=start_episode,
-    )
-    env.close()
+    try:
+        runner.train(
+            agent,
+            env,
+            n_episodes=n_episodes,
+            save_path=save_path,
+            plot_path=plot_path,
+            start_episode=start_episode,
+        )
+    finally:
+        env.close()
 
 
 def _eval_menu():
@@ -185,14 +220,22 @@ def _eval_menu():
 
     agent = _build_agent(algo_info, env_info, prompt_params=False)
     agent.load(model_path)
-    env = env_info["factory"]()
+
+    beamng_kwargs = {}
+    if env_name.startswith("beamng"):
+        map_name, vehicle_id = _pick_beamng_options()
+        beamng_kwargs = {"map_name": map_name, "vehicle_id": vehicle_id}
+
+    env = env_info["factory"](**beamng_kwargs)
 
     n_episodes = _ask_int("Number of evaluation episodes", 10)
 
     runner = PipelineRunner()
     print(f"\n--- Evaluating {algo_name} on {env_name} ({n_episodes} episodes) ---\n")
-    runner.evaluate(agent, env, n_episodes=n_episodes)
-    env.close()
+    try:
+        runner.evaluate(agent, env, n_episodes=n_episodes)
+    finally:
+        env.close()
 
 
 def _benchmark_menu():
@@ -240,13 +283,15 @@ def _human_play_menu():
         return
 
     env_info = registry.get_environment("beamng")
-    env = env_info["factory"]()
+    map_name, vehicle_id = _pick_beamng_options()
+    env = env_info["factory"](map_name=map_name, vehicle_id=vehicle_id)
 
     print("Launching BeamNG for human play...")
-    env.human_play()
-
-    input("\nPress Enter when done playing...")
-    env.close()
+    try:
+        env.human_play()
+        input("\nPress Enter when done playing...")
+    finally:
+        env.close()
 
 
 def main_menu():
