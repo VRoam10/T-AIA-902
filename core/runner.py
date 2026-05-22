@@ -121,6 +121,9 @@ class PipelineRunner:
                 avg = np.mean(rewards)
                 pbar.set_postfix(reward=f"{ep_reward:.1f}", avg=f"{avg:.1f}")
 
+        except KeyboardInterrupt:
+            pbar.write("Evaluation interrupted by user.")
+
         finally:
             pbar.close()
             agent.epsilon = old_eps

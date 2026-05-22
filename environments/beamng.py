@@ -1,11 +1,19 @@
 import random
+import threading
 import time
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
-from beamngpy.sensors import Damage, Electrics, Lidar
+from beamngpy.sensors import Camera, Damage, Electrics, Lidar
 
-from config import LOG_CHECKPOINT_HIT, LOG_CHECKPOINT_RESPAWN, LOG_CHECKPOINT_WARN, LOG_LIDAR
+from config import (
+    LOG_CAMERA,
+    LOG_CHECKPOINT_HIT,
+    LOG_CHECKPOINT_RESPAWN,
+    LOG_CHECKPOINT_WARN,
+    LOG_LIDAR,
+    LOG_RADAR,
+)
 
 
 class BeamNGDrivingEnv:
@@ -33,11 +41,11 @@ class BeamNGDrivingEnv:
     ACTIONS = [
         {"throttle": 0.0, "steering": 0.0, "brake": 0.0},  # 0: idle
         {"throttle": 1.0, "steering": 0.0, "brake": 0.0},  # 1: straight
-        {"throttle": 1.0, "steering": -0.3, "brake": 0.0},  # 2: slight left
-        {"throttle": 1.0, "steering": 0.3, "brake": 0.0},  # 3: slight right
+        {"throttle": 0.7, "steering": -0.3, "brake": 0.0},  # 2: slight left
+        {"throttle": 0.7, "steering": 0.3, "brake": 0.0},  # 3: slight right
         {"throttle": 0.0, "steering": 0.0, "brake": 1.0},  # 4: brake
-        {"throttle": 0.5, "steering": -0.6, "brake": 0.0},  # 5: sharp left
-        {"throttle": 0.5, "steering": 0.6, "brake": 0.0},  # 6: sharp right
+        {"throttle": 0.4, "steering": -0.6, "brake": 0.0},  # 5: sharp left
+        {"throttle": 0.4, "steering": 0.6, "brake": 0.0},  # 6: sharp right
     ]
 
     N_ACTIONS = len(ACTIONS)
@@ -84,6 +92,29 @@ class BeamNGDrivingEnv:
     MAX_STEPS = 500
     MAX_DAMAGE = 500.0  # damage threshold that ends the episode
 
+    AVAILABLE_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "smallgrid"]
+
+    VEHICLES = {
+        "taxi": {
+            "model": "burnside",
+            "licence": "Taxi",
+            "color": "Yellow",
+            "part_config": "vehicles/burnside/4door_early_v8_3M_taxi.pc",
+        },
+        "gavril_t_series": {
+            "model": "us-semi",
+            "licence": "T-Series",
+            "color": "White",
+            "part_config": "vehicles/us_semi/t83_sleeper.pc",
+        },
+        "ibishu_pigeon": {
+            "model": "pigeon",
+            "licence": "Pigeon",
+            "color": "Red",
+            "part_config": "vehicles/pigeon/base.pc",
+        },
+    }
+
     def __init__(
         self,
         beamng_home: str,
@@ -92,6 +123,8 @@ class BeamNGDrivingEnv:
         port: int = 25252,
         headless: bool = False,
         reward_mode: str = "default",
+        vehicle_id: str = "taxi",
+        map_name: str = "gridmap_v2",
     ):
         """
         Args:
@@ -114,6 +147,8 @@ class BeamNGDrivingEnv:
         self.lidar: Lidar = None
 
         self.reward_mode = reward_mode  # "default" or "ddpg"
+        self.vehicle_id = vehicle_id
+        self.map_name = map_name
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
@@ -125,8 +160,8 @@ class BeamNGDrivingEnv:
         self._checkpoint_dist = 0.0
         self.headless = headless
 
-        if self.reward_mode in ("ddpg", "td3"):
-            self.waypoints = list(self.DDPG_WAYPOINTS)
+        if self.reward_mode in ("ddpg"):
+            self.waypoints = list(self.DEFAULT_WAYPOINTS)
         else:
             self.waypoints = list(self.DEFAULT_WAYPOINTS)
 
@@ -241,9 +276,13 @@ class BeamNGDrivingEnv:
         """Shut down the BeamNG connection."""
         if self.bng is not None:
             if self.lidar is not None:
-                self.lidar.remove()
+                t = threading.Thread(target=self.lidar.remove, daemon=True)
+                t.start()
+                t.join(timeout=3.0)
                 self.lidar = None
-            self.bng.close()
+            t = threading.Thread(target=self.bng.close, daemon=True)
+            t.start()
+            t.join(timeout=5.0)
             self.bng = None
             self.vehicle = None
 
@@ -269,18 +308,13 @@ class BeamNGDrivingEnv:
     def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
         self.scenario = Scenario(
-            "gridmap_v2",
+            self.map_name,
             "rl_driving",
             description="RL Training Scenario",
         )
 
-        self.vehicle = Vehicle(
-            "ego_vehicle",
-            model="burnside",
-            licence="Taxi",
-            color="Yellow",
-            part_config="vehicles/burnside/4door_early_v8_3M_taxi.pc",
-        )
+        vcfg = self.VEHICLES.get(self.vehicle_id, self.VEHICLES["taxi"])
+        self.vehicle = Vehicle("ego_vehicle", **vcfg)
         self.electrics = Electrics()
         self.damage_sensor = Damage()
         self.vehicle.attach_sensor("electrics", self.electrics)
@@ -623,3 +657,407 @@ class BeamNGDrivingEnv:
         except AttributeError:
             # bng.debug not available on this beamngpy version — skip silently
             pass
+
+
+class BeamNGContinuousEnv(BeamNGDrivingEnv):
+    """
+    BeamNG environment with a 3D continuous action space.
+
+    The algorithm directly controls throttle, steering, and brake as separate
+    outputs. The actor produces values in [-1, 1] (Tanh); they are mapped as:
+        action[0] -> throttle in [0, 1]   (negative half is ignored / zeroed)
+        action[1] -> steering in [-1, 1]  (used directly)
+        action[2] -> brake    in [0, 1]   (negative half is ignored / zeroed)
+
+    Uses dense waypoints and the DDPG-style reward by default.
+    """
+
+    N_ACTIONS = 3
+
+    def __init__(
+        self,
+        beamng_home: str,
+        beamng_user: str = None,
+        host: str = "localhost",
+        port: int = 25252,
+        headless: bool = False,
+        vehicle_id: str = "taxi",
+        map_name: str = "gridmap_v2",
+    ):
+        super().__init__(
+            beamng_home=beamng_home,
+            beamng_user=beamng_user,
+            host=host,
+            port=port,
+            headless=headless,
+            reward_mode="default",
+            vehicle_id=vehicle_id,
+            map_name=map_name,
+        )
+
+    def step(self, action):
+        """
+        Apply a continuous action and advance the simulation.
+
+        action: np.ndarray of shape (2,) in [-1, 1]
+            [acceleration, steering]  — positive acceleration = throttle, negative = brake
+        OR shape (3,) in [-1, 1]
+            [throttle_raw, steering, brake_raw]
+        """
+        action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        if action.shape[0] == 2:
+            # 2D: single acceleration channel encodes throttle (+) and brake (-)
+            throttle = float(max(0.0, action[0]))
+            steering = float(action[1])
+            brake = float(max(0.0, -action[0]))
+        else:
+            throttle = float(max(0.0, action[0]))
+            steering = float(action[1])
+            brake = float(max(0.0, action[2]))
+
+        self.vehicle.control(throttle=throttle, steering=steering, brake=brake)
+        self.bng.step(10)
+        self._steps += 1
+
+        obs = self._observe()
+        reward, done = self._compute_reward(obs)
+        info = {"steps": self._steps, "waypoint_idx": self._waypoint_idx}
+        return obs, reward, done, info
+
+
+class BeamNGRadarEnv(BeamNGContinuousEnv):
+    """
+    BeamNG continuous-action environment using a perfect 360° radar sensor.
+
+    State (5 + RADAR_RAYS floats):
+        speed, steering, heading_error, lateral_error, damage  — kinematic
+        radar[0..N-1]  — normalized nearest-obstacle distance per angular bin,
+                          0 = obstacle right there, 1 = bin clear (RADAR_MAX_DIST)
+
+    Actions: same 3D continuous as BeamNGContinuousEnv
+        action[0] -> throttle [0, 1]
+        action[1] -> steering [-1, 1]
+        action[2] -> brake    [0, 1]
+
+    "Perfect" means no noise, no occlusion artifacts, full surround coverage,
+    deterministic returns — the LiDAR sensor is run in 360° sweep mode with a
+    single horizontal scan plane.  Bins are ordered 0..N-1 from -180° to +180°
+    in vehicle-local frame (vehicle forward = centre of bin N//2).
+    """
+
+    RADAR_RAYS = 36  # 10° angular resolution per bin
+    RADAR_MAX_DIST = 50.0  # metres — normalization range
+
+    N_ACTIONS = 3
+    N_STATES = 5 + RADAR_RAYS  # 41
+
+    def _load_scenario(self, human_control=False):
+        self.scenario = Scenario(self.map_name, "rl_driving_radar", description="RL Radar Training")
+        vcfg = self.VEHICLES.get(self.vehicle_id, self.VEHICLES["taxi"])
+        self.vehicle = Vehicle("ego_vehicle", **vcfg)
+        self.electrics = Electrics()
+        self.damage_sensor = Damage()
+        self.vehicle.attach_sensor("electrics", self.electrics)
+        self.vehicle.attach_sensor("damage", self.damage_sensor)
+
+        self.scenario.add_vehicle(self.vehicle, pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
+
+        if human_control:
+            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+            self.scenario.add_checkpoints(self.waypoints, scales)
+
+        self.scenario.make(self.bng)
+        self.bng.set_deterministic(30)
+        self.bng.load_scenario(self.scenario)
+        self.bng.start_scenario()
+        time.sleep(1.0)
+
+        if self.lidar is not None:
+            self.lidar.remove()
+        self.lidar = Lidar(
+            "radar",
+            self.bng,
+            self.vehicle,
+            pos=(0, 0, 1.7),
+            dir=(0, -1, 0),
+            up=(0, 0, 1),
+            vertical_resolution=16,
+            vertical_angle=10,
+            horizontal_angle=360.0,
+            max_distance=self.RADAR_MAX_DIST,
+            is_360_mode=True,
+            is_rotate_mode=False,
+            is_using_shared_memory=False,
+            is_visualised=True,
+        )
+
+        self._update_active_marker(1)
+
+    def _observe(self) -> np.ndarray:
+        self.vehicle.poll_sensors()
+
+        elec = self.electrics.data or {}
+        dmg = self.damage_sensor.data or {}
+
+        speed = float(elec.get("wheelspeed", 0.0))
+        steering = float(elec.get("steering", 0.0))
+        damage = float(dmg.get("damage", 0.0))
+
+        state = self.vehicle.state or {}
+        pos = state.get("pos", (0.0, 0.0, 0.0))
+        vel = state.get("vel", (1.0, 0.0, 0.0))
+        dir_vec = state.get("dir", vel)
+        vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
+
+        heading_err, lateral_err, _ = self._path_errors(pos, state)
+        radar_bins = self._process_radar(
+            self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None,
+            pos,
+            vehicle_heading,
+        )
+
+        self._current_pos = pos
+        if self.waypoints:
+            target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
+            self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
+
+        return np.concatenate(
+            [
+                np.array(
+                    [
+                        np.clip(speed / 50.0, -1.0, 1.0),
+                        np.clip(steering, -1.0, 1.0),
+                        np.clip(heading_err / np.pi, -1.0, 1.0),
+                        np.clip(lateral_err / 5.0, -1.0, 1.0),
+                        np.clip(damage / 1000.0, 0.0, 1.0),
+                    ],
+                    dtype=np.float32,
+                ),
+                radar_bins,
+            ]
+        )
+
+    def _process_radar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
+        """Bin a 360° LiDAR point cloud into RADAR_RAYS equal angular slices.
+
+        Points are transformed into vehicle-local frame before binning.
+        Returns float32 array of shape (RADAR_RAYS,) with values in [0, 1]:
+            0 = obstacle at sensor origin, 1 = no return (clear to RADAR_MAX_DIST).
+        Bins span [-π, π] in vehicle-local frame; bin index 0 starts at rear-left.
+        """
+        distances = np.ones(self.RADAR_RAYS, dtype=np.float32)
+
+        if point_cloud is None or len(point_cloud) == 0:
+            if LOG_RADAR:
+                self.bng.queue_lua_command("log('I', 'RL', 'Radar: no points')")
+            return distances
+
+        pts = np.array(point_cloud, dtype=np.float32).reshape(-1, 3)
+
+        rel_x = pts[:, 0] - vehicle_pos[0]
+        rel_y = pts[:, 1] - vehicle_pos[1]
+        cos_h = np.cos(-vehicle_heading)
+        sin_h = np.sin(-vehicle_heading)
+        local_x = rel_x * cos_h - rel_y * sin_h
+        local_y = rel_x * sin_h + rel_y * cos_h
+
+        angles = np.arctan2(local_y, local_x)  # [-π, π]
+        dists = np.hypot(local_x, local_y)
+
+        bin_edges = np.linspace(-np.pi, np.pi, self.RADAR_RAYS + 1)
+        for i in range(self.RADAR_RAYS):
+            in_bin = (angles >= bin_edges[i]) & (angles < bin_edges[i + 1])
+            if in_bin.any():
+                distances[i] = np.clip(float(dists[in_bin].min()) / self.RADAR_MAX_DIST, 0.0, 1.0)
+
+        if LOG_RADAR:
+            self.bng.queue_lua_command(
+                "log('I', 'RL', 'Radar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
+            )
+        return distances
+
+
+class BeamNGCameraEnv(BeamNGContinuousEnv):
+    """
+    BeamNG continuous-action environment using a front-facing dashcam
+    instead of LiDAR for perception.
+
+    State (5 + CAM_PIXELS floats):
+        speed, steering, heading_error, lateral_error, damage  — kinematic
+        cam[0..N-1]  — flattened grayscale pixels, normalized to [0, 1]
+
+    Actions: same 3D continuous as BeamNGContinuousEnv
+        action[0] -> throttle [0, 1]  (actor output clipped to positive half)
+        action[1] -> steering [-1, 1]
+        action[2] -> brake    [0, 1]  (actor output clipped to positive half)
+    """
+
+    CAM_RESOLUTION = (84, 84)
+    CAM_OUT_SIZE = (16, 16)
+    N_ACTIONS = 3
+    N_STATES = 5 + CAM_OUT_SIZE[0] * CAM_OUT_SIZE[1]  # 261
+
+    def __init__(
+        self,
+        beamng_home: str,
+        beamng_user: str = None,
+        host: str = "localhost",
+        port: int = 25252,
+        headless: bool = False,
+        vehicle_id: str = "taxi",
+        map_name: str = "gridmap_v2",
+    ):
+        super().__init__(
+            beamng_home=beamng_home,
+            beamng_user=beamng_user,
+            host=host,
+            port=port,
+            headless=headless,
+            vehicle_id=vehicle_id,
+            map_name=map_name,
+        )
+        self.camera: Camera = None
+        self.last_frame: np.ndarray | None = None  # 2-D grayscale (CAM_OUT_SIZE), updated each step
+
+    # ------------------------------------------------------------------
+    # Overrides
+    # ------------------------------------------------------------------
+
+    def _load_scenario(self, human_control=False):
+        if self.camera is not None:
+            self.camera.remove()
+            self.camera = None
+
+        self.scenario = Scenario(
+            self.map_name, "rl_driving_camera", description="RL Camera Training"
+        )
+        vcfg = self.VEHICLES.get(self.vehicle_id, self.VEHICLES["taxi"])
+        self.vehicle = Vehicle("ego_vehicle", **vcfg)
+        self.electrics = Electrics()
+        self.damage_sensor = Damage()
+        self.vehicle.attach_sensor("electrics", self.electrics)
+        self.vehicle.attach_sensor("damage", self.damage_sensor)
+
+        self.scenario.add_vehicle(self.vehicle, pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
+
+        if human_control:
+            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+            self.scenario.add_checkpoints(self.waypoints, scales)
+
+        self.scenario.make(self.bng)
+        self.bng.set_deterministic(30)
+        self.bng.load_scenario(self.scenario)
+        self.bng.start_scenario()
+        time.sleep(1.0)
+
+        self.camera = Camera(
+            "dashcam",
+            self.bng,
+            self.vehicle,
+            pos=(0, -0.5, 1.5),
+            dir=(0, -1, 0),
+            field_of_view_y=70,
+            resolution=self.CAM_RESOLUTION,
+            is_render_colours=True,
+            is_render_depth=False,
+            is_render_annotations=False,
+            is_visualised=False,
+            is_static=False,
+        )
+
+        self._update_active_marker(1)
+
+    def _observe(self) -> np.ndarray:
+        self.vehicle.poll_sensors()
+
+        elec = self.electrics.data or {}
+        dmg = self.damage_sensor.data or {}
+
+        speed = float(elec.get("wheelspeed", 0.0))
+        steering = float(elec.get("steering", 0.0))
+        damage = float(dmg.get("damage", 0.0))
+
+        state = self.vehicle.state or {}
+        pos = state.get("pos", (0.0, 0.0, 0.0))
+
+        heading_err, lateral_err, _ = self._path_errors(pos, state)
+        cam_pixels = self._process_camera()
+
+        self._current_pos = pos
+        if self.waypoints:
+            target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
+            self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
+
+        return np.concatenate(
+            [
+                np.array(
+                    [
+                        np.clip(speed / 50.0, -1.0, 1.0),
+                        np.clip(steering, -1.0, 1.0),
+                        np.clip(heading_err / np.pi, -1.0, 1.0),
+                        np.clip(lateral_err / 5.0, -1.0, 1.0),
+                        np.clip(damage / 1000.0, 0.0, 1.0),
+                    ],
+                    dtype=np.float32,
+                ),
+                cam_pixels,
+            ]
+        )
+
+    def close(self):
+        if self.camera is not None:
+            t = threading.Thread(target=self.camera.remove, daemon=True)
+            t.start()
+            t.join(timeout=3.0)
+            self.camera = None
+        super().close()
+
+    # ------------------------------------------------------------------
+    # Camera processing
+    # ------------------------------------------------------------------
+
+    def _process_camera(self) -> np.ndarray:
+        """Poll camera and return a flattened grayscale image normalized to [0, 1]."""
+        n_pixels = self.CAM_OUT_SIZE[0] * self.CAM_OUT_SIZE[1]
+        if self.camera is None:
+            return np.ones(n_pixels, dtype=np.float32)
+
+        data = self.camera.poll()
+        colour = data.get("colour", None)
+        if colour is None:
+            return np.ones(n_pixels, dtype=np.float32)
+
+        # beamngpy may return a PIL Image or a numpy array depending on version
+        img = np.asarray(colour, dtype=np.float32)
+
+        # Convert RGB(A) to grayscale using luminosity weights
+        if img.ndim == 3 and img.shape[2] >= 3:
+            gray = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
+        else:
+            gray = img.squeeze().astype(np.float32)
+
+        # Resize to CAM_OUT_SIZE
+        oh, ow = self.CAM_OUT_SIZE
+        try:
+            from PIL import Image as PILImage
+
+            pil = PILImage.fromarray(np.clip(gray, 0, 255).astype(np.uint8), mode="L")
+            pil = pil.resize((ow, oh), PILImage.BILINEAR)
+            small = np.array(pil, dtype=np.float32)
+        except ImportError:
+            h, w = gray.shape
+            sh, sw = max(1, h // oh), max(1, w // ow)
+            small = gray[::sh, ::sw][:oh, :ow]
+            if small.shape != (oh, ow):
+                padded = np.zeros((oh, ow), dtype=np.float32)
+                padded[: small.shape[0], : small.shape[1]] = small
+                small = padded
+
+        self.last_frame = small / 255.0  # 2-D (CAM_OUT_SIZE), values in [0, 1]
+        if LOG_CAMERA:
+            flat = self.last_frame.flatten()
+            mn, mx, avg = float(flat.min()), float(flat.max()), float(flat.mean())
+            self.bng.queue_lua_command(
+                f"log('I', 'RL', 'Camera: min={mn:.3f} max={mx:.3f} mean={avg:.3f}')"
+            )
+        return self.last_frame.flatten()
