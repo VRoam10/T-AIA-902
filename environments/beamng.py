@@ -325,10 +325,9 @@ class BeamNGDrivingEnv:
             rot_quat=self.trajectory.spawn_rot,
         )
 
-        # Add visual checkpoint rings for every waypoint only for human control (visible in-game as hoops).
-        if human_control:
-            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-            self.scenario.add_checkpoints(self.waypoints, scales)
+        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
@@ -358,6 +357,7 @@ class BeamNGDrivingEnv:
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(1)
+        self._draw_start_end_markers()
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return a normalized state vector (7 floats)."""
@@ -657,6 +657,35 @@ class BeamNGDrivingEnv:
             # bng.debug not available on this beamngpy version — skip silently
             pass
 
+    def _draw_start_end_markers(self):
+        """Draw a blue sphere at the first waypoint and a red sphere at the last.
+
+        Best-effort: skipped silently if the beamngpy version doesn't expose
+        bng.debug.draw_sphere.
+        """
+        if self.bng is None or not self.waypoints:
+            return
+        try:
+            debug = self.bng.debug
+            start = self.waypoints[0]
+            debug.draw_sphere(
+                pos=(start[0], start[1], start[2] + 2.0),
+                radius=2.5,
+                rgba=(0.0, 0.5, 1.0, 0.8),  # blue = start
+                cling=False,
+                freeze=False,
+            )
+            end = self.waypoints[-1]
+            debug.draw_sphere(
+                pos=(end[0], end[1], end[2] + 2.0),
+                radius=2.5,
+                rgba=(1.0, 0.0, 0.0, 0.8),  # red = end
+                cling=False,
+                freeze=False,
+            )
+        except AttributeError:
+            pass
+
 
 class BeamNGContinuousEnv(BeamNGDrivingEnv):
     """
@@ -763,9 +792,9 @@ class BeamNGRadarEnv(BeamNGContinuousEnv):
             self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot
         )
 
-        if human_control:
-            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-            self.scenario.add_checkpoints(self.waypoints, scales)
+        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)
@@ -793,6 +822,7 @@ class BeamNGRadarEnv(BeamNGContinuousEnv):
         )
 
         self._update_active_marker(1)
+        self._draw_start_end_markers()
 
     def _observe(self) -> np.ndarray:
         self.vehicle.poll_sensors()
@@ -943,9 +973,9 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot
         )
 
-        if human_control:
-            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-            self.scenario.add_checkpoints(self.waypoints, scales)
+        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)
@@ -969,6 +999,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         )
 
         self._update_active_marker(1)
+        self._draw_start_end_markers()
 
     def _observe(self) -> np.ndarray:
         self.vehicle.poll_sensors()
