@@ -49,9 +49,9 @@ def _pick_beamng_options() -> tuple[str, str]:
     print("\nAvailable maps:")
     map_name = _pick(_BEAMNG_MAPS, "Map")
     print(f"\n  Selected map : {map_name}")
-    if map_name != "gridmap_v2":
-        print("  Note: spawn position and checkpoints are defined for gridmap_v2 only.")
-        print("        The map will load but waypoints may be misplaced.")
+    cache_path = os.path.join("outputs", "trajectories", f"{map_name}.json")
+    if not os.path.exists(cache_path):
+        print(f"  Note: no cached trajectory for '{map_name}'. It will be generated on first launch.")
 
     vehicle_labels = list(_BEAMNG_VEHICLES.values())
     vehicle_keys = list(_BEAMNG_VEHICLES.keys())
@@ -294,6 +294,45 @@ def _human_play_menu():
         env.close()
 
 
+def _trajectory_menu():
+    """Pre-warm the trajectory cache for one or all BeamNG maps."""
+    print("\n--- Generate Trajectories ---")
+    print("This will launch BeamNG and probe each map's road network.")
+    print("The result is cached in outputs/trajectories/<map>.json.\n")
+
+    options = _BEAMNG_MAPS + ["all"]
+    choice = _pick(options, "Map")
+
+    targets = _BEAMNG_MAPS if choice == "all" else [choice]
+
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGDrivingEnv
+
+    for map_name in targets:
+        print(f"\n>>> Generating trajectory for '{map_name}' ...")
+        cache_path = os.path.join("outputs", "trajectories", f"{map_name}.json")
+        if os.path.exists(cache_path):
+            ans = input(f"    Cache already exists at {cache_path}. Overwrite? [y/N]: ").strip().lower()
+            if ans != "y":
+                print("    Skipped.")
+                continue
+            os.remove(cache_path)
+
+        env = BeamNGDrivingEnv(
+            beamng_home=BEAMNG_HOME,
+            beamng_user=BEAMNG_USER,
+            headless=HEADLESS,
+            map_name=map_name,
+        )
+        try:
+            env.reset()
+            print(f"    Done. Source: {env.trajectory.source}, "
+                  f"{len(env.trajectory.sparse_waypoints)} sparse / "
+                  f"{len(env.trajectory.dense_waypoints)} dense waypoints.")
+        finally:
+            env.close()
+
+
 def main_menu():
     """Main interactive CLI loop."""
     # Trigger auto-registration by importing packages
@@ -309,7 +348,8 @@ def main_menu():
         print("2. Evaluate an agent")
         print("3. Run a benchmark")
         print("4. Human play (BeamNG)")
-        print("5. Quit")
+        print("5. Generate trajectories (BeamNG)")
+        print("6. Quit")
 
         choice = input("\nSelect: ").strip()
 
@@ -322,6 +362,8 @@ def main_menu():
         elif choice == "4":
             _human_play_menu()
         elif choice == "5":
+            _trajectory_menu()
+        elif choice == "6":
             print("Bye!")
             break
         else:
