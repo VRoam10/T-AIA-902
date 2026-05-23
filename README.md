@@ -260,6 +260,36 @@ Le pipeline se declenche sur chaque push/PR vers `main` ou `romain_test` et exec
 
 ---
 
+## Trajectoires automatiques (BeamNG)
+
+Les waypoints, spawn position et spawn rotation sont desormais generes
+automatiquement pour chaque map a partir du reseau routier (DecalRoads)
+de BeamNG.
+
+- Pre-calcul depuis le menu principal : option `5. Generate trajectories (BeamNG)`
+- Cache sur disque : `outputs/trajectories/<map>.json`
+- Pour regenerer : supprimer le fichier JSON ou reactiver l'option 5
+- Pour les maps sans routes (`smallgrid`), une boucle carree de 80 m sert de fallback
+
+Le format du cache JSON :
+
+```json
+{
+  "spawn_pos": [x, y, z],
+  "spawn_rot": [qx, qy, qz, qw],
+  "sparse_waypoints": [[x, y, z], ...],
+  "dense_waypoints":  [[x, y, z], ...],
+  "map_name": "...",
+  "generated_at": "...",
+  "source": "road_network:<id>" | "fallback:square_loop"
+}
+```
+
+Si vous voulez surcharger la trajectoire pour une map particuliere, editez
+le JSON a la main ou utilisez la procedure decrite dans `scenario_creator.md`.
+
+---
+
 ## Algorithmes disponibles
 
 | Algorithme   | Description                | Environnements compatibles |
