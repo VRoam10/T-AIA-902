@@ -154,6 +154,9 @@ class BeamNGDrivingEnv:
         else:
             # self._randomize_waypoints()
             self.bng.scenario.restart()
+            # Debug-draw spheres are wiped on scenario restart — redraw them.
+            self._update_active_marker(1)
+            self._draw_start_end_markers()
 
         self._waypoint_idx = 0
         self._last_damage = 0.0

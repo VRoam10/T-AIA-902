@@ -55,9 +55,9 @@ BASE_WAYPOINTS = [
 | Heading (approx.) | `rot_quat` (x, y, z, w) |
 |---|---|
 | North (+Y) | `(0, 0, 0, 1)` |
-| East (+X)  | `(0, 0, 0.707, 0.707)` |
+| East (+X)  | `(0, 0, −0.707, 0.707)` |
 | South (−Y) | `(0, 0, 1, 0)` |
-| West (−X)  | `(0, 0, −0.707, 0.707)` |
+| West (−X)  | `(0, 0, 0.707, 0.707)` |
 
 For precise rotations, always read the value from the game rather than calculating it manually.
 

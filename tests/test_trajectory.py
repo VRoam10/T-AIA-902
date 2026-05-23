@@ -86,26 +86,28 @@ def test_heading_to_quat_north_is_identity():
 
 
 def test_heading_to_quat_east():
-    # +X direction = East = (0, 0, 0.707, 0.707)
+    # +X direction = East. BeamNGpy yaw is CCW around +Z, so East = yaw -π/2.
     qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
     assert (qx, qy) == (0.0, 0.0)
-    assert qz == pytest.approx(math.sin(math.pi / 4), abs=1e-6)
+    assert qz == pytest.approx(-math.sin(math.pi / 4), abs=1e-6)
     assert qw == pytest.approx(math.cos(math.pi / 4), abs=1e-6)
 
 
 def test_heading_to_quat_south():
-    # -Y direction = South = (0, 0, 1, 0)
+    # -Y direction = South. atan2(-0.0, -10.0) = -π so (qz, qw) = (-1, 0),
+    # which represents the same physical rotation as (1, 0) (q and -q are
+    # equivalent rotations).
     qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, -10.0, 0.0))
     assert (qx, qy) == (0.0, 0.0)
-    assert qz == pytest.approx(1.0, abs=1e-6)
+    assert abs(qz) == pytest.approx(1.0, abs=1e-6)
     assert qw == pytest.approx(0.0, abs=1e-6)
 
 
 def test_heading_to_quat_west():
-    # -X direction = West = (0, 0, -0.707, 0.707)
+    # -X direction = West. BeamNGpy yaw is CCW around +Z, so West = yaw +π/2.
     qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (-10.0, 0.0, 0.0))
     assert (qx, qy) == (0.0, 0.0)
-    assert qz == pytest.approx(-math.sin(math.pi / 4), abs=1e-6)
+    assert qz == pytest.approx(math.sin(math.pi / 4), abs=1e-6)
     assert qw == pytest.approx(math.cos(math.pi / 4), abs=1e-6)
 
 
