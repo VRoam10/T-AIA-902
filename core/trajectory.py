@@ -92,3 +92,18 @@ def resample(path: list[Vec3], spacing: float) -> list[Vec3]:
     if out[-1] != path[-1]:
         out.append(path[-1])
     return out
+
+
+def heading_to_quat(p0: Vec3, p1: Vec3) -> Quat:
+    """Quaternion (x, y, z, w) matching BeamNG's vehicle-spawn convention.
+
+    Returns the rotation that orients a vehicle's forward axis (+Y in BeamNG)
+    to point from `p0` toward `p1` in the XY plane.  The identity quaternion
+    (0, 0, 0, 1) corresponds to facing North (+Y).  See `scenario_creator.md`
+    for the cardinal-direction reference table.  Vertical delta is ignored.
+    """
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    if dx == 0.0 and dy == 0.0:
+        raise ValueError("p0 and p1 must differ in the XY plane")
+    heading = math.atan2(dx, dy)
+    return (0.0, 0.0, math.sin(heading / 2.0), math.cos(heading / 2.0))

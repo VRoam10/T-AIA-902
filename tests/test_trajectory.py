@@ -68,3 +68,43 @@ def test_resample_two_segment_polyline():
 def test_resample_rejects_short_path():
     with pytest.raises(ValueError):
         resample([(0.0, 0.0, 0.0)], spacing=5.0)
+
+
+from core.trajectory import heading_to_quat
+
+
+def test_heading_to_quat_north_is_identity():
+    # +Y direction = North in BeamNG = identity quaternion (0,0,0,1)
+    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, 10.0, 0.0))
+    assert (qx, qy) == (0.0, 0.0)
+    assert qz == pytest.approx(0.0, abs=1e-6)
+    assert qw == pytest.approx(1.0, abs=1e-6)
+
+
+def test_heading_to_quat_east():
+    # +X direction = East = (0, 0, 0.707, 0.707)
+    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
+    assert (qx, qy) == (0.0, 0.0)
+    assert qz == pytest.approx(math.sin(math.pi / 4), abs=1e-6)
+    assert qw == pytest.approx(math.cos(math.pi / 4), abs=1e-6)
+
+
+def test_heading_to_quat_south():
+    # -Y direction = South = (0, 0, 1, 0)
+    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, -10.0, 0.0))
+    assert (qx, qy) == (0.0, 0.0)
+    assert qz == pytest.approx(1.0, abs=1e-6)
+    assert qw == pytest.approx(0.0, abs=1e-6)
+
+
+def test_heading_to_quat_west():
+    # -X direction = West = (0, 0, -0.707, 0.707)
+    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (-10.0, 0.0, 0.0))
+    assert (qx, qy) == (0.0, 0.0)
+    assert qz == pytest.approx(-math.sin(math.pi / 4), abs=1e-6)
+    assert qw == pytest.approx(math.cos(math.pi / 4), abs=1e-6)
+
+
+def test_heading_to_quat_rejects_zero_delta():
+    with pytest.raises(ValueError):
+        heading_to_quat((1.0, 1.0, 0.0), (1.0, 1.0, 0.0))
