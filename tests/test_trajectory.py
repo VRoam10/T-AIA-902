@@ -122,20 +122,24 @@ def test_square_loop_fallback_topology():
     # Sparse 25 m → ~13 samples; dense 8 m → ~40 samples
     assert traj.map_name == "smallgrid"
     assert traj.source == "fallback:square_loop"
-    assert len(traj.sparse_waypoints) >= 12
-    assert len(traj.sparse_waypoints) <= 16
+    assert len(traj.sparse_waypoints) >= 11
+    assert len(traj.sparse_waypoints) <= 15
     assert len(traj.dense_waypoints) >= 35
-    # First waypoint is the spawn point
-    assert traj.spawn_pos[:2] == traj.sparse_waypoints[0][:2]
+    # Spawn coincides with the first square corner (40, -40)
+    assert traj.spawn_pos[:2] == (40.0, -40.0)
     # Spawn is above the road (z offset)
-    assert traj.spawn_pos[2] > traj.sparse_waypoints[0][2]
+    assert traj.spawn_pos[2] > 1.0
+    # First waypoint is now the next sample along the loop, NOT the spawn
+    assert traj.sparse_waypoints[0][:2] != traj.spawn_pos[:2]
 
 
 def test_square_loop_corners_are_at_expected_positions():
     traj = _square_loop_fallback(map_name="smallgrid")
     # Corners of an 80 m square around origin → expect points near (40,-40), (40,40), (-40,40), (-40,-40)
     xy = [(p[0], p[1]) for p in traj.sparse_waypoints]
-    for cx, cy in [(40.0, -40.0), (40.0, 40.0), (-40.0, 40.0), (-40.0, -40.0)]:
+    # The (40,-40) corner is the spawn point itself and is no longer a
+    # waypoint; check only the 3 remaining corners.
+    for cx, cy in [(40.0, 40.0), (-40.0, 40.0), (-40.0, -40.0)]:
         assert any(math.hypot(x - cx, y - cy) < 1e-3 for x, y in xy), (
             f"missing corner near ({cx}, {cy})"
         )

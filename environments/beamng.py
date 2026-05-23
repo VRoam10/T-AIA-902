@@ -661,18 +661,19 @@ class BeamNGDrivingEnv:
             pass
 
     def _draw_start_end_markers(self):
-        """Draw a blue sphere at the first waypoint and a red sphere at the last.
+        """Draw a blue sphere at the spawn position and a red sphere at the
+        last waypoint.
 
         Best-effort: skipped silently if the beamngpy version doesn't expose
         bng.debug.draw_sphere.
         """
-        if self.bng is None or not self.waypoints:
+        if self.bng is None or self.trajectory is None or not self.waypoints:
             return
         try:
             debug = self.bng.debug
-            start = self.waypoints[0]
+            start = self.trajectory.spawn_pos
             debug.draw_sphere(
-                pos=(start[0], start[1], start[2] + 2.0),
+                pos=(start[0], start[1], start[2] + 1.0),
                 radius=2.5,
                 rgba=(0.0, 0.5, 1.0, 0.8),  # blue = start
                 cling=False,

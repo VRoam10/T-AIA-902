@@ -162,11 +162,13 @@ def _square_loop_fallback(map_name: str) -> TrajectoryData:
     dense = loop_samples(DENSE_SPACING_M)
     spawn_pos = (sparse[0][0], sparse[0][1], sparse[0][2] + SPAWN_Z_OFFSET_M)
     spawn_rot = heading_to_quat(sparse[0], sparse[1])
+    # Drop the first sample (corner under spawn) so the first checkpoint
+    # ring is ahead of the car rather than around it.
     return TrajectoryData(
         spawn_pos=spawn_pos,
         spawn_rot=spawn_rot,
-        sparse_waypoints=sparse,
-        dense_waypoints=dense,
+        sparse_waypoints=sparse[1:],
+        dense_waypoints=dense[1:],
         map_name=map_name,
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         source="fallback:square_loop",
@@ -240,11 +242,13 @@ def generate(bng, map_name: str) -> TrajectoryData:
     dense = resample(centerline, DENSE_SPACING_M)
     spawn_pos = (sparse[0][0], sparse[0][1], sparse[0][2] + SPAWN_Z_OFFSET_M)
     spawn_rot = heading_to_quat(sparse[0], sparse[1])
+    # Drop the first sample: it coincides with spawn, otherwise the first
+    # checkpoint ring would overlap the vehicle and "auto-hit" at episode start.
     return TrajectoryData(
         spawn_pos=spawn_pos,
         spawn_rot=spawn_rot,
-        sparse_waypoints=sparse,
-        dense_waypoints=dense,
+        sparse_waypoints=sparse[1:],
+        dense_waypoints=dense[1:],
         map_name=map_name,
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         source=f"road_network:{road_id}",
