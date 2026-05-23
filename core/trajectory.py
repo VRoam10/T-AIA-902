@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-
 
 Vec3 = tuple[float, float, float]
 Quat = tuple[float, float, float, float]
@@ -34,7 +33,7 @@ class TrajectoryData:
         return json.dumps(d, indent=2)
 
     @classmethod
-    def from_json(cls, payload: str) -> "TrajectoryData":
+    def from_json(cls, payload: str) -> TrajectoryData:
         d = json.loads(payload)
         return cls(
             spawn_pos=tuple(d["spawn_pos"]),
@@ -78,11 +77,13 @@ def resample(path: list[Vec3], spacing: float) -> list[Vec3]:
             d = spacing
             while d < seg_len:
                 t = d / seg_len
-                out.append((
-                    a[0] + (b[0] - a[0]) * t,
-                    a[1] + (b[1] - a[1]) * t,
-                    a[2] + (b[2] - a[2]) * t,
-                ))
+                out.append(
+                    (
+                        a[0] + (b[0] - a[0]) * t,
+                        a[1] + (b[1] - a[1]) * t,
+                        a[2] + (b[2] - a[2]) * t,
+                    )
+                )
                 d += spacing
         # Append the segment endpoint (next vertex), unless it's the closing
         # duplicate of a closed loop.
@@ -142,7 +143,7 @@ def _square_loop_fallback(map_name: str) -> TrajectoryData:
         sparse_waypoints=sparse,
         dense_waypoints=dense,
         map_name=map_name,
-        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         source="fallback:square_loop",
     )
 
@@ -185,7 +186,9 @@ def _extract_longest_road(network: dict) -> tuple[str | None, list[Vec3] | None]
             centerline = [_edge_center(e) for e in edges]
         except ValueError:
             continue
-        length = sum(_segment_length(centerline[i], centerline[i + 1]) for i in range(len(centerline) - 1))
+        length = sum(
+            _segment_length(centerline[i], centerline[i + 1]) for i in range(len(centerline) - 1)
+        )
         if length > best_length:
             best_length = length
             best_id = road_id
@@ -218,7 +221,7 @@ def generate(bng, map_name: str) -> TrajectoryData:
         sparse_waypoints=sparse,
         dense_waypoints=dense,
         map_name=map_name,
-        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         source=f"road_network:{road_id}",
     )
 

@@ -1,7 +1,21 @@
 """Unit tests for core.trajectory."""
-import json
 
-from core.trajectory import TrajectoryData
+import json
+import math
+from unittest.mock import MagicMock
+
+import pytest
+
+from core.trajectory import (
+    TrajectoryData,
+    _edge_center,
+    _extract_longest_road,
+    _square_loop_fallback,
+    generate,
+    heading_to_quat,
+    load_or_generate,
+    resample,
+)
 
 
 def test_trajectorydata_json_roundtrip():
@@ -23,13 +37,6 @@ def test_trajectorydata_json_roundtrip():
 
     restored = TrajectoryData.from_json(payload)
     assert restored == data
-
-
-import math
-
-import pytest
-
-from core.trajectory import resample
 
 
 def test_resample_straight_line_uniform_spacing():
@@ -70,9 +77,6 @@ def test_resample_rejects_short_path():
         resample([(0.0, 0.0, 0.0)], spacing=5.0)
 
 
-from core.trajectory import heading_to_quat
-
-
 def test_heading_to_quat_north_is_identity():
     # +Y direction = North in BeamNG = identity quaternion (0,0,0,1)
     qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, 10.0, 0.0))
@@ -110,9 +114,6 @@ def test_heading_to_quat_rejects_zero_delta():
         heading_to_quat((1.0, 1.0, 0.0), (1.0, 1.0, 0.0))
 
 
-from core.trajectory import _square_loop_fallback
-
-
 def test_square_loop_fallback_topology():
     traj = _square_loop_fallback(map_name="smallgrid")
     # 80 m square, perimeter 320 m
@@ -133,12 +134,9 @@ def test_square_loop_corners_are_at_expected_positions():
     # Corners of an 80 m square around origin → expect points near (40,-40), (40,40), (-40,40), (-40,-40)
     xy = [(p[0], p[1]) for p in traj.sparse_waypoints]
     for cx, cy in [(40.0, -40.0), (40.0, 40.0), (-40.0, 40.0), (-40.0, -40.0)]:
-        assert any(
-            math.hypot(x - cx, y - cy) < 1e-3 for x, y in xy
-        ), f"missing corner near ({cx}, {cy})"
-
-
-from core.trajectory import _extract_longest_road, _edge_center
+        assert any(math.hypot(x - cx, y - cy) < 1e-3 for x, y in xy), (
+            f"missing corner near ({cx}, {cy})"
+        )
 
 
 def test_edge_center_prefers_middle_key():
@@ -180,12 +178,6 @@ def test_extract_longest_road_returns_none_for_empty_network():
 def test_extract_longest_road_skips_single_edge_roads():
     network = {"degenerate": {"edges": [{"middle": (0.0, 0.0, 0.0)}]}}
     assert _extract_longest_road(network) == (None, None)
-
-
-from pathlib import Path
-from unittest.mock import MagicMock
-
-from core.trajectory import generate, load_or_generate, CACHE_DIR
 
 
 def test_generate_from_road_network():

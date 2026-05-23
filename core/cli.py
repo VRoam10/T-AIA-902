@@ -51,7 +51,9 @@ def _pick_beamng_options() -> tuple[str, str]:
     print(f"\n  Selected map : {map_name}")
     cache_path = os.path.join("outputs", "trajectories", f"{map_name}.json")
     if not os.path.exists(cache_path):
-        print(f"  Note: no cached trajectory for '{map_name}'. It will be generated on first launch.")
+        print(
+            f"  Note: no cached trajectory for '{map_name}'. It will be generated on first launch."
+        )
 
     vehicle_labels = list(_BEAMNG_VEHICLES.values())
     vehicle_keys = list(_BEAMNG_VEHICLES.keys())
@@ -312,7 +314,11 @@ def _trajectory_menu():
         print(f"\n>>> Generating trajectory for '{map_name}' ...")
         cache_path = os.path.join("outputs", "trajectories", f"{map_name}.json")
         if os.path.exists(cache_path):
-            ans = input(f"    Cache already exists at {cache_path}. Overwrite? [y/N]: ").strip().lower()
+            ans = (
+                input(f"    Cache already exists at {cache_path}. Overwrite? [y/N]: ")
+                .strip()
+                .lower()
+            )
             if ans != "y":
                 print("    Skipped.")
                 continue
@@ -326,9 +332,11 @@ def _trajectory_menu():
         )
         try:
             env.reset()
-            print(f"    Done. Source: {env.trajectory.source}, "
-                  f"{len(env.trajectory.sparse_waypoints)} sparse / "
-                  f"{len(env.trajectory.dense_waypoints)} dense waypoints.")
+            print(
+                f"    Done. Source: {env.trajectory.source}, "
+                f"{len(env.trajectory.sparse_waypoints)} sparse / "
+                f"{len(env.trajectory.dense_waypoints)} dense waypoints."
+            )
         finally:
             env.close()
 

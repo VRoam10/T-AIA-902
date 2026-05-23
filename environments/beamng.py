@@ -139,7 +139,9 @@ class BeamNGDrivingEnv:
     def _select_waypoints(self) -> list[tuple[float, float, float]]:
         assert self.trajectory is not None
         use_dense = self.reward_mode == "ddpg" or isinstance(self, BeamNGContinuousEnv)
-        return list(self.trajectory.dense_waypoints if use_dense else self.trajectory.sparse_waypoints)
+        return list(
+            self.trajectory.dense_waypoints if use_dense else self.trajectory.sparse_waypoints
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -284,6 +286,7 @@ class BeamNGDrivingEnv:
     def _resolve_trajectory(self) -> TrajectoryData:
         """Return cached trajectory or probe the map to generate one."""
         from core.trajectory import CACHE_DIR
+
         cache_path = CACHE_DIR / f"{self.map_name}.json"
         if cache_path.exists():
             return load_or_generate(self.map_name, bng=None)
@@ -756,7 +759,9 @@ class BeamNGRadarEnv(BeamNGContinuousEnv):
         self.vehicle.attach_sensor("electrics", self.electrics)
         self.vehicle.attach_sensor("damage", self.damage_sensor)
 
-        self.scenario.add_vehicle(self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot)
+        self.scenario.add_vehicle(
+            self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot
+        )
 
         if human_control:
             scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
@@ -934,7 +939,9 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         self.vehicle.attach_sensor("electrics", self.electrics)
         self.vehicle.attach_sensor("damage", self.damage_sensor)
 
-        self.scenario.add_vehicle(self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot)
+        self.scenario.add_vehicle(
+            self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot
+        )
 
         if human_control:
             scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
