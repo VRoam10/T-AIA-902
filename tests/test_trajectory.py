@@ -180,3 +180,96 @@ def test_extract_longest_road_returns_none_for_empty_network():
 def test_extract_longest_road_skips_single_edge_roads():
     network = {"degenerate": {"edges": [{"middle": (0.0, 0.0, 0.0)}]}}
     assert _extract_longest_road(network) == (None, None)
+
+
+from pathlib import Path
+from unittest.mock import MagicMock
+
+from core.trajectory import generate, load_or_generate, CACHE_DIR
+
+
+def test_generate_from_road_network():
+    bng = MagicMock()
+    bng.scenario.get_road_network.return_value = {
+        "main_road": {
+            "edges": [
+                {"middle": (0.0, 0.0, 0.0)},
+                {"middle": (50.0, 0.0, 0.0)},
+                {"middle": (100.0, 0.0, 0.0)},
+            ],
+        },
+    }
+    traj = generate(bng, map_name="italy")
+    bng.scenario.get_road_network.assert_called_once_with(include_edges=True, drivable_only=True)
+    assert traj.map_name == "italy"
+    assert traj.source.startswith("road_network:main_road")
+    assert len(traj.sparse_waypoints) >= 4
+    assert len(traj.dense_waypoints) > len(traj.sparse_waypoints)
+    assert traj.spawn_pos[2] > traj.sparse_waypoints[0][2]  # z offset above road
+
+
+def test_generate_falls_back_when_network_empty():
+    bng = MagicMock()
+    bng.scenario.get_road_network.return_value = {}
+    traj = generate(bng, map_name="smallgrid")
+    assert traj.source == "fallback:square_loop"
+
+
+def test_load_or_generate_uses_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.trajectory.CACHE_DIR", tmp_path)
+    cached = TrajectoryData(
+        spawn_pos=(1.0, 2.0, 3.0),
+        spawn_rot=(0.0, 0.0, 0.707, 0.707),
+        sparse_waypoints=[(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)],
+        dense_waypoints=[(0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (10.0, 0.0, 0.0)],
+        map_name="italy",
+        generated_at="2026-05-23T12:00:00+00:00",
+        source="road_network:cached",
+    )
+    (tmp_path / "italy.json").write_text(cached.to_json())
+
+    bng = MagicMock()
+    out = load_or_generate("italy", bng)
+    bng.scenario.get_road_network.assert_not_called()
+    assert out == cached
+
+
+def test_load_or_generate_generates_and_writes_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.trajectory.CACHE_DIR", tmp_path)
+    bng = MagicMock()
+    bng.scenario.get_road_network.return_value = {
+        "r": {
+            "edges": [
+                {"middle": (0.0, 0.0, 0.0)},
+                {"middle": (100.0, 0.0, 0.0)},
+            ],
+        },
+    }
+    out = load_or_generate("italy", bng)
+    assert (tmp_path / "italy.json").exists()
+    # Round-trip the file
+    assert TrajectoryData.from_json((tmp_path / "italy.json").read_text()) == out
+
+
+def test_load_or_generate_raises_when_no_cache_and_no_bng(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.trajectory.CACHE_DIR", tmp_path)
+    with pytest.raises(RuntimeError, match="No cached trajectory"):
+        load_or_generate("italy", bng=None)
+
+
+def test_load_or_generate_regenerates_on_corrupt_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.trajectory.CACHE_DIR", tmp_path)
+    (tmp_path / "italy.json").write_text("{not valid json")
+    bng = MagicMock()
+    bng.scenario.get_road_network.return_value = {
+        "r": {
+            "edges": [
+                {"middle": (0.0, 0.0, 0.0)},
+                {"middle": (100.0, 0.0, 0.0)},
+            ],
+        },
+    }
+    out = load_or_generate("italy", bng)
+    assert out.map_name == "italy"
+    # Cache rewritten with valid content
+    TrajectoryData.from_json((tmp_path / "italy.json").read_text())

@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 Vec3 = tuple[float, float, float]
@@ -113,6 +114,8 @@ SPAWN_Z_OFFSET_M = 1.0
 FALLBACK_SIDE_M = 80.0
 FALLBACK_GROUND_Z = 1.0
 
+CACHE_DIR = Path("outputs/trajectories")
+
 
 def _square_loop_fallback(map_name: str) -> TrajectoryData:
     """Generate an 80 m square loop centered on the world origin.
@@ -191,3 +194,56 @@ def _extract_longest_road(network: dict) -> tuple[str | None, list[Vec3] | None]
     if best_centerline is None or best_length == 0.0:
         return (None, None)
     return (best_id, best_centerline)
+
+
+def generate(bng, map_name: str) -> TrajectoryData:
+    """Probe BeamNG for the map's road network and build a TrajectoryData.
+
+    Requires `bng` to be already connected with the target map's scenario loaded
+    (any scenario on the right map is fine — only get_road_network is called).
+    """
+    network = bng.scenario.get_road_network(include_edges=True, drivable_only=True)
+    road_id, centerline = _extract_longest_road(network)
+
+    if centerline is None:
+        return _square_loop_fallback(map_name=map_name)
+
+    sparse = resample(centerline, SPARSE_SPACING_M)
+    dense = resample(centerline, DENSE_SPACING_M)
+    spawn_pos = (sparse[0][0], sparse[0][1], sparse[0][2] + SPAWN_Z_OFFSET_M)
+    spawn_rot = heading_to_quat(sparse[0], sparse[1])
+    return TrajectoryData(
+        spawn_pos=spawn_pos,
+        spawn_rot=spawn_rot,
+        sparse_waypoints=sparse,
+        dense_waypoints=dense,
+        map_name=map_name,
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        source=f"road_network:{road_id}",
+    )
+
+
+def load_or_generate(map_name: str, bng) -> TrajectoryData:
+    """Return the cached trajectory for `map_name` or generate one via BeamNG.
+
+    Raises RuntimeError if no cache exists and `bng` is None.
+    A corrupt cache file is logged, deleted, and regenerated (if `bng` is given).
+    """
+    cache_path = CACHE_DIR / f"{map_name}.json"
+    if cache_path.exists():
+        try:
+            return TrajectoryData.from_json(cache_path.read_text())
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            print(f"[trajectory] cache for '{map_name}' is corrupt ({exc}); regenerating")
+            cache_path.unlink(missing_ok=True)
+
+    if bng is None:
+        raise RuntimeError(
+            f"No cached trajectory for '{map_name}'. Launch BeamNG and run "
+            "'Generate trajectories' from the main menu first."
+        )
+
+    data = generate(bng, map_name)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(data.to_json())
+    return data
