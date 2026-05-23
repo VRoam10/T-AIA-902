@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
 
 
@@ -42,3 +43,52 @@ class TrajectoryData:
             generated_at=d["generated_at"],
             source=d["source"],
         )
+
+
+def _segment_length(a: Vec3, b: Vec3) -> float:
+    return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def resample(path: list[Vec3], spacing: float) -> list[Vec3]:
+    """Resample a polyline at uniform arc-length intervals.
+
+    The first and last original points are always included.  Internal samples
+    are placed every `spacing` metres along the polyline measured in the XY
+    plane (Z is linearly interpolated).
+    """
+    if len(path) < 2:
+        raise ValueError("resample requires at least 2 points")
+    if spacing <= 0.0:
+        raise ValueError("spacing must be > 0")
+
+    # Cumulative arc length per original vertex
+    cum = [0.0]
+    for i in range(1, len(path)):
+        cum.append(cum[-1] + _segment_length(path[i - 1], path[i]))
+    total = cum[-1]
+
+    out: list[Vec3] = [path[0]]
+    target = spacing
+    seg = 1  # index of the original vertex at the END of the current segment
+
+    while target < total:
+        # Advance until target falls inside [cum[seg-1], cum[seg]]
+        while seg < len(path) and cum[seg] < target:
+            seg += 1
+        if seg >= len(path):
+            break
+        seg_start_d = cum[seg - 1]
+        seg_len = cum[seg] - seg_start_d
+        t = (target - seg_start_d) / seg_len if seg_len > 0 else 0.0
+        a, b = path[seg - 1], path[seg]
+        out.append((
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ))
+        target += spacing
+
+    # Always include the last original point
+    if out[-1] != path[-1]:
+        out.append(path[-1])
+    return out
