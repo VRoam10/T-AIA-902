@@ -108,3 +108,31 @@ def test_heading_to_quat_west():
 def test_heading_to_quat_rejects_zero_delta():
     with pytest.raises(ValueError):
         heading_to_quat((1.0, 1.0, 0.0), (1.0, 1.0, 0.0))
+
+
+from core.trajectory import _square_loop_fallback
+
+
+def test_square_loop_fallback_topology():
+    traj = _square_loop_fallback(map_name="smallgrid")
+    # 80 m square, perimeter 320 m
+    # Sparse 25 m → ~13 samples; dense 8 m → ~40 samples
+    assert traj.map_name == "smallgrid"
+    assert traj.source == "fallback:square_loop"
+    assert len(traj.sparse_waypoints) >= 12
+    assert len(traj.sparse_waypoints) <= 16
+    assert len(traj.dense_waypoints) >= 35
+    # First waypoint is the spawn point
+    assert traj.spawn_pos[:2] == traj.sparse_waypoints[0][:2]
+    # Spawn is above the road (z offset)
+    assert traj.spawn_pos[2] > traj.sparse_waypoints[0][2]
+
+
+def test_square_loop_corners_are_at_expected_positions():
+    traj = _square_loop_fallback(map_name="smallgrid")
+    # Corners of an 80 m square around origin → expect points near (40,-40), (40,40), (-40,40), (-40,-40)
+    xy = [(p[0], p[1]) for p in traj.sparse_waypoints]
+    for cx, cy in [(40.0, -40.0), (40.0, 40.0), (-40.0, 40.0), (-40.0, -40.0)]:
+        assert any(
+            math.hypot(x - cx, y - cy) < 1e-3 for x, y in xy
+        ), f"missing corner near ({cx}, {cy})"

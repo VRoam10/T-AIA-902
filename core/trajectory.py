@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 
 
 Vec3 = tuple[float, float, float]
@@ -50,47 +51,44 @@ def _segment_length(a: Vec3, b: Vec3) -> float:
 
 
 def resample(path: list[Vec3], spacing: float) -> list[Vec3]:
-    """Resample a polyline at uniform arc-length intervals.
+    """Resample a polyline at uniform arc-length intervals per segment.
 
-    The first and last original points are always included.  Internal samples
-    are placed every `spacing` metres along the polyline measured in the XY
-    plane (Z is linearly interpolated).
+    Original vertices are always preserved (so corners survive resampling).
+    Within each straight segment between two adjacent vertices, samples are
+    placed every `spacing` metres measured in the XY plane (Z is linearly
+    interpolated).  If a segment is shorter than `spacing`, no interior
+    samples are added for it.  For a closed polyline (path[0] == path[-1])
+    the duplicate closing vertex is dropped from the output so the loop
+    starts and ends at distinct positions in the sample sequence.
     """
     if len(path) < 2:
         raise ValueError("resample requires at least 2 points")
     if spacing <= 0.0:
         raise ValueError("spacing must be > 0")
 
-    # Cumulative arc length per original vertex
-    cum = [0.0]
-    for i in range(1, len(path)):
-        cum.append(cum[-1] + _segment_length(path[i - 1], path[i]))
-    total = cum[-1]
+    closed = path[0] == path[-1]
+    last_idx = len(path) - 1
 
     out: list[Vec3] = [path[0]]
-    target = spacing
-    seg = 1  # index of the original vertex at the END of the current segment
-
-    while target < total:
-        # Advance until target falls inside [cum[seg-1], cum[seg]]
-        while seg < len(path) and cum[seg] < target:
-            seg += 1
-        if seg >= len(path):
-            break
-        seg_start_d = cum[seg - 1]
-        seg_len = cum[seg] - seg_start_d
-        t = (target - seg_start_d) / seg_len if seg_len > 0 else 0.0
-        a, b = path[seg - 1], path[seg]
-        out.append((
-            a[0] + (b[0] - a[0]) * t,
-            a[1] + (b[1] - a[1]) * t,
-            a[2] + (b[2] - a[2]) * t,
-        ))
-        target += spacing
-
-    # Always include the last original point
-    if out[-1] != path[-1]:
-        out.append(path[-1])
+    for i in range(1, len(path)):
+        a, b = path[i - 1], path[i]
+        seg_len = _segment_length(a, b)
+        if seg_len > 0.0:
+            d = spacing
+            while d < seg_len:
+                t = d / seg_len
+                out.append((
+                    a[0] + (b[0] - a[0]) * t,
+                    a[1] + (b[1] - a[1]) * t,
+                    a[2] + (b[2] - a[2]) * t,
+                ))
+                d += spacing
+        # Append the segment endpoint (next vertex), unless it's the closing
+        # duplicate of a closed loop.
+        if closed and i == last_idx:
+            continue
+        if b != out[-1]:
+            out.append(b)
     return out
 
 
@@ -107,3 +105,40 @@ def heading_to_quat(p0: Vec3, p1: Vec3) -> Quat:
         raise ValueError("p0 and p1 must differ in the XY plane")
     heading = math.atan2(dx, dy)
     return (0.0, 0.0, math.sin(heading / 2.0), math.cos(heading / 2.0))
+
+
+SPARSE_SPACING_M = 25.0
+DENSE_SPACING_M = 8.0
+SPAWN_Z_OFFSET_M = 1.0
+FALLBACK_SIDE_M = 80.0
+FALLBACK_GROUND_Z = 1.0
+
+
+def _square_loop_fallback(map_name: str) -> TrajectoryData:
+    """Generate an 80 m square loop centered on the world origin.
+
+    Used as a last-resort trajectory for maps where get_road_network() returns
+    nothing usable (typically `smallgrid`).
+    """
+    half = FALLBACK_SIDE_M / 2.0
+    z = FALLBACK_GROUND_Z
+    corners: list[Vec3] = [
+        (half, -half, z),
+        (half, half, z),
+        (-half, half, z),
+        (-half, -half, z),
+        (half, -half, z),  # close the loop
+    ]
+    sparse = resample(corners, SPARSE_SPACING_M)
+    dense = resample(corners, DENSE_SPACING_M)
+    spawn_pos = (sparse[0][0], sparse[0][1], sparse[0][2] + SPAWN_Z_OFFSET_M)
+    spawn_rot = heading_to_quat(sparse[0], sparse[1])
+    return TrajectoryData(
+        spawn_pos=spawn_pos,
+        spawn_rot=spawn_rot,
+        sparse_waypoints=sparse,
+        dense_waypoints=dense,
+        map_name=map_name,
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        source="fallback:square_loop",
+    )
