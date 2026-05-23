@@ -136,3 +136,47 @@ def test_square_loop_corners_are_at_expected_positions():
         assert any(
             math.hypot(x - cx, y - cy) < 1e-3 for x, y in xy
         ), f"missing corner near ({cx}, {cy})"
+
+
+from core.trajectory import _extract_longest_road, _edge_center
+
+
+def test_edge_center_prefers_middle_key():
+    edge = {"middle": (5.0, 5.0, 1.0), "left": (0.0, 0.0, 1.0), "right": (10.0, 10.0, 1.0)}
+    assert _edge_center(edge) == (5.0, 5.0, 1.0)
+
+
+def test_edge_center_falls_back_to_left_right_midpoint():
+    edge = {"left": (0.0, 0.0, 1.0), "right": (10.0, 4.0, 1.0)}
+    assert _edge_center(edge) == (5.0, 2.0, 1.0)
+
+
+def test_extract_longest_road_picks_longest():
+    network = {
+        "short_road": {
+            "edges": [
+                {"middle": (0.0, 0.0, 0.0)},
+                {"middle": (5.0, 0.0, 0.0)},
+            ],
+        },
+        "long_road": {
+            "edges": [
+                {"middle": (0.0, 0.0, 0.0)},
+                {"middle": (50.0, 0.0, 0.0)},
+                {"middle": (100.0, 0.0, 0.0)},
+            ],
+        },
+    }
+    road_id, centerline = _extract_longest_road(network)
+    assert road_id == "long_road"
+    assert centerline[0] == (0.0, 0.0, 0.0)
+    assert centerline[-1] == (100.0, 0.0, 0.0)
+
+
+def test_extract_longest_road_returns_none_for_empty_network():
+    assert _extract_longest_road({}) == (None, None)
+
+
+def test_extract_longest_road_skips_single_edge_roads():
+    network = {"degenerate": {"edges": [{"middle": (0.0, 0.0, 0.0)}]}}
+    assert _extract_longest_road(network) == (None, None)

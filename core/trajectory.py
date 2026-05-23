@@ -142,3 +142,52 @@ def _square_loop_fallback(map_name: str) -> TrajectoryData:
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         source="fallback:square_loop",
     )
+
+
+def _edge_center(edge: dict) -> Vec3:
+    """Pull the centerline point out of a single road-edge dict.
+
+    BeamNGpy versions sometimes expose this under `"middle"` and sometimes only
+    as `"left"` + `"right"` — we accept either shape.  Raises ValueError if
+    neither is present.
+    """
+    if "middle" in edge:
+        return tuple(edge["middle"])  # type: ignore[return-value]
+    if "left" in edge and "right" in edge:
+        left, right = edge["left"], edge["right"]
+        return (
+            (left[0] + right[0]) / 2.0,
+            (left[1] + right[1]) / 2.0,
+            (left[2] + right[2]) / 2.0,
+        )
+    raise ValueError(f"edge dict missing centerline keys: {sorted(edge.keys())}")
+
+
+def _extract_longest_road(network: dict) -> tuple[str | None, list[Vec3] | None]:
+    """Return (road_id, centerline) of the longest drivable road in `network`.
+
+    `network` is the dict returned by `bng.scenario.get_road_network(...)`.
+    Returns (None, None) if no road has at least two edges with non-zero
+    cumulative length.
+    """
+    best_id: str | None = None
+    best_centerline: list[Vec3] | None = None
+    best_length = 0.0
+
+    for road_id, road in network.items():
+        edges = road.get("edges", []) if isinstance(road, dict) else []
+        if len(edges) < 2:
+            continue
+        try:
+            centerline = [_edge_center(e) for e in edges]
+        except ValueError:
+            continue
+        length = sum(_segment_length(centerline[i], centerline[i + 1]) for i in range(len(centerline) - 1))
+        if length > best_length:
+            best_length = length
+            best_id = road_id
+            best_centerline = centerline
+
+    if best_centerline is None or best_length == 0.0:
+        return (None, None)
+    return (best_id, best_centerline)
