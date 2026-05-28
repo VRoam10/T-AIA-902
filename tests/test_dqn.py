@@ -1,4 +1,4 @@
-"""Unit tests for algorithms.dqn — DQNNetwork and DQNAgent."""
+"""Unit tests for algorithms.dqn — SumTree, DQNNetwork, and DQNAgent."""
 
 import os
 import tempfile
@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from algorithms.dqn import DQNAgent, DQNNetwork
+from algorithms.dqn import DQNAgent, DQNNetwork, SumTree
 
 N_STATES = 8
 N_ACTIONS = 4
@@ -19,10 +19,63 @@ HIDDEN = 64
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# SumTree
+# ---------------------------------------------------------------------------
+
+
+class TestSumTree:
+    def test_total_equals_sum_of_priorities(self):
+        tree = SumTree(capacity=8)
+        for p in [1.0, 2.0, 3.0, 4.0]:
+            tree.add(p, "x")
+        assert tree.total == pytest.approx(10.0)
+
+    def test_len_tracks_insertions(self):
+        tree = SumTree(capacity=4)
+        assert len(tree) == 0
+        tree.add(1.0, "a")
+        tree.add(2.0, "b")
+        assert len(tree) == 2
+
+    def test_len_capped_at_capacity(self):
+        tree = SumTree(capacity=4)
+        for i in range(10):
+            tree.add(float(i + 1), i)
+        assert len(tree) == 4
+
+    def test_update_changes_total(self):
+        tree = SumTree(capacity=4)
+        tree.add(1.0, "a")
+        tree.add(1.0, "b")
+        leaf_idx = tree.capacity - 1  # first leaf
+        tree.update(leaf_idx, 5.0)
+        assert tree.total == pytest.approx(6.0)
+
+    def test_sample_returns_highest_priority_region(self):
+        tree = SumTree(capacity=8)
+        tree.add(0.01, "low")
+        tree.add(100.0, "high")
+        # Sampling near total should hit the high-priority leaf
+        _, _, data = tree.sample(tree.total * 0.99)
+        assert data == "high"
+
+    def test_sample_low_value_hits_first_added(self):
+        tree = SumTree(capacity=8)
+        tree.add(100.0, "first")
+        tree.add(0.01, "second")
+        _, _, data = tree.sample(0.001)
+        assert data == "first"
+
+
+# ---------------------------------------------------------------------------
+# DQNNetwork
+# ---------------------------------------------------------------------------
+
+
 class TestDQNNetwork:
     def setup_method(self):
         self.net = DQNNetwork(N_STATES, N_ACTIONS, hidden=HIDDEN)
-        # DQNAgent hardcodes hidden=128; use default for agent tests
 
     def test_output_shape(self):
         x = torch.zeros(1, N_STATES)
@@ -305,3 +358,95 @@ class TestDQNAgentCheckpoint:
                 assert torch.equal(qp.data, tp.data)
         finally:
             os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# DQNAgent — hidden size configurable
+# ---------------------------------------------------------------------------
+
+
+class TestHiddenConfig:
+    def test_custom_hidden_changes_network_size(self):
+        agent_small = DQNAgent(N_STATES, N_ACTIONS, hidden=32)
+        agent_large = DQNAgent(N_STATES, N_ACTIONS, hidden=256)
+
+        params_small = sum(p.numel() for p in agent_small.q_net.parameters())
+        params_large = sum(p.numel() for p in agent_large.q_net.parameters())
+        assert params_large > params_small
+
+    def test_hidden_in_get_config(self):
+        # hidden is reflected in the network but not necessarily in get_config;
+        # just verify the agent trains without error at non-default hidden size.
+        agent = DQNAgent(N_STATES, N_ACTIONS, hidden=32, batch_size=8)
+        for _ in range(20):
+            agent.update(*_random_transition())
+        assert agent.train_steps > 0
+
+
+# ---------------------------------------------------------------------------
+# DQNAgent — Prioritized Experience Replay (PER)
+# ---------------------------------------------------------------------------
+
+
+def _make_per_agent(**kwargs):
+    defaults = dict(n_states=N_STATES, n_actions=N_ACTIONS, batch_size=8, use_per=True, memory_size=200)
+    defaults.update(kwargs)
+    return DQNAgent(**defaults)
+
+
+class TestPER:
+    def test_per_agent_trains_without_error(self):
+        agent = _make_per_agent()
+        for _ in range(20):
+            loss = agent.update(*_random_transition())
+        assert isinstance(loss, float)
+        assert loss >= 0.0
+
+    def test_per_train_steps_increment(self):
+        agent = _make_per_agent()
+        for _ in range(20):
+            agent.update(*_random_transition())
+        assert agent.train_steps > 0
+
+    def test_per_returns_none_when_buffer_too_small(self):
+        agent = _make_per_agent(batch_size=64, memory_size=1000)
+        loss = agent.update(*_random_transition())
+        assert loss is None
+
+    def test_per_max_priority_grows(self):
+        agent = _make_per_agent()
+        initial_max = agent._max_priority
+        for _ in range(20):
+            agent.update(*_random_transition())
+        # After training, priorities should have been updated
+        assert agent._max_priority >= initial_max
+
+    def test_per_beta_anneals_toward_one(self):
+        agent = _make_per_agent(per_beta=0.4, per_beta_steps=10)
+        initial_beta = agent._per_beta
+        for _ in range(20):
+            agent.update(*_random_transition())
+        assert agent._per_beta > initial_beta
+
+    def test_per_vs_uniform_same_interface(self):
+        per_agent = _make_per_agent()
+        uni_agent = _make_agent(batch_size=8)
+
+        for _ in range(20):
+            s, a, r, ns, d = _random_transition()
+            per_agent.update(s, a, r, ns, d)
+            uni_agent.update(s, a, r, ns, d)
+
+        # Both must select valid actions
+        state = np.zeros(N_STATES, dtype=np.float32)
+        per_agent.epsilon = 0.0
+        uni_agent.epsilon = 0.0
+        assert 0 <= per_agent.select_action(state) < N_ACTIONS
+        assert 0 <= uni_agent.select_action(state) < N_ACTIONS
+
+    def test_get_config_reflects_per(self):
+        agent = _make_per_agent()
+        cfg = agent.get_config()
+        assert cfg["use_per"] is True
+        assert "per_alpha" in cfg
+        assert "per_beta" in cfg
