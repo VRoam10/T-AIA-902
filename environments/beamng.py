@@ -140,7 +140,7 @@ class BeamNGDrivingEnv:
         assert self.trajectory is not None
         use_dense = self.reward_mode == "ddpg" or isinstance(self, BeamNGContinuousEnv)
         return list(
-            self.trajectory.dense_waypoints if use_dense else self.trajectory.sparse_waypoints
+            self.trajectory.dense_waypoints if use_dense else self.trajectory.dense_waypoints
         )
 
     # ------------------------------------------------------------------
