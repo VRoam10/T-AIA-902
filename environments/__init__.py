@@ -70,22 +70,3 @@ registry.register_environment(
     metadata={"n_states": 261, "n_actions": 3, "state_type": "continuous"},
 )
 
-
-def _make_beamng_radar(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
-    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
-    from environments.beamng import BeamNGRadarEnv
-
-    return BeamNGRadarEnv(
-        beamng_home=BEAMNG_HOME,
-        beamng_user=BEAMNG_USER,
-        headless=HEADLESS,
-        vehicle_id=vehicle_id,
-        map_name=map_name,
-    )
-
-
-registry.register_environment(
-    "beamng_radar",
-    factory=_make_beamng_radar,
-    metadata={"n_states": 41, "n_actions": 3, "state_type": "continuous"},
-)

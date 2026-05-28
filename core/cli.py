@@ -35,7 +35,7 @@ def _ask_int(prompt: str, default: int) -> int:
             print("  Invalid input.")
 
 
-_BEAMNG_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "smallgrid"]
+_BEAMNG_MAPS = ["gridmap_v2", "italy", "west_coast_usa"]
 
 _BEAMNG_VEHICLES = {
     "taxi": "Burnside (Taxi)",
