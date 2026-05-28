@@ -14,6 +14,7 @@ from config import (
     LOG_LIDAR,
     LOG_RADAR,
 )
+from core.trajectory import TrajectoryData, load_or_generate
 
 
 class BeamNGDrivingEnv:
@@ -57,37 +58,9 @@ class BeamNGDrivingEnv:
 
     N_STATES = 5 + LIDAR_RAYS  # 5 kinematic + 8 lidar = 13
 
-    # Original sparse waypoints (for discrete-action algos: DQN, Q-learning)
-    DEFAULT_WAYPOINTS = [
-        (61.0, -755.0, 100.0),
-        (90.0, -734.0, 100.0),
-        (116.0, -612.0, 100.0),
-    ]
-
-    # Dense waypoints for continuous-action algos (DDPG, TD3)
-    DDPG_WAYPOINTS = [
-        (61.0, -773.0, 100.0),
-        (63.0, -758.0, 100.0),
-        (67.0, -745.0, 100.0),
-        (73.0, -738.0, 100.0),
-        (81.0, -734.0, 100.0),
-        (90.0, -734.0, 100.0),
-        (100.0, -734.0, 100.0),
-        (110.0, -730.0, 100.0),
-        (116.0, -720.0, 100.0),
-        (116.0, -700.0, 100.0),
-        (116.0, -680.0, 100.0),
-        (116.0, -660.0, 100.0),
-        (116.0, -640.0, 100.0),
-        (116.0, -620.0, 100.0),
-        (116.0, -612.0, 100.0),
-    ]
-
     CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
     CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
 
-    SPAWN_POS = (61.0, -788.0, 101.0)
-    SPAWN_ROT = (0.0, 0.0, 1.0, 0.0)
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 500
     MAX_DAMAGE = 500.0  # damage threshold that ends the episode
@@ -155,15 +128,20 @@ class BeamNGDrivingEnv:
         self._last_dist = 0.0
         self._steps = 0
         self._active_marker_id: str | None = None
-        self.waypoints = list(self.DEFAULT_WAYPOINTS)
-        self._current_pos = self.SPAWN_POS
         self._checkpoint_dist = 0.0
         self.headless = headless
 
-        if self.reward_mode in ("ddpg"):
-            self.waypoints = list(self.DEFAULT_WAYPOINTS)
-        else:
-            self.waypoints = list(self.DEFAULT_WAYPOINTS)
+        # Filled on first _launch() — either read from cache or generated then.
+        self.trajectory: TrajectoryData | None = None
+        self.waypoints: list[tuple[float, float, float]] = []
+        self._current_pos = (0.0, 0.0, 0.0)
+
+    def _select_waypoints(self) -> list[tuple[float, float, float]]:
+        assert self.trajectory is not None
+        use_dense = self.reward_mode == "ddpg" or isinstance(self, BeamNGContinuousEnv)
+        return list(
+            self.trajectory.dense_waypoints if use_dense else self.trajectory.dense_waypoints
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -176,6 +154,9 @@ class BeamNGDrivingEnv:
         else:
             # self._randomize_waypoints()
             self.bng.scenario.restart()
+            # Debug-draw spheres are wiped on scenario restart — redraw them.
+            self._update_active_marker(1)
+            self._draw_start_end_markers()
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
@@ -300,10 +281,31 @@ class BeamNGDrivingEnv:
             headless=self.headless,
         )
         self.bng.open(launch=True)
+        self.trajectory = self._resolve_trajectory()
+        self.waypoints = self._select_waypoints()
+        self._current_pos = self.trajectory.spawn_pos
         self._load_scenario(human_control=human_control)
 
+    def _resolve_trajectory(self) -> TrajectoryData:
+        """Return cached trajectory or probe the map to generate one."""
+        from core.trajectory import CACHE_DIR
+
+        cache_path = CACHE_DIR / f"{self.map_name}.json"
+        if cache_path.exists():
+            return load_or_generate(self.map_name, bng=None)
+
+        # No cache → run a probe scenario so we can call get_road_network
+        probe = Scenario(self.map_name, "trajectory_probe", description="Road probe")
+        probe_vehicle = Vehicle("probe_vehicle", model="etk800")
+        probe.add_vehicle(probe_vehicle, pos=(0.0, 0.0, 100.0), rot_quat=(0.0, 0.0, 0.0, 1.0))
+        probe.make(self.bng)
+        self.bng.load_scenario(probe)
+        self.bng.start_scenario()
+        time.sleep(0.5)
+        return load_or_generate(self.map_name, self.bng)
+
     def _randomize_waypoints(self):
-        self.waypoints = random.sample(self.DEFAULT_WAYPOINTS, len(self.DEFAULT_WAYPOINTS))
+        self.waypoints = random.sample(self.waypoints, len(self.waypoints))
 
     def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
@@ -322,14 +324,14 @@ class BeamNGDrivingEnv:
 
         self.scenario.add_vehicle(
             self.vehicle,
-            pos=self.SPAWN_POS,
-            rot_quat=self.SPAWN_ROT,
+            pos=self.trajectory.spawn_pos,
+            rot_quat=self.trajectory.spawn_rot,
+            cling=True,
         )
 
-        # Add visual checkpoint rings for every waypoint only for human control (visible in-game as hoops).
-        if human_control:
-            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-            self.scenario.add_checkpoints(self.waypoints, scales)
+        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
@@ -359,6 +361,7 @@ class BeamNGDrivingEnv:
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(1)
+        self._draw_start_end_markers()
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return a normalized state vector (7 floats)."""
@@ -658,6 +661,36 @@ class BeamNGDrivingEnv:
             # bng.debug not available on this beamngpy version — skip silently
             pass
 
+    def _draw_start_end_markers(self):
+        """Draw a blue sphere at the spawn position and a red sphere at the
+        last waypoint.
+
+        Best-effort: skipped silently if the beamngpy version doesn't expose
+        bng.debug.draw_sphere.
+        """
+        if self.bng is None or self.trajectory is None or not self.waypoints:
+            return
+        try:
+            debug = self.bng.debug
+            start = self.trajectory.spawn_pos
+            debug.draw_sphere(
+                pos=(start[0], start[1], start[2] + 1.0),
+                radius=2.5,
+                rgba=(0.0, 0.5, 1.0, 0.8),  # blue = start
+                cling=False,
+                freeze=False,
+            )
+            end = self.waypoints[-1]
+            debug.draw_sphere(
+                pos=(end[0], end[1], end[2] + 2.0),
+                radius=2.5,
+                rgba=(1.0, 0.0, 0.0, 0.8),  # red = end
+                cling=False,
+                freeze=False,
+            )
+        except AttributeError:
+            pass
+
 
 class BeamNGContinuousEnv(BeamNGDrivingEnv):
     """
@@ -760,11 +793,13 @@ class BeamNGRadarEnv(BeamNGContinuousEnv):
         self.vehicle.attach_sensor("electrics", self.electrics)
         self.vehicle.attach_sensor("damage", self.damage_sensor)
 
-        self.scenario.add_vehicle(self.vehicle, pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
+        self.scenario.add_vehicle(
+            self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot
+        )
 
-        if human_control:
-            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-            self.scenario.add_checkpoints(self.waypoints, scales)
+        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)
@@ -792,6 +827,7 @@ class BeamNGRadarEnv(BeamNGContinuousEnv):
         )
 
         self._update_active_marker(1)
+        self._draw_start_end_markers()
 
     def _observe(self) -> np.ndarray:
         self.vehicle.poll_sensors()
@@ -938,11 +974,13 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         self.vehicle.attach_sensor("electrics", self.electrics)
         self.vehicle.attach_sensor("damage", self.damage_sensor)
 
-        self.scenario.add_vehicle(self.vehicle, pos=self.SPAWN_POS, rot_quat=self.SPAWN_ROT)
+        self.scenario.add_vehicle(
+            self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot
+        )
 
-        if human_control:
-            scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-            self.scenario.add_checkpoints(self.waypoints, scales)
+        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        self.scenario.add_checkpoints(self.waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)
@@ -966,6 +1004,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         )
 
         self._update_active_marker(1)
+        self._draw_start_end_markers()
 
     def _observe(self) -> np.ndarray:
         self.vehicle.poll_sensors()

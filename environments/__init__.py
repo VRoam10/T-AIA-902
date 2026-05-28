@@ -15,8 +15,12 @@ def _make_beamng(reward_mode="default", vehicle_id="taxi", map_name="gridmap_v2"
     from environments.beamng import BeamNGDrivingEnv
 
     return BeamNGDrivingEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        reward_mode=reward_mode, vehicle_id=vehicle_id, map_name=map_name,
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        reward_mode=reward_mode,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
     )
 
 
@@ -32,8 +36,11 @@ def _make_beamng_continuous(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs)
     from environments.beamng import BeamNGContinuousEnv
 
     return BeamNGContinuousEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        vehicle_id=vehicle_id, map_name=map_name,
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
     )
 
 
@@ -49,8 +56,11 @@ def _make_beamng_camera(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
     from environments.beamng import BeamNGCameraEnv
 
     return BeamNGCameraEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        vehicle_id=vehicle_id, map_name=map_name,
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
     )
 
 
@@ -66,8 +76,11 @@ def _make_beamng_radar(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
     from environments.beamng import BeamNGRadarEnv
 
     return BeamNGRadarEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        vehicle_id=vehicle_id, map_name=map_name,
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
     )
 
 
