@@ -69,4 +69,3 @@ registry.register_environment(
     factory=_make_beamng_camera,
     metadata={"n_states": 261, "n_actions": 3, "state_type": "continuous"},
 )
-
