@@ -326,6 +326,7 @@ class BeamNGDrivingEnv:
             self.vehicle,
             pos=self.trajectory.spawn_pos,
             rot_quat=self.trajectory.spawn_rot,
+            cling=True,
         )
 
         # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
