@@ -1,4 +1,5 @@
 import random
+import sys
 import threading
 import time
 
@@ -137,10 +138,7 @@ class BeamNGDrivingEnv:
 
     def _select_waypoints(self) -> list[tuple[float, float, float]]:
         assert self.trajectory is not None
-        use_dense = self.reward_mode == "ddpg" or isinstance(self, BeamNGContinuousEnv)
-        return list(
-            self.trajectory.dense_waypoints if use_dense else self.trajectory.dense_waypoints
-        )
+        return list(self.trajectory.sparse_waypoints)
 
     # ------------------------------------------------------------------
     # Public API
@@ -153,9 +151,6 @@ class BeamNGDrivingEnv:
         else:
             # self._randomize_waypoints()
             self.bng.scenario.restart()
-            # Debug-draw spheres are wiped on scenario restart — redraw them.
-            self._update_active_marker(1)
-            self._draw_start_end_markers()
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
@@ -216,11 +211,7 @@ class BeamNGDrivingEnv:
         return obs, reward, done, info
 
     def human_play(self):
-        """Load the scenario and give control back to the human player.
-
-        The simulation runs in real-time — drive with your keyboard/controller
-        inside BeamNG as normal.
-        """
+        """Load the scenario and give control back to the human player (no sensor output)."""
         if self.bng is None:
             self._launch(human_control=True)
         else:
@@ -229,9 +220,34 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = 0
         self._update_active_marker(1)
 
-        # Release the sim from step-mode so it runs freely in real-time.
         self.bng.resume()
         print("[BeamNGDrivingEnv] Human control active — drive in-game. Press Ctrl+C to stop.")
+
+        try:
+            while True:
+                self.vehicle.poll_sensors()  # keeps vehicle state cache fresh
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("[BeamNGDrivingEnv] Human play stopped.")
+
+    def human_play_lidar(self):
+        """Human play with LiDAR bins printed to stdout each tick."""
+        if self.bng is None:
+            self._launch(human_control=True)
+        else:
+            self._load_scenario(human_control=True)
+
+        self._waypoint_idx = 0
+        self._update_active_marker(1)
+
+        self.bng.resume()
+        print(
+            "[BeamNGDrivingEnv] Human control active (LiDAR) — drive in-game. Press Ctrl+C to stop."
+        )
+        if self.lidar is None:
+            print(
+                "[BeamNGDrivingEnv] Warning: LiDAR sensor not attached — bins will show fallback values."
+            )
 
         try:
             while True:
@@ -843,7 +859,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             is_render_colours=True,
             is_render_depth=False,
             is_render_annotations=False,
-            is_visualised=False,
+            is_visualised=True,
             is_static=False,
         )
 
@@ -894,6 +910,38 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             t.join(timeout=3.0)
             self.camera = None
         super().close()
+
+    def human_play_camera(self):
+        """Human play with the 16×16 dashcam frame rendered as ASCII art in-place."""
+        if self.bng is None:
+            self._launch(human_control=True)
+        else:
+            self._load_scenario(human_control=True)
+
+        self._waypoint_idx = 0
+        self._update_active_marker(1)
+
+        self.bng.resume()
+        print(
+            "[BeamNGCameraEnv] Human control active (Camera) — drive in-game. Press Ctrl+C to stop."
+        )
+
+        ramp = " ░▒▓█"
+        h = self.CAM_OUT_SIZE[0]
+        first = True
+
+        try:
+            while True:
+                pixels = self._process_camera().reshape(self.CAM_OUT_SIZE)
+                rows = ["".join(ramp[min(int(v * 4), 4)] for v in row) for row in pixels]
+                if not first:
+                    sys.stdout.write(f"\033[{h}A")
+                sys.stdout.write("\n".join(rows) + "\n")
+                sys.stdout.flush()
+                first = False
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("[BeamNGCameraEnv] Human play stopped.")
 
     # ------------------------------------------------------------------
     # Camera processing

@@ -284,16 +284,36 @@ def _human_play_menu():
         print("BeamNG environment not registered.")
         return
 
-    env_info = registry.get_environment("beamng")
-    map_name, vehicle_id = _pick_beamng_options()
-    env = env_info["factory"](map_name=map_name, vehicle_id=vehicle_id)
+    sensor_options = ["None", "LiDAR"]
+    if "beamng_camera" in envs:
+        sensor_options.append("Camera")
 
+    map_name, vehicle_id = _pick_beamng_options()
+
+    print("\nShow sensor during play?")
+    sensor = _pick(sensor_options, "Sensor")
+
+    env = None
     print("Launching BeamNG for human play...")
     try:
-        env.human_play()
-        input("\nPress Enter when done playing...")
+        if sensor == "Camera":
+            env = registry.get_environment("beamng_camera")["factory"](
+                map_name=map_name, vehicle_id=vehicle_id
+            )
+        else:
+            env = registry.get_environment("beamng")["factory"](
+                map_name=map_name, vehicle_id=vehicle_id
+            )
+
+        if sensor == "LiDAR":
+            env.human_play_lidar()
+        elif sensor == "Camera":
+            env.human_play_camera()
+        else:
+            env.human_play()
     finally:
-        env.close()
+        if env is not None:
+            env.close()
 
 
 def _trajectory_menu():
