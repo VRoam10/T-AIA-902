@@ -53,7 +53,7 @@ registry.register_algorithm(
         "memory_size": 20_000,
         "target_update_freq": 100,
     },
-    compatible_envs=["taxi", "beamng"],
+    compatible_envs=["taxi", "beamng", "beamng_lidar"],
 )
 
 registry.register_algorithm(

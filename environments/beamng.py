@@ -52,14 +52,23 @@ class BeamNGDrivingEnv:
     N_ACTIONS = len(ACTIONS)
 
     # LiDAR configuration
-    LIDAR_RAYS = 8  # number of angular bins
+    LIDAR_RAYS = 8  # number of horizontal angular bins (azimuth)
+    LIDAR_V_BINS = 1  # number of vertical bins (elevation). 1 = single row (legacy).
     LIDAR_CHANNELS_PER_RAY = 1  # currently: (distance,). Future: (distance, v_rel, ttc, ...)
-    LIDAR_FOV_DEG = 120.0  # total forward-facing field of view in degrees
+    LIDAR_FOV_DEG = 120.0  # total forward-facing field of view in degrees (azimuth)
     LIDAR_MAX_DIST = 50.0  # metres — normalization range
     LIDAR_GROUND_CLEARANCE = 0.30  # metres above ego bbox floor before a point counts as obstacle
     LIDAR_SELF_MARGIN = 0.30  # metres expansion of ego OBB when rejecting self-hits
 
-    N_STATES = 5 + LIDAR_RAYS * LIDAR_CHANNELS_PER_RAY  # 13 with default channels
+    # Physical sensor mount/params — overridable per subclass.
+    LIDAR_MOUNT_POS = (0, -1.8, 1.15)  # vehicle-local: forward of bumper, hood-line height
+    LIDAR_MOUNT_DIR = (0, -1, 0)  # forward in vehicle space
+    LIDAR_MOUNT_UP = (0, 0, 1)
+    LIDAR_VERT_RES = 8  # vertical layers emitted by the sensor
+    LIDAR_VERT_ANGLE = 6.0  # total vertical FOV in degrees; also the elevation-binning range
+
+    # 5 kinematic + (vertical × horizontal × channels) lidar features.
+    N_STATES = 5 + LIDAR_RAYS * LIDAR_V_BINS * LIDAR_CHANNELS_PER_RAY  # 13 by default
 
     CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
     CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
@@ -378,13 +387,13 @@ class BeamNGDrivingEnv:
             "lidar",
             self.bng,
             self.vehicle,
-            pos=(0, -1.8, 1.15),
-            dir=(0, -1, 0),
-            up=(0, 0, 1),
+            pos=self.LIDAR_MOUNT_POS,
+            dir=self.LIDAR_MOUNT_DIR,
+            up=self.LIDAR_MOUNT_UP,
             requested_update_time=0.05,  # ~2 sensor updates per env step
             frequency=30,  # aligned with set_deterministic(30)
-            vertical_resolution=8,  # 16 was wasted: we only take the nearest point per bin
-            vertical_angle=6,
+            vertical_resolution=self.LIDAR_VERT_RES,
+            vertical_angle=self.LIDAR_VERT_ANGLE,
             horizontal_angle=self.LIDAR_FOV_DEG,
             max_distance=self.LIDAR_MAX_DIST,
             is_360_mode=False,
@@ -538,17 +547,22 @@ class BeamNGDrivingEnv:
         return keep
 
     def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
-        """Bin a raw LiDAR point cloud into LIDAR_RAYS angular distance slices.
+        """Bin a raw LiDAR point cloud into a LIDAR_V_BINS x LIDAR_RAYS grid.
 
         Pipeline: world -> ego-local -> self/ground filter -> forward-FOV mask ->
-        angular binning. Returns a float32 array of shape
-        (LIDAR_RAYS * LIDAR_CHANNELS_PER_RAY,) with values in [0, 1], where 0 means
-        an obstacle is right there and 1 means the bin is clear.
+        elevation+azimuth binning. Returns a flat float32 array of shape
+        (LIDAR_V_BINS * LIDAR_RAYS * LIDAR_CHANNELS_PER_RAY,) in [0, 1], where 0
+        means an obstacle is right there and 1 means the cell is clear.
 
-        Adding channels (e.g. relative velocity) is a matter of widening the
-        per-bin feature builder at the end; the upstream filtering stays the same.
+        Layout is row-major by vertical bin then horizontal bin then channel:
+        index = (v * LIDAR_RAYS + h) * LIDAR_CHANNELS_PER_RAY + c. With
+        LIDAR_V_BINS == 1 this reduces to the legacy single row of LIDAR_RAYS
+        values (vertical structure collapsed), so existing models stay valid.
         """
-        n_out = self.LIDAR_RAYS * self.LIDAR_CHANNELS_PER_RAY
+        v_bins = self.LIDAR_V_BINS
+        h_bins = self.LIDAR_RAYS
+        ch = self.LIDAR_CHANNELS_PER_RAY
+        n_out = v_bins * h_bins * ch
         distances = np.ones(n_out, dtype=np.float32)  # default: clear
 
         if point_cloud is None or len(point_cloud) == 0:
@@ -596,15 +610,28 @@ class BeamNGDrivingEnv:
         self._lidar_debug["min_dist_m"] = float(dists[nearest])
         self._lidar_debug["min_dist_z"] = float(local_z[nearest])
 
-        bin_edges = np.linspace(-half_fov, half_fov, self.LIDAR_RAYS + 1)
-        idx = np.clip(np.digitize(angles, bin_edges) - 1, 0, self.LIDAR_RAYS - 1)
-        for i in range(self.LIDAR_RAYS):
-            sel = dists[idx == i]
-            if sel.size:
-                # Channel 0: nearest-obstacle distance, normalized.
-                distances[i * self.LIDAR_CHANNELS_PER_RAY] = np.clip(
-                    sel.min() / self.LIDAR_MAX_DIST, 0.0, 1.0
-                )
+        # Azimuth (horizontal) bin index, right-to-left across the FOV.
+        h_edges = np.linspace(-half_fov, half_fov, h_bins + 1)
+        h_idx = np.clip(np.digitize(angles, h_edges) - 1, 0, h_bins - 1)
+
+        # Elevation (vertical) bin index. With v_bins == 1 every point collapses
+        # to row 0, reproducing the legacy single-row behaviour exactly.
+        if v_bins == 1:
+            v_idx = np.zeros(angles.shape, dtype=np.intp)
+        else:
+            half_vfov = np.radians(self.LIDAR_VERT_ANGLE / 2.0)
+            elevation = np.arctan2(local_z, dists)
+            v_edges = np.linspace(-half_vfov, half_vfov, v_bins + 1)
+            v_idx = np.clip(np.digitize(elevation, v_edges) - 1, 0, v_bins - 1)
+
+        for v in range(v_bins):
+            for h in range(h_bins):
+                sel = dists[(v_idx == v) & (h_idx == h)]
+                if sel.size:
+                    # Channel 0: nearest-obstacle distance in the cell, normalized.
+                    distances[(v * h_bins + h) * ch] = np.clip(
+                        sel.min() / self.LIDAR_MAX_DIST, 0.0, 1.0
+                    )
 
         if LOG_LIDAR:
             self.bng.queue_lua_command(
@@ -836,6 +863,33 @@ class BeamNGDrivingEnv:
             )
         except AttributeError:
             pass
+
+
+class BeamNGLidarEnv(BeamNGDrivingEnv):
+    """
+    Discrete-action BeamNG env exposing the LiDAR as a 2D depth grid
+    (vertical layers x horizontal bins) instead of a single collapsed row.
+
+    Each observation cell holds the nearest-obstacle distance for one
+    (elevation, azimuth) slice, normalized to [0, 1] (0 = obstacle here,
+    1 = clear). The vertical dimension lets the policy reason about obstacle
+    *height* (a wall fills several vertical bins; a low object only the bottom
+    one), which a single row cannot represent.
+
+    Same 7 discrete actions and reward as the base `beamng` env; only the
+    observation's LiDAR block grows from 8 to LIDAR_V_BINS * LIDAR_RAYS values.
+    Self-hit and ground filtering are unchanged, so the ego is still never
+    detected and asphalt does not flood the lower rows.
+    """
+
+    LIDAR_V_BINS = 4  # vertical elevation bins
+    LIDAR_VERT_RES = 16  # more layers to populate the wider vertical FOV
+    LIDAR_VERT_ANGLE = 20.0  # wider vertical FOV (±10°) so the rows span useful elevations
+
+    # 5 kinematic + (4 vertical × 8 horizontal × 1 channel) = 37
+    N_STATES = (
+        5 + BeamNGDrivingEnv.LIDAR_RAYS * LIDAR_V_BINS * BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
+    )
 
 
 class BeamNGContinuousEnv(BeamNGDrivingEnv):
