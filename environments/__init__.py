@@ -73,6 +73,7 @@ registry.register_environment(
 
 # --- Predicted variants (trajectory_hints=1: adds 2 floats per next waypoint) ---
 
+
 def _make_beamng_predicted(reward_mode="default", vehicle_id="taxi", map_name="gridmap_v2"):
     from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
     from environments.beamng import BeamNGDrivingEnv
