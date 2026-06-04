@@ -113,15 +113,22 @@ The agent spawns at `(61, −788, 101)` facing north.
 | Parameter | Value |
 |---|---|
 | Rays (angular bins) | 8 |
+| Channels per ray | 1 (distance). Extensible via `LIDAR_CHANNELS_PER_RAY`. |
 | Field of view | 120° (forward-facing, ±60°) |
 | Max range | 50 m |
-| Mount position | (0, 0, 1.7) — roof height |
+| Mount position | (0, −1.8, 1.15) — forward of bumper, hood-line height |
 | Direction | forward (0, −1, 0) in BeamNG coords |
-| Vertical angle | 10° |
+| Vertical angle | 6° |
 | Vertical resolution | 16 layers |
+| Self-filter | ego OBB (from `vehicle.get_bbox()`) + `LIDAR_SELF_MARGIN` (0.3 m) |
+| Ground filter | `local_z > bbox_floor + LIDAR_GROUND_CLEARANCE` (0.3 m) |
 
 Each bin returns the **nearest** point distance in that angular slice, normalized to `[0, 1]`.
-Bins are ordered left-to-right across the FOV.
+Bins are ordered **right-to-left** across the FOV: bin 0 is the rightmost slice
+(`−half_fov`) and bin 7 is the leftmost (`+half_fov`), since binning is done on
+`arctan2(local_y, local_x)` where `+local_y` is the vehicle's left. Points inside the
+ego OBB and below ground clearance are filtered out before binning, so self-hits and
+asphalt returns do not pollute the observation.
 
 ---
 

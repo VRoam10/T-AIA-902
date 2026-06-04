@@ -10,6 +10,10 @@ BEAMNG_HOME = os.getenv(
 BEAMNG_USER = os.getenv("BEAMNG_USER", None)
 HEADLESS = os.getenv("HEADLESS", "false").lower() == "true"
 
+# Render LiDAR rays in-sim. Expensive (GPU per frame) — keep off for training,
+# turn on only for debug / human_play sessions.
+LIDAR_VISUALISE = os.getenv("LIDAR_VISUALISE", "false").lower() == "true"
+
 # Lua console log toggles
 LOG_LIDAR = os.getenv("LOG_LIDAR", "true").lower() == "true"
 LOG_RADAR = os.getenv("LOG_RADAR", "true").lower() == "true"
