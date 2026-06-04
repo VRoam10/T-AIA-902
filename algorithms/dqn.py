@@ -293,7 +293,7 @@ class DQNAgent(BaseAgent):
         weights_t = torch.FloatTensor(weights).to(self.device)
         self._per_beta = min(1.0, self._per_beta + self._per_beta_increment)
 
-        states, actions, rewards, next_states, dones = zip(*transitions)
+        states, actions, rewards, next_states, dones = zip(*transitions, strict=False)
         states = torch.FloatTensor(np.stack(states)).to(self.device)
         actions = torch.LongTensor(actions).to(self.device)
         rewards = torch.FloatTensor(rewards).to(self.device)
@@ -321,7 +321,7 @@ class DQNAgent(BaseAgent):
             td_errors = (target_q - current_q).abs().cpu().numpy()
         new_priorities = (td_errors + self._per_epsilon) ** self._per_alpha
         self._max_priority = max(self._max_priority, float(new_priorities.max()))
-        for idx, p in zip(leaf_indices, new_priorities):
+        for idx, p in zip(leaf_indices, new_priorities, strict=True):
             self._tree.update(idx, float(p))
 
         self.train_steps += 1

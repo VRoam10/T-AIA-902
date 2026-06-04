@@ -140,8 +140,10 @@ class ComparisonBenchmark(BaseBenchmark):
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
         labels = list(variants.keys())
-        conv_eps = [variants[l]["convergence_episode"] or results["max_episodes"] for l in labels]
-        final_avgs = [variants[l]["final_avg_reward"] for l in labels]
+        conv_eps = [
+            variants[lbl]["convergence_episode"] or results["max_episodes"] for lbl in labels
+        ]
+        final_avgs = [variants[lbl]["final_avg_reward"] for lbl in labels]
 
         bar_colors = [colors[i % len(colors)] for i in range(len(labels))]
 
