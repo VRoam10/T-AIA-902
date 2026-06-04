@@ -69,14 +69,14 @@ class BeamNGDrivingEnv:
     LIDAR_VERT_ANGLE = 6.0  # total vertical FOV in degrees; also the elevation-binning range
 
     # 5 kinematic + (vertical × horizontal × channels) lidar features.
-    N_STATES = 5 + LIDAR_RAYS * LIDAR_V_BINS * LIDAR_CHANNELS_PER_RAY  # 13 by default
+    N_STATES = 6 + LIDAR_RAYS * LIDAR_V_BINS * LIDAR_CHANNELS_PER_RAY  # 14 by default
 
     CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
     CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
 
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 500
-    MAX_DAMAGE = 500.0  # damage threshold that ends the episode
+    MAX_DAMAGE = 1000.0  # damage threshold that ends the episode
 
     AVAILABLE_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "smallgrid"]
 
@@ -111,6 +111,7 @@ class BeamNGDrivingEnv:
         reward_mode: str = "default",
         vehicle_id: str = "taxi",
         map_name: str = "gridmap_v2",
+        trajectory_hints: int = 0,
     ):
         """
         Args:
@@ -143,6 +144,8 @@ class BeamNGDrivingEnv:
         self._active_marker_id: str | None = None
         self._checkpoint_dist = 0.0
         self.headless = headless
+        self.trajectory_hints = trajectory_hints
+        self.n_states = self.N_STATES + trajectory_hints * 2
 
         # Filled on first _launch() — either read from cache or generated then.
         self.trajectory: TrajectoryData | None = None
@@ -454,6 +457,8 @@ class BeamNGDrivingEnv:
             target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
             self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
+        waypoint_hints = self._get_waypoint_hints(pos, vehicle_heading)
+
         obs = np.concatenate(
             [
                 np.array(
@@ -463,10 +468,12 @@ class BeamNGDrivingEnv:
                         np.clip(heading_err / np.pi, -1.0, 1.0),
                         np.clip(lateral_err / 5.0, -1.0, 1.0),
                         np.clip(damage / 1000.0, 0.0, 1.0),
+                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
                     ],
                     dtype=np.float32,
                 ),
                 lidar_bins,
+                waypoint_hints,
             ]
         )
 
@@ -654,6 +661,29 @@ class BeamNGDrivingEnv:
                 "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
             )
         return distances
+
+    def _get_waypoint_hints(self, pos, vehicle_heading) -> np.ndarray:
+        """Return vehicle-local (forward, left) coords for the next trajectory_hints waypoints.
+
+        Each waypoint contributes 2 floats normalized to [-1, 1] over a 100 m range.
+        Returns an empty array when trajectory_hints == 0.
+        """
+        if not self.trajectory_hints or not self.waypoints:
+            return np.empty(0, dtype=np.float32)
+        NORM = 100.0
+        cos_h = np.cos(-vehicle_heading)
+        sin_h = np.sin(-vehicle_heading)
+        hints: list[float] = []
+        for i in range(self.trajectory_hints):
+            idx = (self._waypoint_idx + i) % len(self.waypoints)
+            wp = self.waypoints[idx]
+            rel_x = wp[0] - pos[0]
+            rel_y = wp[1] - pos[1]
+            local_x = rel_x * cos_h - rel_y * sin_h
+            local_y = rel_x * sin_h + rel_y * cos_h
+            hints.append(float(np.clip(local_x / NORM, -1.0, 1.0)))
+            hints.append(float(np.clip(local_y / NORM, -1.0, 1.0)))
+        return np.array(hints, dtype=np.float32)
 
     def _path_errors(self, pos, state):
         """Return (heading_error_rad, lateral_error_m) relative to next waypoint.
@@ -932,6 +962,7 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
         headless: bool = False,
         vehicle_id: str = "taxi",
         map_name: str = "gridmap_v2",
+        trajectory_hints: int = 0,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -942,6 +973,7 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
             reward_mode="default",
             vehicle_id=vehicle_id,
             map_name=map_name,
+            trajectory_hints=trajectory_hints,
         )
 
     def step(self, action):
@@ -992,7 +1024,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
     CAM_RESOLUTION = (84, 84)
     CAM_OUT_SIZE = (16, 16)
     N_ACTIONS = 3
-    N_STATES = 5 + CAM_OUT_SIZE[0] * CAM_OUT_SIZE[1]  # 261
+    N_STATES = 6 + CAM_OUT_SIZE[0] * CAM_OUT_SIZE[1]  # 262
 
     def __init__(
         self,
@@ -1003,6 +1035,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         headless: bool = False,
         vehicle_id: str = "taxi",
         map_name: str = "gridmap_v2",
+        trajectory_hints: int = 0,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -1012,6 +1045,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             headless=headless,
             vehicle_id=vehicle_id,
             map_name=map_name,
+            trajectory_hints=trajectory_hints,
         )
         self.camera: Camera = None
         self.last_frame: np.ndarray | None = None  # 2-D grayscale (CAM_OUT_SIZE), updated each step
@@ -1079,9 +1113,13 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
 
         state = self.vehicle.state or {}
         pos = state.get("pos", (0.0, 0.0, 0.0))
+        vel = state.get("vel", (1.0, 0.0, 0.0))
+        dir_vec = state.get("dir", vel)
+        vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
-        heading_err, lateral_err, _ = self._path_errors(pos, state)
+        heading_err, lateral_err, dist = self._path_errors(pos, state)
         cam_pixels = self._process_camera()
+        waypoint_hints = self._get_waypoint_hints(pos, vehicle_heading)
 
         self._current_pos = pos
         if self.waypoints:
@@ -1097,10 +1135,12 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
                         np.clip(heading_err / np.pi, -1.0, 1.0),
                         np.clip(lateral_err / 5.0, -1.0, 1.0),
                         np.clip(damage / 1000.0, 0.0, 1.0),
+                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
                     ],
                     dtype=np.float32,
                 ),
                 cam_pixels,
+                waypoint_hints,
             ]
         )
 
