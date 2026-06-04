@@ -87,7 +87,14 @@ class TestDQNAgentInit:
 
     def test_get_config_contains_required_keys(self):
         cfg = self.agent.get_config()
-        for key in ("gamma", "epsilon", "epsilon_min", "epsilon_decay", "batch_size", "target_update_freq"):
+        for key in (
+            "gamma",
+            "epsilon",
+            "epsilon_min",
+            "epsilon_decay",
+            "batch_size",
+            "target_update_freq",
+        ):
             assert key in cfg
 
 
@@ -232,7 +239,9 @@ class TestDoubleDQN:
 
             # Double DQN target
             next_actions = agent.q_net(next_states).argmax(dim=1)
-            double_next_q = agent.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            double_next_q = (
+                agent.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            )
             double_target = rewards_t + agent.gamma * double_next_q * (1.0 - dones_t)
 
         # Double DQN targets should be <= vanilla on average (overestimation reduction)
