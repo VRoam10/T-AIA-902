@@ -363,7 +363,9 @@ class TestDQNAgentCheckpoint:
             agent2 = _make_agent(batch_size=8)
             agent2.load(path)
 
-            for qp, tp in zip(agent2.q_net.parameters(), agent2.target_net.parameters(), strict=True):
+            for qp, tp in zip(
+                agent2.q_net.parameters(), agent2.target_net.parameters(), strict=True
+            ):
                 assert torch.equal(qp.data, tp.data)
         finally:
             os.unlink(path)

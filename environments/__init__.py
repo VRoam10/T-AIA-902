@@ -15,15 +15,39 @@ def _make_beamng(reward_mode="default", vehicle_id="taxi", map_name="gridmap_v2"
     from environments.beamng import BeamNGDrivingEnv
 
     return BeamNGDrivingEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        reward_mode=reward_mode, vehicle_id=vehicle_id, map_name=map_name,
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        reward_mode=reward_mode,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
     )
 
 
 registry.register_environment(
     "beamng",
     factory=_make_beamng,
-    metadata={"n_states": 13, "n_actions": 7, "state_type": "continuous"},
+    metadata={"n_states": 14, "n_actions": 7, "state_type": "continuous"},
+)
+
+
+def _make_beamng_lidar(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGLidarEnv
+
+    return BeamNGLidarEnv(
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
+    )
+
+
+registry.register_environment(
+    "beamng_lidar",
+    factory=_make_beamng_lidar,
+    metadata={"n_states": 37, "n_actions": 7, "state_type": "continuous"},
 )
 
 
@@ -32,15 +56,18 @@ def _make_beamng_continuous(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs)
     from environments.beamng import BeamNGContinuousEnv
 
     return BeamNGContinuousEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        vehicle_id=vehicle_id, map_name=map_name,
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
     )
 
 
 registry.register_environment(
     "beamng_continuous",
     factory=_make_beamng_continuous,
-    metadata={"n_states": 13, "n_actions": 3, "state_type": "continuous"},
+    metadata={"n_states": 14, "n_actions": 3, "state_type": "continuous"},
 )
 
 
@@ -49,30 +76,83 @@ def _make_beamng_camera(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
     from environments.beamng import BeamNGCameraEnv
 
     return BeamNGCameraEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        vehicle_id=vehicle_id, map_name=map_name,
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
     )
 
 
 registry.register_environment(
     "beamng_camera",
     factory=_make_beamng_camera,
-    metadata={"n_states": 261, "n_actions": 3, "state_type": "continuous"},
+    metadata={"n_states": 262, "n_actions": 3, "state_type": "continuous"},
 )
 
 
-def _make_beamng_radar(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
-    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
-    from environments.beamng import BeamNGRadarEnv
+# --- Predicted variants (trajectory_hints=1: adds 2 floats per next waypoint) ---
 
-    return BeamNGRadarEnv(
-        beamng_home=BEAMNG_HOME, beamng_user=BEAMNG_USER, headless=HEADLESS,
-        vehicle_id=vehicle_id, map_name=map_name,
+
+def _make_beamng_predicted(reward_mode="default", vehicle_id="taxi", map_name="gridmap_v2"):
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGDrivingEnv
+
+    return BeamNGDrivingEnv(
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        reward_mode=reward_mode,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
+        trajectory_hints=1,
     )
 
 
 registry.register_environment(
-    "beamng_radar",
-    factory=_make_beamng_radar,
-    metadata={"n_states": 41, "n_actions": 3, "state_type": "continuous"},
+    "beamng_predicted",
+    factory=_make_beamng_predicted,
+    metadata={"n_states": 16, "n_actions": 7, "state_type": "continuous"},
+)
+
+
+def _make_beamng_continuous_predicted(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGContinuousEnv
+
+    return BeamNGContinuousEnv(
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
+        trajectory_hints=1,
+    )
+
+
+registry.register_environment(
+    "beamng_continuous_predicted",
+    factory=_make_beamng_continuous_predicted,
+    metadata={"n_states": 16, "n_actions": 3, "state_type": "continuous"},
+)
+
+
+def _make_beamng_camera_predicted(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGCameraEnv
+
+    return BeamNGCameraEnv(
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
+        trajectory_hints=1,
+    )
+
+
+registry.register_environment(
+    "beamng_camera_predicted",
+    factory=_make_beamng_camera_predicted,
+    metadata={"n_states": 264, "n_actions": 3, "state_type": "continuous"},
 )

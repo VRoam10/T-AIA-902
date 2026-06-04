@@ -1,3 +1,5 @@
+> **Status:** Legacy / fallback. Trajectories are now generated automatically for each map via the "Generate trajectories" menu entry — see `README.md`. The procedure below is only needed if you want to hand-tune a spawn point or override the auto-generated waypoints.
+
 # Scenario Creator — Getting Position & Rotation from BeamNG.drive
 
 This guide explains how to find the exact world-space **position** and **rotation quaternion** of a vehicle while BeamNG.drive is running normally, so you can paste those values into `beamng_env.py` as `SPAWN_POS`, `SPAWN_ROT`, or `BASE_WAYPOINTS`.
@@ -53,9 +55,9 @@ BASE_WAYPOINTS = [
 | Heading (approx.) | `rot_quat` (x, y, z, w) |
 |---|---|
 | North (+Y) | `(0, 0, 0, 1)` |
-| East (+X)  | `(0, 0, 0.707, 0.707)` |
+| East (+X)  | `(0, 0, −0.707, 0.707)` |
 | South (−Y) | `(0, 0, 1, 0)` |
-| West (−X)  | `(0, 0, −0.707, 0.707)` |
+| West (−X)  | `(0, 0, 0.707, 0.707)` |
 
 For precise rotations, always read the value from the game rather than calculating it manually.
 

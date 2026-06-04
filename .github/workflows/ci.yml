@@ -45,7 +45,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install python-dotenv tqdm gymnasium numpy matplotlib pygame
+          pip install python-dotenv tqdm "gymnasium[toy-text]==1.0.0" numpy matplotlib pygame pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Smoke test - imports & registry
@@ -81,3 +81,6 @@ jobs:
           env.close()
           print('Training pipeline OK')
           "
+
+      - name: Unit tests (trajectory)
+        run: pytest tests/ -v
