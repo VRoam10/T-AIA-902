@@ -174,6 +174,7 @@ class BeamNGDrivingEnv:
         else:
             # self._randomize_waypoints()
             self.bng.scenario.restart()
+            self._update_active_marker(0)
             # Test LiDAR après restart
             try:
                 data = self.lidar.poll()
@@ -253,7 +254,7 @@ class BeamNGDrivingEnv:
             self._load_scenario(human_control=True)
 
         self._waypoint_idx = 0
-        self._update_active_marker(1)
+        self._update_active_marker(0)
 
         self.bng.resume()
         print("[BeamNGDrivingEnv] Human control active — drive in-game. Press Ctrl+C to stop.")
@@ -273,7 +274,7 @@ class BeamNGDrivingEnv:
             self._load_scenario(human_control=True)
 
         self._waypoint_idx = 0
-        self._update_active_marker(1)
+        self._update_active_marker(0)
 
         self.bng.resume()
         print(
@@ -424,8 +425,7 @@ class BeamNGDrivingEnv:
         self._cache_ego_local_bbox()
 
         # Draw the initial active-waypoint marker
-        self._update_active_marker(1)
-        self._draw_start_end_markers()
+        self._update_active_marker(0)
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return a normalized state vector (7 floats)."""
@@ -857,56 +857,20 @@ class BeamNGDrivingEnv:
             return
         try:
             debug = self.bng.debug
-            # Remove the previous marker if it exists
             if self._active_marker_id is not None:
                 try:
-                    debug.remove_sphere(self._active_marker_id)
+                    debug.remove_spheres([self._active_marker_id])
                 except Exception:
                     pass
 
             target = self.waypoints[idx % len(self.waypoints)]
-            marker_id = f"active_wp_{idx}"
-            # Bright green sphere, 3 m radius, slightly above ground
             pos = (target[0], target[1], target[2] + 2.0)
-            debug.draw_sphere(
-                pos=pos,
-                radius=3.0,
-                rgba=(0.0, 1.0, 0.2, 0.8),
-                cling=False,
-                freeze=False,
+            ids = debug.add_spheres(
+                coordinates=[pos],
+                radii=[3.0],
+                rgba_colors=[(0.0, 1.0, 0.2, 0.8)],
             )
-            self._active_marker_id = marker_id
-        except AttributeError:
-            # bng.debug not available on this beamngpy version — skip silently
-            pass
-
-    def _draw_start_end_markers(self):
-        """Draw a blue sphere at the spawn position and a red sphere at the
-        last waypoint.
-
-        Best-effort: skipped silently if the beamngpy version doesn't expose
-        bng.debug.draw_sphere.
-        """
-        if self.bng is None or self.trajectory is None or not self.waypoints:
-            return
-        try:
-            debug = self.bng.debug
-            start = self.trajectory.spawn_pos
-            debug.draw_sphere(
-                pos=(start[0], start[1], start[2] + 1.0),
-                radius=2.5,
-                rgba=(0.0, 0.5, 1.0, 0.8),  # blue = start
-                cling=False,
-                freeze=False,
-            )
-            end = self.waypoints[-1]
-            debug.draw_sphere(
-                pos=(end[0], end[1], end[2] + 2.0),
-                radius=2.5,
-                rgba=(1.0, 0.0, 0.0, 0.8),  # red = end
-                cling=False,
-                freeze=False,
-            )
+            self._active_marker_id = ids[0]
         except AttributeError:
             pass
 
@@ -1098,8 +1062,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             is_static=False,
         )
 
-        self._update_active_marker(1)
-        self._draw_start_end_markers()
+        self._update_active_marker(0)
 
     def _observe(self) -> np.ndarray:
         self.vehicle.poll_sensors()
@@ -1160,7 +1123,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             self._load_scenario(human_control=True)
 
         self._waypoint_idx = 0
-        self._update_active_marker(1)
+        self._update_active_marker(0)
 
         self.bng.resume()
         print(
