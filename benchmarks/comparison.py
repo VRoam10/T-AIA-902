@@ -90,7 +90,9 @@ class ComparisonBenchmark(BaseBenchmark):
             }
 
             status = f"converged at ep {convergence_ep}" if convergence_ep else "did not converge"
-            print(f"  → {label}: {status}, final avg = {all_results[label]['final_avg_reward']:.2f}")
+            print(
+                f"  → {label}: {status}, final avg = {all_results[label]['final_avg_reward']:.2f}"
+            )
 
         return {
             "variants": all_results,
@@ -122,7 +124,9 @@ class ComparisonBenchmark(BaseBenchmark):
             if conv:
                 ax.axvline(conv, color=color, linestyle="--", alpha=0.6)
 
-        ax.axhline(threshold, color="black", linestyle=":", linewidth=1, label=f"Threshold ({threshold})")
+        ax.axhline(
+            threshold, color="black", linestyle=":", linewidth=1, label=f"Threshold ({threshold})"
+        )
         ax.set_xlabel("Episode")
         ax.set_ylabel(f"Rolling avg reward (window={window})")
         ax.set_title(f"DQN Variant Comparison — {env_name}")
