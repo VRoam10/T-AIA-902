@@ -39,7 +39,7 @@ class TestDQNNetwork:
         x = torch.randn(16, N_STATES)
         f = self.net.feature(x)
         v = self.net.value(f)
-        a = self.net.advantage(f)
+        self.net.advantage(f)
         q = self.net(x)
         # mean(Q - V) should be ~0 (mean advantage is subtracted)
         mean_diff = (q - v).mean(dim=1)
@@ -82,6 +82,7 @@ class TestDQNAgentInit:
         for (_, qp), (_, tp) in zip(
             self.agent.q_net.named_parameters(),
             self.agent.target_net.named_parameters(),
+            strict=True,
         ):
             assert torch.equal(qp.data, tp.data)
 
@@ -185,7 +186,7 @@ class TestDQNAgentUpdate:
             agent.update(*_random_transition())
 
         # The last step triggered the sync — target_net must now equal q_net
-        for qp, tp in zip(agent.q_net.parameters(), agent.target_net.parameters()):
+        for qp, tp in zip(agent.q_net.parameters(), agent.target_net.parameters(), strict=True):
             assert torch.equal(qp.data, tp.data)
 
 
@@ -225,9 +226,8 @@ class TestDoubleDQN:
             agent.update(*_random_transition())
 
         batch = list(agent.memory)[:32]
-        states_np, actions, rewards, next_states_np, dones = zip(*batch)
+        _, _, rewards, next_states_np, dones = zip(*batch, strict=False)
 
-        states = torch.FloatTensor(np.stack(states_np)).to(agent.device)
         next_states = torch.FloatTensor(np.stack(next_states_np)).to(agent.device)
         rewards_t = torch.FloatTensor(rewards).to(agent.device)
         dones_t = torch.FloatTensor(dones).to(agent.device)
@@ -292,7 +292,7 @@ class TestDQNAgentCheckpoint:
             assert agent2.epsilon == pytest.approx(0.42)
             assert agent2.train_steps == agent.train_steps
 
-            for p1, p2 in zip(agent.q_net.parameters(), agent2.q_net.parameters()):
+            for p1, p2 in zip(agent.q_net.parameters(), agent2.q_net.parameters(), strict=True):
                 assert torch.equal(p1.data, p2.data)
         finally:
             os.unlink(path)
@@ -310,7 +310,9 @@ class TestDQNAgentCheckpoint:
             agent2 = _make_agent(batch_size=8)
             agent2.load(path)
 
-            for qp, tp in zip(agent2.q_net.parameters(), agent2.target_net.parameters()):
+            for qp, tp in zip(
+                agent2.q_net.parameters(), agent2.target_net.parameters(), strict=True
+            ):
                 assert torch.equal(qp.data, tp.data)
         finally:
             os.unlink(path)
