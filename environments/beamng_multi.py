@@ -1,0 +1,619 @@
+"""Multi-vehicle BeamNG environment for simultaneous parallel training.
+
+One scenario holds N vehicles (collisions disabled). A single physics step
+advances every vehicle; each vehicle keeps its own episode state in a
+VehicleSlot so several algorithms train in parallel on one trajectory.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+from beamngpy import BeamNGpy, Scenario, Vehicle
+from beamngpy.sensors import Damage, Electrics, Lidar
+
+from config import (  # noqa: F401  (LOG_LIDAR reserved for future logging parity)
+    LIDAR_VISUALISE,
+    LOG_LIDAR,
+)
+from core.trajectory import TrajectoryData, load_or_generate
+from environments.beamng import BeamNGDrivingEnv
+from environments.beamng_geometry import (
+    LidarConfig,
+    ego_local_extents_from_bbox,
+    process_lidar,
+)
+
+
+@dataclass
+class VehicleSlot:
+    """All per-vehicle state: identity, sensors, episode state, training stats.
+
+    Nothing here is shared between vehicles — the multi env reads and writes
+    these fields per slot so two algorithms never alias each other's state.
+    """
+
+    # Identity / config
+    name: str
+    color: str
+    vehicle_id: str
+    agent: Any
+    reward_mode: str  # "default" (DQN) or "ddpg" (DDPG/TD3)
+    action_space: str  # "discrete" or "continuous"
+    save_path: str
+
+    # Sensors (assigned during scenario load)
+    vehicle: Any = None
+    electrics: Any = None
+    damage_sensor: Any = None
+    lidar: Any = None
+
+    # Per-vehicle starting-grid pose (assigned during scenario load)
+    spawn_pos: tuple = (0.0, 0.0, 0.0)
+    spawn_rot: tuple = (0.0, 0.0, 0.0, 1.0)
+
+    # Episode state
+    waypoint_idx: int = 0
+    last_damage: float = 0.0
+    last_dist: float = 0.0
+    current_dist: float = 0.0
+    current_pos: tuple = (0.0, 0.0, 0.0)
+    checkpoint_dist: float = 0.0
+    checkpoint_hit: bool = False
+    steps: int = 0
+    ego_local_extents: tuple | None = None
+    last_obs: np.ndarray | None = None
+    done: bool = False
+    active_marker_id: str | None = None  # in-game target sphere handle
+
+    # Per-episode running accumulators
+    ep_reward: float = 0.0
+    ep_losses: list = field(default_factory=list)
+
+    # Cross-episode training stats
+    episode: int = 0
+    reward_history: list = field(default_factory=list)
+    steps_history: list = field(default_factory=list)
+
+    def reset_episode(self) -> None:
+        """Zero running episode state. Keeps episode counter + histories."""
+        self.waypoint_idx = 0
+        self.last_damage = 0.0
+        self.last_dist = 0.0
+        self.current_dist = 0.0
+        self.checkpoint_dist = 0.0
+        self.checkpoint_hit = False
+        self.steps = 0
+        self.ep_reward = 0.0
+        self.ep_losses = []
+        self.done = False
+
+
+# Algorithms whose action space is continuous (actor outputs in [-1, 1]).
+_CONTINUOUS_ALGOS = {"ddpg", "td3"}
+
+# Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
+# matches its car. Falls back to the single-agent env's green for unknown names.
+_MARKER_RGBA = {
+    "yellow": (1.0, 1.0, 0.0, 0.8),
+    "red": (1.0, 0.0, 0.0, 0.8),
+    "blue": (0.0, 0.4, 1.0, 0.8),
+    "green": (0.0, 1.0, 0.2, 0.8),
+    "orange": (1.0, 0.5, 0.0, 0.8),
+    "white": (1.0, 1.0, 1.0, 0.8),
+    "black": (0.1, 0.1, 0.1, 0.8),
+}
+_DEFAULT_MARKER_RGBA = (0.0, 1.0, 0.2, 0.8)
+
+
+def _color_rgba(name: str) -> tuple[float, float, float, float]:
+    """Map a BeamNG colour name to a marker RGBA tuple (case-insensitive)."""
+    return _MARKER_RGBA.get((name or "").strip().lower(), _DEFAULT_MARKER_RGBA)
+
+
+def build_slots(specs: list[dict]) -> list[VehicleSlot]:
+    """Turn a list of vehicle specs into VehicleSlots.
+
+    Each spec dict: {"algo", "agent", "vehicle_id", "color", "save_path"}.
+    reward_mode and action_space are derived from the algorithm name.
+    """
+    slots = []
+    for i, spec in enumerate(specs):
+        algo = spec["algo"]
+        continuous = algo in _CONTINUOUS_ALGOS
+        slots.append(
+            VehicleSlot(
+                name=f"ego_{i}",
+                color=spec["color"],
+                vehicle_id=spec["vehicle_id"],
+                agent=spec["agent"],
+                reward_mode="ddpg" if continuous else "default",
+                action_space="continuous" if continuous else "discrete",
+                save_path=spec["save_path"],
+            )
+        )
+    return slots
+
+
+class BeamNGMultiEnv:
+    """Owns one BeamNG scenario shared by N vehicles, each with its own slot.
+
+    Reuses the single-vehicle env's constants (ACTIONS table, LiDAR config,
+    waypoint/reward thresholds) via BeamNGDrivingEnv class attributes, but keeps
+    every mutable bit of episode state in per-vehicle VehicleSlots.
+    """
+
+    # Reuse the discrete action table and tunables from the single-vehicle env.
+    ACTIONS = BeamNGDrivingEnv.ACTIONS
+    N_ACTIONS_DISCRETE = len(BeamNGDrivingEnv.ACTIONS)  # 7
+    WAYPOINT_RADIUS = BeamNGDrivingEnv.WAYPOINT_RADIUS
+    MAX_STEPS = BeamNGDrivingEnv.MAX_STEPS
+    MAX_DAMAGE = BeamNGDrivingEnv.MAX_DAMAGE
+    CHECKPOINT_WARN_DIST = BeamNGDrivingEnv.CHECKPOINT_WARN_DIST
+    CHECKPOINT_RESET_DIST = BeamNGDrivingEnv.CHECKPOINT_RESET_DIST
+
+    # LiDAR geometry constants (single forward row, same as base env).
+    LIDAR_RAYS = BeamNGDrivingEnv.LIDAR_RAYS
+    LIDAR_V_BINS = BeamNGDrivingEnv.LIDAR_V_BINS
+    LIDAR_CHANNELS_PER_RAY = BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
+    LIDAR_FOV_DEG = BeamNGDrivingEnv.LIDAR_FOV_DEG
+    LIDAR_VERT_ANGLE = BeamNGDrivingEnv.LIDAR_VERT_ANGLE
+    LIDAR_MAX_DIST = BeamNGDrivingEnv.LIDAR_MAX_DIST
+    LIDAR_GROUND_CLEARANCE = BeamNGDrivingEnv.LIDAR_GROUND_CLEARANCE
+    LIDAR_SELF_MARGIN = BeamNGDrivingEnv.LIDAR_SELF_MARGIN
+    LIDAR_MOUNT_POS = BeamNGDrivingEnv.LIDAR_MOUNT_POS
+    LIDAR_MOUNT_DIR = BeamNGDrivingEnv.LIDAR_MOUNT_DIR
+    LIDAR_MOUNT_UP = BeamNGDrivingEnv.LIDAR_MOUNT_UP
+    LIDAR_VERT_RES = BeamNGDrivingEnv.LIDAR_VERT_RES
+
+    VEHICLES = BeamNGDrivingEnv.VEHICLES
+
+    # Starting-grid layout: all vehicles abreast on the spawn line, each in its
+    # own lane spaced laterally so none starts behind another (safe with
+    # collisions enabled).
+    GRID_LANE_OFFSET = 4.0  # metres between adjacent vehicles
+
+    def __init__(
+        self,
+        slots: list[VehicleSlot],
+        beamng_home: str,
+        beamng_user: str = None,
+        host: str = "localhost",
+        port: int = 25252,
+        headless: bool = False,
+        map_name: str = "gridmap_v2",
+        trajectory_hints: int = 0,
+    ):
+        self.slots = slots
+        self.beamng_home = beamng_home
+        self.beamng_user = beamng_user
+        self.host = host
+        self.port = port
+        self.headless = headless
+        self.map_name = map_name
+        self.trajectory_hints = trajectory_hints
+
+        self.bng: BeamNGpy = None
+        self.scenario: Scenario = None
+        self.trajectory: TrajectoryData | None = None
+        self.waypoints: list[tuple[float, float, float]] = []
+
+    def _lidar_config(self) -> LidarConfig:
+        return LidarConfig(
+            rays=self.LIDAR_RAYS,
+            v_bins=self.LIDAR_V_BINS,
+            channels=self.LIDAR_CHANNELS_PER_RAY,
+            fov_deg=self.LIDAR_FOV_DEG,
+            vert_angle=self.LIDAR_VERT_ANGLE,
+            max_dist=self.LIDAR_MAX_DIST,
+            self_margin=self.LIDAR_SELF_MARGIN,
+            ground_clearance=self.LIDAR_GROUND_CLEARANCE,
+        )
+
+    @property
+    def n_states(self) -> int:
+        base = 6 + self.LIDAR_RAYS * self.LIDAR_V_BINS * self.LIDAR_CHANNELS_PER_RAY
+        return base + self.trajectory_hints * 2
+
+    def apply_action(self, slot: VehicleSlot, action) -> None:
+        """Map an agent action to vehicle controls. Does not step physics."""
+        if slot.action_space == "discrete" or isinstance(action, (int, np.integer)):
+            ctrl = self.ACTIONS[int(action)]
+            throttle, steering, brake = ctrl["throttle"], ctrl["steering"], ctrl["brake"]
+        else:
+            action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+            if action.shape[0] == 2:
+                accel = float(action[0])
+                steering = float(action[1])
+                throttle = max(0.0, accel)
+                brake = max(0.0, -accel)
+            else:
+                throttle = float(max(0.0, action[0]))
+                steering = float(action[1])
+                brake = float(max(0.0, action[2]))
+        slot.vehicle.control(throttle=throttle, steering=steering, brake=brake)
+
+    def _path_errors(self, slot, pos, state):
+        """Heading/lateral error to slot's current waypoint; advances on arrival.
+
+        Sets slot.current_dist for the DDPG progress reward.
+        """
+        if not self.waypoints or not state:
+            slot.current_dist = 0.0
+            return 0.0, 0.0, 0.0
+
+        target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+        dx = target[0] - pos[0]
+        dy = target[1] - pos[1]
+        dist = float(np.hypot(dx, dy))
+        slot.current_dist = dist
+
+        if dist < self.WAYPOINT_RADIUS:
+            slot.waypoint_idx += 1
+            slot.checkpoint_hit = True
+            self._update_slot_marker(slot)
+            if slot.waypoint_idx < len(self.waypoints):
+                new_t = self.waypoints[slot.waypoint_idx]
+                slot.current_dist = float(np.hypot(new_t[0] - pos[0], new_t[1] - pos[1]))
+
+        vel = state.get("vel", (1.0, 0.0, 0.0))
+        vehicle_heading = np.arctan2(vel[1], vel[0])
+        target_heading = np.arctan2(dy, dx)
+        heading_err = (target_heading - vehicle_heading + np.pi) % (2 * np.pi) - np.pi
+        lateral_err = dist * np.sin(heading_err)
+        return float(heading_err), float(lateral_err), dist
+
+    def compute_reward(self, slot, obs):
+        if slot.reward_mode == "ddpg":
+            return self._reward_ddpg(slot, obs)
+        return self._reward_default(slot, obs)
+
+    def _reward_default(self, slot, obs):
+        speed, steering, _heading_err, _lateral_err, damage_norm = obs[:5]
+        damage = damage_norm * 1000.0
+        done = False
+        reward = 0.0
+
+        if speed < 0.05:
+            reward -= 2.0
+        reward -= abs(steering) * 0.2
+
+        if damage > slot.last_damage + 50:
+            reward -= 50.0
+        if damage >= self.MAX_DAMAGE:
+            done = True
+        slot.last_damage = damage
+
+        if slot.steps >= self.MAX_STEPS:
+            done = True
+
+        if slot.checkpoint_hit:
+            reward += 100.0 * slot.waypoint_idx
+            slot.checkpoint_hit = False
+
+        if slot.waypoint_idx >= len(self.waypoints):
+            reward += 200.0
+            done = True
+
+        dist = slot.checkpoint_dist
+        if dist >= self.CHECKPOINT_RESET_DIST:
+            reward -= 100.0
+            done = True
+        elif dist >= self.CHECKPOINT_WARN_DIST:
+            reward -= (
+                (dist - self.CHECKPOINT_WARN_DIST)
+                / (self.CHECKPOINT_RESET_DIST - self.CHECKPOINT_WARN_DIST)
+                * 10.0
+            )
+
+        return float(reward), done
+
+    def _reward_ddpg(self, slot, obs):
+        speed, _steering, heading_err, _lateral_err, damage_norm = obs[:5]
+        lidar_bins = obs[5:]
+        damage = damage_norm * 1000.0
+        alignment = np.cos(heading_err * np.pi)
+        done = False
+        reward = 0.0
+
+        dist_delta = slot.last_dist - slot.current_dist
+        reward += dist_delta * 3.0
+        slot.last_dist = slot.current_dist
+
+        reward += speed * alignment * 3.0
+        reward += alignment * 0.5
+
+        if speed < 0.05:
+            reward -= 1.0
+
+        min_lidar = float(np.min(lidar_bins)) if lidar_bins.size else 1.0
+        if min_lidar < 0.2:
+            reward -= (1.0 - min_lidar) * 5.0
+        elif min_lidar < 0.4:
+            reward -= (1.0 - min_lidar) * 2.0
+
+        damage_delta = damage - slot.last_damage
+        if damage_delta > 0:
+            reward -= damage_delta * 0.3
+        if damage_delta > 150:
+            reward -= 30.0
+            done = True
+        if damage >= self.MAX_DAMAGE:
+            done = True
+        slot.last_damage = damage
+
+        if slot.steps >= self.MAX_STEPS:
+            done = True
+
+        if slot.checkpoint_hit:
+            reward += 50.0
+            slot.checkpoint_hit = False
+
+        if slot.waypoint_idx >= len(self.waypoints):
+            reward += 200.0
+            slot.waypoint_idx = 0
+            done = True
+
+        return float(reward), done
+
+    def observe(self, slot: VehicleSlot) -> np.ndarray:
+        """Poll a slot's sensors and return its normalized observation vector."""
+        slot.vehicle.poll_sensors()
+
+        elec = slot.electrics.data or {}
+        dmg = slot.damage_sensor.data or {}
+        speed = float(elec.get("wheelspeed", 0.0))
+        steering = float(elec.get("steering", 0.0))
+        damage = float(dmg.get("damage", 0.0))
+
+        state = slot.vehicle.state or {}
+        pos = state.get("pos", (0.0, 0.0, 0.0))
+        vel = state.get("vel", (1.0, 0.0, 0.0))
+        dir_vec = state.get("dir", vel)
+        vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
+
+        heading_err, lateral_err, dist = self._path_errors(slot, pos, state)
+
+        point_cloud = slot.lidar.poll().get("pointCloud", None) if slot.lidar is not None else None
+        lidar_bins, debug = process_lidar(
+            point_cloud, pos, vehicle_heading, slot.ego_local_extents, self._lidar_config()
+        )
+
+        slot.current_pos = pos
+        if self.waypoints:
+            target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+            slot.checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
+
+        waypoint_hints = self._waypoint_hints(slot, pos, vehicle_heading)
+
+        return np.concatenate(
+            [
+                np.array(
+                    [
+                        np.clip(speed / 50.0, -1.0, 1.0),
+                        np.clip(steering, -1.0, 1.0),
+                        np.clip(heading_err / np.pi, -1.0, 1.0),
+                        np.clip(lateral_err / 5.0, -1.0, 1.0),
+                        np.clip(damage / 1000.0, 0.0, 1.0),
+                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
+                    ],
+                    dtype=np.float32,
+                ),
+                lidar_bins,
+                waypoint_hints,
+            ]
+        )
+
+    def _waypoint_hints(self, slot, pos, vehicle_heading) -> np.ndarray:
+        """Vehicle-local (forward, left) coords for the next trajectory_hints waypoints."""
+        if not self.trajectory_hints or not self.waypoints:
+            return np.empty(0, dtype=np.float32)
+        NORM = 100.0
+        cos_h = np.cos(-vehicle_heading)
+        sin_h = np.sin(-vehicle_heading)
+        hints: list[float] = []
+        for i in range(self.trajectory_hints):
+            idx = (slot.waypoint_idx + i) % len(self.waypoints)
+            wp = self.waypoints[idx]
+            rel_x = wp[0] - pos[0]
+            rel_y = wp[1] - pos[1]
+            local_x = rel_x * cos_h - rel_y * sin_h
+            local_y = rel_x * sin_h + rel_y * cos_h
+            hints.append(float(np.clip(local_x / NORM, -1.0, 1.0)))
+            hints.append(float(np.clip(local_y / NORM, -1.0, 1.0)))
+        return np.array(hints, dtype=np.float32)
+
+    def launch(self):
+        """Start BeamNG and load the shared multi-vehicle scenario."""
+        self.bng = BeamNGpy(
+            self.host,
+            self.port,
+            home=self.beamng_home,
+            user=self.beamng_user,
+            headless=self.headless,
+        )
+        self.bng.open(launch=True)
+        self.trajectory = self._resolve_trajectory()
+        self.waypoints = list(self.trajectory.sparse_waypoints)
+        self._load_scenario()
+
+    def _resolve_trajectory(self):
+        import time
+
+        from core.trajectory import CACHE_DIR
+
+        cache_path = CACHE_DIR / f"{self.map_name}.json"
+        if cache_path.exists():
+            return load_or_generate(self.map_name, bng=None)
+
+        probe = Scenario(self.map_name, "trajectory_probe", description="Road probe")
+        probe_vehicle = Vehicle("probe_vehicle", model="etk800")
+        probe.add_vehicle(probe_vehicle, pos=(0.0, 0.0, 100.0), rot_quat=(0.0, 0.0, 0.0, 1.0))
+        probe.make(self.bng)
+        self.bng.load_scenario(probe)
+        self.bng.start_scenario()
+        time.sleep(0.5)
+        return load_or_generate(self.map_name, self.bng)
+
+    def _load_scenario(self):
+        import time
+
+        self.scenario = Scenario(self.map_name, "rl_multi_driving", description="RL Multi-Agent")
+
+        for i, slot in enumerate(self.slots):
+            slot.spawn_pos, slot.spawn_rot = self._grid_pose(i)
+            vcfg = self.VEHICLES.get(slot.vehicle_id, self.VEHICLES["taxi"])
+            vcfg = {**vcfg, "color": slot.color}
+            slot.vehicle = Vehicle(slot.name, **vcfg)
+            slot.electrics = Electrics()
+            slot.damage_sensor = Damage()
+            slot.vehicle.attach_sensor("electrics", slot.electrics)
+            slot.vehicle.attach_sensor("damage", slot.damage_sensor)
+            self.scenario.add_vehicle(
+                slot.vehicle,
+                pos=slot.spawn_pos,
+                rot_quat=slot.spawn_rot,
+                cling=True,
+            )
+
+        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
+        self.scenario.add_checkpoints(self.waypoints, scales)
+
+        self.scenario.make(self.bng)
+        self.bng.set_deterministic(30)
+        self.bng.load_scenario(self.scenario)
+        self.bng.start_scenario()
+        time.sleep(1.0)
+
+        for slot in self.slots:
+            slot.lidar = Lidar(
+                f"lidar_{slot.name}",
+                self.bng,
+                slot.vehicle,
+                pos=self.LIDAR_MOUNT_POS,
+                dir=self.LIDAR_MOUNT_DIR,
+                up=self.LIDAR_MOUNT_UP,
+                requested_update_time=0.05,
+                frequency=30,
+                vertical_resolution=self.LIDAR_VERT_RES,
+                vertical_angle=self.LIDAR_VERT_ANGLE,
+                horizontal_angle=self.LIDAR_FOV_DEG,
+                max_distance=self.LIDAR_MAX_DIST,
+                is_360_mode=False,
+                is_rotate_mode=False,
+                is_using_shared_memory=False,
+                is_visualised=LIDAR_VISUALISE,
+            )
+            self._cache_ego_local_bbox(slot)
+            self._update_slot_marker(slot)
+
+    def _cache_ego_local_bbox(self, slot: VehicleSlot):
+        try:
+            slot.vehicle.poll_sensors()
+            bbox = slot.vehicle.get_bbox()
+        except Exception:
+            slot.ego_local_extents = None
+            return
+        state = slot.vehicle.state or {}
+        slot.ego_local_extents = ego_local_extents_from_bbox(bbox, state, self.LIDAR_SELF_MARGIN)
+
+    def _update_slot_marker(self, slot: VehicleSlot):
+        """Draw/refresh slot's target-waypoint sphere in its vehicle colour.
+
+        Per-slot counterpart of BeamNGDrivingEnv._update_active_marker: each
+        vehicle gets its own sphere coloured to match its car. Silently skipped
+        without a live bng / on older beamngpy builds.
+        """
+        if self.bng is None or not self.waypoints:
+            return
+        try:
+            debug = self.bng.debug
+            if slot.active_marker_id is not None:
+                try:
+                    debug.remove_spheres([slot.active_marker_id])
+                except Exception:
+                    pass
+            target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+            pos = (target[0], target[1], target[2] + 2.0)
+            ids = debug.add_spheres(
+                coordinates=[pos],
+                radii=[3.0],
+                rgba_colors=[_color_rgba(slot.color)],
+            )
+            slot.active_marker_id = ids[0]
+        except AttributeError:
+            pass
+
+    def _spawn_axes(self):
+        """Return (forward, right) XY unit vectors of the spawn heading.
+
+        Derived from the spawn quaternion (pure-Z yaw). Identity (facing +Y)
+        gives forward=(0,1), right=(1,0).
+        """
+        rot = self.trajectory.spawn_rot
+        yaw = 2.0 * float(np.arctan2(rot[2], rot[3]))
+        fwd = (-float(np.sin(yaw)), float(np.cos(yaw)))
+        right = (float(np.cos(yaw)), float(np.sin(yaw)))
+        return fwd, right
+
+    def _grid_pose(self, index: int):
+        """Starting-grid pose for vehicle ``index``: abreast on the spawn line.
+
+        Vehicles are fanned out along the spawn's right axis, centred on the
+        spawn point, each in its own lane GRID_LANE_OFFSET apart. All share the
+        spawn heading, so none starts behind another.
+        """
+        spawn = self.trajectory.spawn_pos
+        rot = self.trajectory.spawn_rot
+        _fwd, right = self._spawn_axes()
+        n = len(self.slots)
+        lateral = (index - (n - 1) / 2.0) * self.GRID_LANE_OFFSET
+        pos = (
+            spawn[0] + right[0] * lateral,
+            spawn[1] + right[1] * lateral,
+            spawn[2],
+        )
+        return pos, rot
+
+    def reset_all(self):
+        """Teleport every vehicle to spawn, zero episode state, prime last_obs."""
+        if self.bng is None:
+            self.launch()
+        for slot in self.slots:
+            slot.reset_episode()
+            slot.vehicle.teleport(slot.spawn_pos, rot_quat=slot.spawn_rot, reset=True)
+            slot.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
+        self.bng.step(5)
+        for slot in self.slots:
+            slot.last_obs = self.observe(slot)
+            slot.last_dist = slot.current_dist
+            self._update_slot_marker(slot)
+
+    def reset_vehicle(self, slot: VehicleSlot):
+        """Teleport one finished vehicle back to its grid slot for the next episode."""
+        slot.vehicle.teleport(slot.spawn_pos, rot_quat=slot.spawn_rot, reset=True)
+        slot.reset_episode()
+        if slot.lidar is not None or slot.electrics is not None:
+            slot.last_obs = self.observe(slot)
+            slot.last_dist = slot.current_dist
+        self._update_slot_marker(slot)
+
+    def step_physics(self):
+        """Advance every vehicle by one env step (10 physics ticks)."""
+        self.bng.step(10)
+
+    def close(self):
+        if self.bng is None:
+            return
+        import threading
+
+        for slot in self.slots:
+            if slot.lidar is not None:
+                t = threading.Thread(target=slot.lidar.remove, daemon=True)
+                t.start()
+                t.join(timeout=3.0)
+                slot.lidar = None
+        t = threading.Thread(target=self.bng.close, daemon=True)
+        t.start()
+        t.join(timeout=5.0)
+        self.bng = None

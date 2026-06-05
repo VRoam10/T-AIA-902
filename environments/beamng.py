@@ -16,6 +16,7 @@ from config import (
     LOG_LIDAR,
 )
 from core.trajectory import TrajectoryData, load_or_generate
+from environments.beamng_geometry import LidarConfig, ego_local_extents_from_bbox, process_lidar
 
 
 class BeamNGDrivingEnv:
@@ -88,7 +89,7 @@ class BeamNGDrivingEnv:
             "part_config": "vehicles/burnside/4door_early_v8_3M_taxi.pc",
         },
         "gavril_t_series": {
-            "model": "us-semi",
+            "model": "us_semi",
             "licence": "T-Series",
             "color": "White",
             "part_config": "vehicles/us_semi/t83_sleeper.pc",
@@ -479,6 +480,18 @@ class BeamNGDrivingEnv:
 
         return obs
 
+    def _lidar_config(self) -> LidarConfig:
+        return LidarConfig(
+            rays=self.LIDAR_RAYS,
+            v_bins=self.LIDAR_V_BINS,
+            channels=self.LIDAR_CHANNELS_PER_RAY,
+            fov_deg=self.LIDAR_FOV_DEG,
+            vert_angle=self.LIDAR_VERT_ANGLE,
+            max_dist=self.LIDAR_MAX_DIST,
+            self_margin=self.LIDAR_SELF_MARGIN,
+            ground_clearance=self.LIDAR_GROUND_CLEARANCE,
+        )
+
     def _cache_ego_local_bbox(self):
         """Sample the ego OBB once and store its extents in vehicle-local frame.
 
@@ -506,160 +519,30 @@ class BeamNGDrivingEnv:
             self._ego_local_extents = None
             return
 
-        corners = np.asarray(list(bbox.values()), dtype=np.float32)
-        pos = np.asarray(state.get("pos", (0.0, 0.0, 0.0)), dtype=np.float32)
-        dir_vec = np.asarray(state.get("dir", (1.0, 0.0, 0.0)), dtype=np.float32)
-        heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
-
-        rel = corners - pos
-        c, s = np.cos(-heading), np.sin(-heading)
-        lx = rel[:, 0] * c - rel[:, 1] * s
-        ly = rel[:, 0] * s + rel[:, 1] * c
-        lz = rel[:, 2]
-        m = self.LIDAR_SELF_MARGIN
-        self._ego_local_extents = (
-            float(lx.min() - m),
-            float(lx.max() + m),
-            float(ly.min() - m),
-            float(ly.max() + m),
-            float(lz.min() - m),
-            float(lz.max() + m),
-        )
-
-    def _lidar_keep_mask(self, local_x, local_y, local_z) -> np.ndarray:
-        """Reject points that are (a) inside the ego OBB or (b) ground returns.
-
-        Ground threshold is relative to the ego bbox floor when available, so it
-        tracks the actual vehicle ride height instead of assuming a ref-node-at-
-        ground convention that varies per Jbeam.
-        """
-        n_total = int(local_x.size)
-        inside_self = np.zeros(n_total, dtype=bool)
-
-        if self._ego_local_extents is not None:
-            x_min, x_max, y_min, y_max, z_min, z_max = self._ego_local_extents
-            inside_self = (
-                (local_x >= x_min)
-                & (local_x <= x_max)
-                & (local_y >= y_min)
-                & (local_y <= y_max)
-                & (local_z >= z_min)
-                & (local_z <= z_max)
-            )
-            # z_min already has -LIDAR_SELF_MARGIN baked in, so add it back to
-            # recover the TRUE bbox floor, then require points to clear it by
-            # LIDAR_GROUND_CLEARANCE. (Using z_min directly cancelled the margin
-            # against the clearance, leaving ~0 real clearance, so ground returns
-            # leaked through and every bin read a spurious mid-range distance.)
-            floor = z_min + self.LIDAR_SELF_MARGIN
-            ground_z = floor + self.LIDAR_GROUND_CLEARANCE
-        else:
-            ground_z = self.LIDAR_GROUND_CLEARANCE
-
-        below_ground = local_z <= ground_z
-        keep = ~inside_self & ~below_ground
-
-        self._lidar_debug = {
-            "total": n_total,
-            "self": int(inside_self.sum()),
-            "ground": int((below_ground & ~inside_self).sum()),
-            "kept": int(keep.sum()),
-            "extents_none": self._ego_local_extents is None,
-            "ground_z": float(ground_z),
-        }
-        return keep
+        self._ego_local_extents = ego_local_extents_from_bbox(bbox, state, self.LIDAR_SELF_MARGIN)
 
     def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
-        """Bin a raw LiDAR point cloud into a LIDAR_V_BINS x LIDAR_RAYS grid.
+        """Bin a raw LiDAR point cloud via the shared geometry helper.
 
-        Pipeline: world -> ego-local -> self/ground filter -> forward-FOV mask ->
-        elevation+azimuth binning. Returns a flat float32 array of shape
-        (LIDAR_V_BINS * LIDAR_RAYS * LIDAR_CHANNELS_PER_RAY,) in [0, 1], where 0
-        means an obstacle is right there and 1 means the cell is clear.
-
-        Layout is row-major by vertical bin then horizontal bin then channel:
-        index = (v * LIDAR_RAYS + h) * LIDAR_CHANNELS_PER_RAY + c. With
-        LIDAR_V_BINS == 1 this reduces to the legacy single row of LIDAR_RAYS
-        values (vertical structure collapsed), so existing models stay valid.
+        Preserves the previous side effects: stores the filtering breakdown in
+        self._lidar_debug and optionally logs the bins to the BeamNG console.
         """
-        v_bins = self.LIDAR_V_BINS
-        h_bins = self.LIDAR_RAYS
-        ch = self.LIDAR_CHANNELS_PER_RAY
-        n_out = v_bins * h_bins * ch
-        distances = np.ones(n_out, dtype=np.float32)  # default: clear
+        distances, debug = process_lidar(
+            point_cloud,
+            vehicle_pos,
+            vehicle_heading,
+            self._ego_local_extents,
+            self._lidar_config(),
+        )
+        self._lidar_debug = debug
 
-        if point_cloud is None or len(point_cloud) == 0:
-            if LOG_LIDAR:
+        if LOG_LIDAR and self.bng is not None:
+            if point_cloud is None or len(point_cloud) == 0:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
-            return distances
-
-        pts = np.asarray(point_cloud, dtype=np.float32).reshape(-1, 3)
-
-        # World -> vehicle-local (keep z so we can do self/ground filtering)
-        rel = pts - np.asarray(vehicle_pos, dtype=np.float32)
-        cos_h = np.cos(-vehicle_heading)
-        sin_h = np.sin(-vehicle_heading)
-        local_x = rel[:, 0] * cos_h - rel[:, 1] * sin_h
-        local_y = rel[:, 0] * sin_h + rel[:, 1] * cos_h
-        local_z = rel[:, 2]
-
-        keep = self._lidar_keep_mask(local_x, local_y, local_z)
-        local_x = local_x[keep]
-        local_y = local_y[keep]
-        local_z = local_z[keep]
-        if local_x.size == 0:
-            if LOG_LIDAR:
-                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points filtered')")
-            return distances
-
-        angles = np.arctan2(local_y, local_x)
-        dists = np.hypot(local_x, local_y)
-
-        half_fov = np.radians(self.LIDAR_FOV_DEG / 2.0)
-        in_fov = np.abs(angles) <= half_fov
-        angles = angles[in_fov]
-        dists = dists[in_fov]
-        local_z = local_z[in_fov]
-        if angles.size == 0:
-            if LOG_LIDAR:
-                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
-            return distances
-
-        # Diagnostics: distance + height of the nearest in-FOV point that survived
-        # filtering — lets a human_play session tell ground (z≈floor) from a real
-        # obstacle (z higher) from self-hits (dist small).
-        nearest = int(np.argmin(dists))
-        self._lidar_debug["fov"] = int(angles.size)
-        self._lidar_debug["min_dist_m"] = float(dists[nearest])
-        self._lidar_debug["min_dist_z"] = float(local_z[nearest])
-
-        # Azimuth (horizontal) bin index, right-to-left across the FOV.
-        h_edges = np.linspace(-half_fov, half_fov, h_bins + 1)
-        h_idx = np.clip(np.digitize(angles, h_edges) - 1, 0, h_bins - 1)
-
-        # Elevation (vertical) bin index. With v_bins == 1 every point collapses
-        # to row 0, reproducing the legacy single-row behaviour exactly.
-        if v_bins == 1:
-            v_idx = np.zeros(angles.shape, dtype=np.intp)
-        else:
-            half_vfov = np.radians(self.LIDAR_VERT_ANGLE / 2.0)
-            elevation = np.arctan2(local_z, dists)
-            v_edges = np.linspace(-half_vfov, half_vfov, v_bins + 1)
-            v_idx = np.clip(np.digitize(elevation, v_edges) - 1, 0, v_bins - 1)
-
-        for v in range(v_bins):
-            for h in range(h_bins):
-                sel = dists[(v_idx == v) & (h_idx == h)]
-                if sel.size:
-                    # Channel 0: nearest-obstacle distance in the cell, normalized.
-                    distances[(v * h_bins + h) * ch] = np.clip(
-                        sel.min() / self.LIDAR_MAX_DIST, 0.0, 1.0
-                    )
-
-        if LOG_LIDAR:
-            self.bng.queue_lua_command(
-                "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
-            )
+            else:
+                self.bng.queue_lua_command(
+                    "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
+                )
         return distances
 
     def _get_waypoint_hints(self, pos, vehicle_heading) -> np.ndarray:
