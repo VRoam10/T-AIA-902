@@ -779,9 +779,9 @@ class BeamNGLidarEnv(BeamNGDrivingEnv):
     LIDAR_VERT_RES = 16  # more layers to populate the wider vertical FOV
     LIDAR_VERT_ANGLE = 20.0  # wider vertical FOV (±10°) so the rows span useful elevations
 
-    # 5 kinematic + (4 vertical × 8 horizontal × 1 channel) = 37
+    # 6 kinematic + (4 vertical × 8 horizontal × 1 channel) = 38
     N_STATES = (
-        5 + BeamNGDrivingEnv.LIDAR_RAYS * LIDAR_V_BINS * BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
+        6 + BeamNGDrivingEnv.LIDAR_RAYS * LIDAR_V_BINS * BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
     )
 
 

@@ -47,7 +47,7 @@ def _make_beamng_lidar(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
 registry.register_environment(
     "beamng_lidar",
     factory=_make_beamng_lidar,
-    metadata={"n_states": 37, "n_actions": 7, "state_type": "continuous"},
+    metadata={"n_states": 38, "n_actions": 7, "state_type": "continuous"},
 )
 
 
