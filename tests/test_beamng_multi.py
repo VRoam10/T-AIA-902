@@ -5,7 +5,14 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from environments.beamng_multi import BeamNGMultiEnv, VehicleSlot, _color_rgba, build_slots
+from environments.beamng_multi import (
+    BeamNGMultiEnv,
+    VehicleSlot,
+    _color_rgba,
+    build_slots,
+    env_profile,
+    slot_n_states,
+)
 
 
 def _slot(**kw):
@@ -62,13 +69,28 @@ class _FakeAgent:
 
 
 SPECS = [
-    {"algo": "dqn", "agent": _FakeAgent(), "vehicle_id": "taxi", "color": "Yellow",
-     "save_path": "outputs/dqn.pth"},
-    {"algo": "ddpg", "agent": _FakeAgent(), "vehicle_id": "ibishu_pigeon", "color": "Red",
-     "save_path": "outputs/ddpg.pth"},
-    {"algo": "td3", "agent": _FakeAgent(), "vehicle_id": "taxi", "color": "Blue",
-     "save_path": "outputs/td3.pth"},
+    {"algo": "dqn", "env": "beamng", "agent": _FakeAgent(), "vehicle_id": "taxi",
+     "color": "Yellow", "save_path": "outputs/dqn.pth"},
+    {"algo": "ddpg", "env": "beamng_continuous", "agent": _FakeAgent(),
+     "vehicle_id": "ibishu_pigeon", "color": "Red", "save_path": "outputs/ddpg.pth"},
+    {"algo": "td3", "env": "beamng_continuous", "agent": _FakeAgent(),
+     "vehicle_id": "taxi", "color": "Blue", "save_path": "outputs/td3.pth"},
 ]
+
+
+class TestEnvProfiles:
+    def test_env_profile_perception_and_hints(self):
+        assert env_profile("beamng") == ("lidar", 0)
+        assert env_profile("beamng_lidar") == ("lidar_grid", 0)
+        assert env_profile("beamng_camera") == ("camera", 0)
+        assert env_profile("beamng_camera_predicted") == ("camera", 1)
+
+    def test_slot_n_states_per_env(self):
+        assert slot_n_states("beamng") == 14  # 6 + 8 lidar
+        assert slot_n_states("beamng_predicted") == 16  # + 2 hints
+        assert slot_n_states("beamng_lidar") == 38  # 6 + 32 grid
+        assert slot_n_states("beamng_camera") == 262  # 6 + 256 pixels
+        assert slot_n_states("beamng_camera_predicted") == 264  # + 2 hints
 
 
 class TestBuildSlots:
@@ -84,6 +106,24 @@ class TestBuildSlots:
         assert slots[1].action_space == "continuous"
         assert slots[2].reward_mode == "ddpg"
         assert slots[2].action_space == "continuous"
+
+    def test_perception_and_n_states_from_env(self):
+        slots = build_slots(SPECS)
+        assert slots[0].perception == "lidar"
+        assert slots[0].n_states == 14
+        assert slots[1].env_name == "beamng_continuous"
+        assert slots[1].perception == "lidar"
+
+    def test_continuous_algo_on_camera_uses_default_reward(self):
+        # DDPG on a camera env: no LiDAR bins to reason about -> default reward.
+        slots = build_slots(
+            [{"algo": "ddpg", "env": "beamng_camera", "agent": _FakeAgent(),
+              "vehicle_id": "taxi", "color": "Red", "save_path": "outputs/x.pth"}]
+        )
+        assert slots[0].perception == "camera"
+        assert slots[0].reward_mode == "default"
+        assert slots[0].action_space == "continuous"
+        assert slots[0].n_states == 262
 
     def test_carries_color_and_save_path(self):
         slots = build_slots(SPECS)
@@ -152,7 +192,7 @@ class TestPathErrorsAndReward:
         slot.checkpoint_hit = True
         slot.waypoint_idx = 1
         slot.checkpoint_dist = 0.0
-        obs = np.zeros(env.n_states, dtype=np.float32)
+        obs = np.zeros(slot.n_states, dtype=np.float32)
         obs[0] = 0.5  # moving (speed) so no stationary penalty
         reward, done = env.compute_reward(slot, obs)
         assert reward >= 100.0
@@ -162,7 +202,7 @@ class TestPathErrorsAndReward:
         env = _env()
         env.waypoints = [(0.0, 0.0, 0.0)]
         slot = env.slots[0]
-        obs = np.zeros(env.n_states, dtype=np.float32)
+        obs = np.zeros(slot.n_states, dtype=np.float32)
         obs[0] = 0.5
         obs[4] = 1.0  # damage_norm = 1.0 -> 1000 damage == MAX_DAMAGE
         reward, done = env.compute_reward(slot, obs)
@@ -174,7 +214,7 @@ class TestPathErrorsAndReward:
         slot = env.slots[1]  # reward_mode "ddpg"
         slot.last_dist = 50.0
         slot.current_dist = 40.0  # got 10 m closer
-        obs = np.zeros(env.n_states, dtype=np.float32)
+        obs = np.zeros(slot.n_states, dtype=np.float32)
         obs[0] = 0.4  # speed
         reward, done = env.compute_reward(slot, obs)
         assert reward > 0.0
@@ -201,7 +241,7 @@ class TestObserve:
             pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), lidar_points=None,
         )
         obs = env.observe(slot)
-        assert obs.shape == (env.n_states,)
+        assert obs.shape == (slot.n_states,)
         assert obs[0] == pytest.approx(0.2, abs=1e-3)
 
     def test_observe_polls_each_slot_sensor(self):

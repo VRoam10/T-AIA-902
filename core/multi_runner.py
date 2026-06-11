@@ -92,15 +92,18 @@ class MultiAgentRunner:
         env.reset_vehicle(slot)
 
     def _save_slot_plot(self, slot):
-        """Write a per-agent reward/steps plot, reusing PipelineRunner's plotter."""
+        """Write a per-agent reward/steps plot beside that agent's checkpoint."""
         if not slot.reward_history:
             return
+        import os
+
         from core.runner import PipelineRunner
 
+        plot_dir = os.path.dirname(slot.save_path) or "."
         PipelineRunner._save_plot(
             slot.reward_history,
             slot.steps_history,
             slot.name,
-            f"outputs/{slot.name}_multi_training.png",
+            os.path.join(plot_dir, f"{slot.name}_training.png"),
             slot.episode,
         )

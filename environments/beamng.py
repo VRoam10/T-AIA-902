@@ -16,6 +16,7 @@ from config import (
     LOG_LIDAR,
 )
 from core.trajectory import TrajectoryData, load_or_generate
+from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import LidarConfig, ego_local_extents_from_bbox, process_lidar
 
 
@@ -1035,47 +1036,17 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
     # ------------------------------------------------------------------
 
     def _process_camera(self) -> np.ndarray:
-        """Poll camera and return a flattened grayscale image normalized to [0, 1]."""
-        n_pixels = self.CAM_OUT_SIZE[0] * self.CAM_OUT_SIZE[1]
-        if self.camera is None:
-            return np.ones(n_pixels, dtype=np.float32)
+        """Poll camera and return a flattened grayscale image normalized to [0, 1].
 
-        data = self.camera.poll()
-        colour = data.get("colour", None)
-        if colour is None:
-            return np.ones(n_pixels, dtype=np.float32)
-
-        # beamngpy may return a PIL Image or a numpy array depending on version
-        img = np.asarray(colour, dtype=np.float32)
-
-        # Convert RGB(A) to grayscale using luminosity weights
-        if img.ndim == 3 and img.shape[2] >= 3:
-            gray = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
-        else:
-            gray = img.squeeze().astype(np.float32)
-
-        # Resize to CAM_OUT_SIZE
-        oh, ow = self.CAM_OUT_SIZE
-        try:
-            from PIL import Image as PILImage
-
-            pil = PILImage.fromarray(np.clip(gray, 0, 255).astype(np.uint8), mode="L")
-            pil = pil.resize((ow, oh), PILImage.BILINEAR)
-            small = np.array(pil, dtype=np.float32)
-        except ImportError:
-            h, w = gray.shape
-            sh, sw = max(1, h // oh), max(1, w // ow)
-            small = gray[::sh, ::sw][:oh, :ow]
-            if small.shape != (oh, ow):
-                padded = np.zeros((oh, ow), dtype=np.float32)
-                padded[: small.shape[0], : small.shape[1]] = small
-                small = padded
-
-        self.last_frame = small / 255.0  # 2-D (CAM_OUT_SIZE), values in [0, 1]
-        if LOG_CAMERA:
-            flat = self.last_frame.flatten()
+        Delegates the frame math to the shared `process_camera_frame` helper;
+        keeps the poll, `last_frame` cache, and optional Lua logging here.
+        """
+        colour = self.camera.poll().get("colour", None) if self.camera is not None else None
+        flat = process_camera_frame(colour, self.CAM_OUT_SIZE)
+        self.last_frame = flat.reshape(self.CAM_OUT_SIZE)  # 2-D (CAM_OUT_SIZE), values in [0, 1]
+        if LOG_CAMERA and self.bng is not None:
             mn, mx, avg = float(flat.min()), float(flat.max()), float(flat.mean())
             self.bng.queue_lua_command(
                 f"log('I', 'RL', 'Camera: min={mn:.3f} max={mx:.3f} mean={avg:.3f}')"
             )
-        return self.last_frame.flatten()
+        return flat

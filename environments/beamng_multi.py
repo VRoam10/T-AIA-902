@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 from beamngpy import BeamNGpy, Scenario, Vehicle
-from beamngpy.sensors import Damage, Electrics, Lidar
+from beamngpy.sensors import Camera, Damage, Electrics, Lidar
 
 from config import (  # noqa: F401  (LOG_LIDAR reserved for future logging parity)
     LIDAR_VISUALISE,
@@ -18,6 +18,7 @@ from config import (  # noqa: F401  (LOG_LIDAR reserved for future logging parit
 )
 from core.trajectory import TrajectoryData, load_or_generate
 from environments.beamng import BeamNGDrivingEnv
+from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import (
     LidarConfig,
     ego_local_extents_from_bbox,
@@ -42,11 +43,18 @@ class VehicleSlot:
     action_space: str  # "discrete" or "continuous"
     save_path: str
 
+    # Environment profile (assigned by build_slots from the chosen env name)
+    env_name: str = "beamng"
+    perception: str = "lidar"  # "lidar" | "lidar_grid" | "camera"
+    trajectory_hints: int = 0
+    n_states: int = 14  # observation length for this vehicle's env
+
     # Sensors (assigned during scenario load)
     vehicle: Any = None
     electrics: Any = None
     damage_sensor: Any = None
     lidar: Any = None
+    camera: Any = None
 
     # Per-vehicle starting-grid pose (assigned during scenario load)
     spawn_pos: tuple = (0.0, 0.0, 0.0)
@@ -92,6 +100,41 @@ class VehicleSlot:
 # Algorithms whose action space is continuous (actor outputs in [-1, 1]).
 _CONTINUOUS_ALGOS = {"ddpg", "td3"}
 
+# Registered BeamNG env name -> (perception type, trajectory_hints). Each car
+# in a multi-agent session can run a different one.
+_ENV_PROFILES = {
+    "beamng": ("lidar", 0),
+    "beamng_predicted": ("lidar", 1),
+    "beamng_continuous": ("lidar", 0),
+    "beamng_continuous_predicted": ("lidar", 1),
+    "beamng_lidar": ("lidar_grid", 0),
+    "beamng_camera": ("camera", 0),
+    "beamng_camera_predicted": ("camera", 1),
+}
+
+# Perception type -> number of perception features in the observation vector.
+_PERCEPTION_FEATURES = {"lidar": 8, "lidar_grid": 32, "camera": 256}
+
+# Perception type -> LiDAR sensor params (vertical bins/resolution/FOV). Camera
+# perception has no entry (it uses a Camera sensor instead).
+_LIDAR_PERCEPTION = {
+    "lidar": {"v_bins": 1, "vert_res": 8, "vert_angle": 6.0},
+    "lidar_grid": {"v_bins": 4, "vert_res": 16, "vert_angle": 20.0},
+}
+
+_KINEMATIC_FEATURES = 6  # speed, steering, heading_err, lateral_err, damage, dist
+
+
+def env_profile(env_name: str) -> tuple[str, int]:
+    """Return (perception, trajectory_hints) for a registered BeamNG env name."""
+    return _ENV_PROFILES.get(env_name, ("lidar", 0))
+
+
+def slot_n_states(env_name: str) -> int:
+    """Observation length for a vehicle running the given env."""
+    perception, hints = env_profile(env_name)
+    return _KINEMATIC_FEATURES + _PERCEPTION_FEATURES[perception] + 2 * hints
+
 # Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
 # matches its car. Falls back to the single-agent env's green for unknown names.
 _MARKER_RGBA = {
@@ -114,22 +157,32 @@ def _color_rgba(name: str) -> tuple[float, float, float, float]:
 def build_slots(specs: list[dict]) -> list[VehicleSlot]:
     """Turn a list of vehicle specs into VehicleSlots.
 
-    Each spec dict: {"algo", "agent", "vehicle_id", "color", "save_path"}.
-    reward_mode and action_space are derived from the algorithm name.
+    Each spec dict: {"algo", "env", "agent", "vehicle_id", "color", "save_path"}.
+    action_space comes from the algorithm; perception, trajectory_hints and
+    n_states come from the chosen env. reward_mode uses the LiDAR-aware DDPG
+    reward only for continuous algos on a LiDAR perception (camera and discrete
+    DQN fall back to the default reward, which reads no LiDAR bins).
     """
     slots = []
     for i, spec in enumerate(specs):
         algo = spec["algo"]
+        env_name = spec.get("env", "beamng")
+        perception, hints = env_profile(env_name)
         continuous = algo in _CONTINUOUS_ALGOS
+        ddpg_reward = continuous and perception in ("lidar", "lidar_grid")
         slots.append(
             VehicleSlot(
                 name=f"ego_{i}",
                 color=spec["color"],
                 vehicle_id=spec["vehicle_id"],
                 agent=spec["agent"],
-                reward_mode="ddpg" if continuous else "default",
+                reward_mode="ddpg" if ddpg_reward else "default",
                 action_space="continuous" if continuous else "discrete",
                 save_path=spec["save_path"],
+                env_name=env_name,
+                perception=perception,
+                trajectory_hints=hints,
+                n_states=slot_n_states(env_name),
             )
         )
     return slots
@@ -173,6 +226,13 @@ class BeamNGMultiEnv:
     # collisions enabled).
     GRID_LANE_OFFSET = 4.0  # metres between adjacent vehicles
 
+    # Dashcam config for camera-perception vehicles (mirrors BeamNGCameraEnv).
+    CAM_RESOLUTION = (84, 84)
+    CAM_OUT_SIZE = (16, 16)
+    CAM_FOV_Y = 70
+    CAM_POS = (0, -0.5, 1.5)
+    CAM_DIR = (0, -1, 0)
+
     def __init__(
         self,
         slots: list[VehicleSlot],
@@ -182,7 +242,6 @@ class BeamNGMultiEnv:
         port: int = 25252,
         headless: bool = False,
         map_name: str = "gridmap_v2",
-        trajectory_hints: int = 0,
     ):
         self.slots = slots
         self.beamng_home = beamng_home
@@ -191,29 +250,25 @@ class BeamNGMultiEnv:
         self.port = port
         self.headless = headless
         self.map_name = map_name
-        self.trajectory_hints = trajectory_hints
 
         self.bng: BeamNGpy = None
         self.scenario: Scenario = None
         self.trajectory: TrajectoryData | None = None
         self.waypoints: list[tuple[float, float, float]] = []
 
-    def _lidar_config(self) -> LidarConfig:
+    def _lidar_config_for(self, slot: VehicleSlot) -> LidarConfig:
+        """LiDAR binning config for a slot's perception (single-row or 2D grid)."""
+        p = _LIDAR_PERCEPTION[slot.perception]
         return LidarConfig(
             rays=self.LIDAR_RAYS,
-            v_bins=self.LIDAR_V_BINS,
+            v_bins=p["v_bins"],
             channels=self.LIDAR_CHANNELS_PER_RAY,
             fov_deg=self.LIDAR_FOV_DEG,
-            vert_angle=self.LIDAR_VERT_ANGLE,
+            vert_angle=p["vert_angle"],
             max_dist=self.LIDAR_MAX_DIST,
             self_margin=self.LIDAR_SELF_MARGIN,
             ground_clearance=self.LIDAR_GROUND_CLEARANCE,
         )
-
-    @property
-    def n_states(self) -> int:
-        base = 6 + self.LIDAR_RAYS * self.LIDAR_V_BINS * self.LIDAR_CHANNELS_PER_RAY
-        return base + self.trajectory_hints * 2
 
     def apply_action(self, slot: VehicleSlot, action) -> None:
         """Map an agent action to vehicle controls. Does not step physics."""
@@ -374,10 +429,7 @@ class BeamNGMultiEnv:
 
         heading_err, lateral_err, dist = self._path_errors(slot, pos, state)
 
-        point_cloud = slot.lidar.poll().get("pointCloud", None) if slot.lidar is not None else None
-        lidar_bins, debug = process_lidar(
-            point_cloud, pos, vehicle_heading, slot.ego_local_extents, self._lidar_config()
-        )
+        perception = self._perceive(slot, pos, vehicle_heading)
 
         slot.current_pos = pos
         if self.waypoints:
@@ -399,20 +451,31 @@ class BeamNGMultiEnv:
                     ],
                     dtype=np.float32,
                 ),
-                lidar_bins,
+                perception,
                 waypoint_hints,
             ]
         )
 
+    def _perceive(self, slot: VehicleSlot, pos, vehicle_heading) -> np.ndarray:
+        """Return the slot's perception feature block (LiDAR bins or camera pixels)."""
+        if slot.perception == "camera":
+            colour = slot.camera.poll().get("colour", None) if slot.camera is not None else None
+            return process_camera_frame(colour, self.CAM_OUT_SIZE)
+        point_cloud = slot.lidar.poll().get("pointCloud", None) if slot.lidar is not None else None
+        bins, _debug = process_lidar(
+            point_cloud, pos, vehicle_heading, slot.ego_local_extents, self._lidar_config_for(slot)
+        )
+        return bins
+
     def _waypoint_hints(self, slot, pos, vehicle_heading) -> np.ndarray:
         """Vehicle-local (forward, left) coords for the next trajectory_hints waypoints."""
-        if not self.trajectory_hints or not self.waypoints:
+        if not slot.trajectory_hints or not self.waypoints:
             return np.empty(0, dtype=np.float32)
         NORM = 100.0
         cos_h = np.cos(-vehicle_heading)
         sin_h = np.sin(-vehicle_heading)
         hints: list[float] = []
-        for i in range(self.trajectory_hints):
+        for i in range(slot.trajectory_hints):
             idx = (slot.waypoint_idx + i) % len(self.waypoints)
             wp = self.waypoints[idx]
             rel_x = wp[0] - pos[0]
@@ -486,26 +549,53 @@ class BeamNGMultiEnv:
         time.sleep(1.0)
 
         for slot in self.slots:
-            slot.lidar = Lidar(
-                f"lidar_{slot.name}",
+            self._create_slot_sensor(slot)
+            self._update_slot_marker(slot)
+
+    def _create_slot_sensor(self, slot: VehicleSlot):
+        """Attach the perception sensor (LiDAR or camera) for one slot.
+
+        Sensors must be created after the scenario starts. Camera slots get a
+        dashcam; LiDAR/LiDAR-grid slots get a LiDAR sized for their perception
+        plus a cached ego bbox for self-hit filtering.
+        """
+        if slot.perception == "camera":
+            slot.camera = Camera(
+                f"cam_{slot.name}",
                 self.bng,
                 slot.vehicle,
-                pos=self.LIDAR_MOUNT_POS,
-                dir=self.LIDAR_MOUNT_DIR,
-                up=self.LIDAR_MOUNT_UP,
-                requested_update_time=0.05,
-                frequency=30,
-                vertical_resolution=self.LIDAR_VERT_RES,
-                vertical_angle=self.LIDAR_VERT_ANGLE,
-                horizontal_angle=self.LIDAR_FOV_DEG,
-                max_distance=self.LIDAR_MAX_DIST,
-                is_360_mode=False,
-                is_rotate_mode=False,
-                is_using_shared_memory=False,
-                is_visualised=LIDAR_VISUALISE,
+                pos=self.CAM_POS,
+                dir=self.CAM_DIR,
+                field_of_view_y=self.CAM_FOV_Y,
+                resolution=self.CAM_RESOLUTION,
+                is_render_colours=True,
+                is_render_depth=False,
+                is_render_annotations=False,
+                is_visualised=False,
+                is_static=False,
             )
-            self._cache_ego_local_bbox(slot)
-            self._update_slot_marker(slot)
+            return
+
+        p = _LIDAR_PERCEPTION[slot.perception]
+        slot.lidar = Lidar(
+            f"lidar_{slot.name}",
+            self.bng,
+            slot.vehicle,
+            pos=self.LIDAR_MOUNT_POS,
+            dir=self.LIDAR_MOUNT_DIR,
+            up=self.LIDAR_MOUNT_UP,
+            requested_update_time=0.05,
+            frequency=30,
+            vertical_resolution=p["vert_res"],
+            vertical_angle=p["vert_angle"],
+            horizontal_angle=self.LIDAR_FOV_DEG,
+            max_distance=self.LIDAR_MAX_DIST,
+            is_360_mode=False,
+            is_rotate_mode=False,
+            is_using_shared_memory=False,
+            is_visualised=LIDAR_VISUALISE,
+        )
+        self._cache_ego_local_bbox(slot)
 
     def _cache_ego_local_bbox(self, slot: VehicleSlot):
         try:
@@ -608,11 +698,13 @@ class BeamNGMultiEnv:
         import threading
 
         for slot in self.slots:
-            if slot.lidar is not None:
-                t = threading.Thread(target=slot.lidar.remove, daemon=True)
-                t.start()
-                t.join(timeout=3.0)
-                slot.lidar = None
+            for sensor_attr in ("lidar", "camera"):
+                sensor = getattr(slot, sensor_attr)
+                if sensor is not None:
+                    t = threading.Thread(target=sensor.remove, daemon=True)
+                    t.start()
+                    t.join(timeout=3.0)
+                    setattr(slot, sensor_attr, None)
         t = threading.Thread(target=self.bng.close, daemon=True)
         t.start()
         t.join(timeout=5.0)

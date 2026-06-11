@@ -9,7 +9,7 @@ from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
 from core.multi_runner import MultiAgentRunner
 from core.registry import registry
 from core.runner import PipelineRunner
-from environments.beamng_multi import BeamNGMultiEnv, build_slots
+from environments.beamng_multi import BeamNGMultiEnv, build_slots, slot_n_states
 
 
 def _pick(options: list[str], prompt: str = "Select") -> str:
@@ -50,6 +50,9 @@ _BEAMNG_VEHICLES = {
 }
 
 _MULTI_ALGOS = ["dqn", "ddpg", "td3"]
+
+# Multi-agent checkpoints + plots live in their own subfolder.
+_MULTI_OUTPUT_DIR = os.path.join("outputs", "multi-agents")
 
 
 def _pick_beamng_options() -> tuple[str, str]:
@@ -368,30 +371,27 @@ def _trajectory_menu():
             env.close()
 
 
-def build_multi_session(specs: list[dict], map_name: str, trajectory_hints: int):
+def build_multi_session(specs: list[dict], map_name: str):
     """Create the BeamNGMultiEnv and an agent per spec.
 
-    Each agent is built against the shared observation size (env.n_states) and
-    its own action dimensionality from the algorithm's registered defaults.
-    Returns (env, slots).
+    Each spec carries its own ``env`` name; the agent is sized to that env's
+    observation length (``slot_n_states``) and its action dimensionality from
+    the algorithm's registered defaults. Returns (env, slots).
     """
-    # Construct the env first (without agents) to learn the shared n_states.
     env = BeamNGMultiEnv(
         slots=[],
         beamng_home=BEAMNG_HOME,
         beamng_user=BEAMNG_USER,
         headless=HEADLESS,
         map_name=map_name,
-        trajectory_hints=trajectory_hints,
     )
-    n_states = env.n_states
 
     enriched = []
     for spec in specs:
         algo_info = registry.get_algorithm(spec["algo"])
         cls = algo_info["class"]
         cfg = dict(algo_info["default_config"])
-        cfg["n_states"] = n_states
+        cfg["n_states"] = slot_n_states(spec.get("env", "beamng"))
         # Discrete (DQN) uses the 7-action table; continuous algos keep their
         # configured action dimensionality (n_actions from defaults, else 3).
         if spec["algo"] == "dqn":
@@ -412,9 +412,6 @@ def _multi_train_menu():
     print("\nAvailable maps:")
     map_name = _pick(_BEAMNG_MAPS, "Map")
 
-    hints = input("\nTrajectory hints per vehicle [0]: ").strip()
-    trajectory_hints = int(hints) if hints.isdigit() else 0
-
     vehicle_keys = list(_BEAMNG_VEHICLES.keys())
     vehicle_labels = list(_BEAMNG_VEHICLES.values())
     colors = ["Yellow", "Red", "Blue", "Green", "Orange", "White", "Black"]
@@ -424,14 +421,26 @@ def _multi_train_menu():
         print(f"\n--- Vehicle {len(specs)} ---")
         print("Algorithm:")
         algo = _pick(_MULTI_ALGOS, "Algorithm")
+        # Environments compatible with this algorithm (BeamNG only).
+        env_options = [
+            e for e in registry.compatible_environments(algo) if e.startswith("beamng")
+        ]
+        print("Environment:")
+        env_name = _pick(env_options, "Environment")
         print("Vehicle model:")
         vlabel = _pick(vehicle_labels, "Vehicle")
         vehicle_id = vehicle_keys[vehicle_labels.index(vlabel)]
         color = colors[len(specs) % len(colors)]
-        default_path = f"outputs/{algo}_multi_{len(specs)}.pth"
+        default_path = os.path.join(_MULTI_OUTPUT_DIR, f"{algo}_{env_name}_{len(specs)}.pth")
         save_path = input(f"  Model save path [{default_path}]: ").strip() or default_path
         specs.append(
-            {"algo": algo, "vehicle_id": vehicle_id, "color": color, "save_path": save_path}
+            {
+                "algo": algo,
+                "env": env_name,
+                "vehicle_id": vehicle_id,
+                "color": color,
+                "save_path": save_path,
+            }
         )
         more = input("\nAdd another vehicle? [y/N]: ").strip().lower()
         if more != "y":
@@ -445,7 +454,7 @@ def _multi_train_menu():
     minutes = _ask_float("Time limit (minutes, 0 = none)", 0.0)
     time_limit = minutes * 60.0 if minutes > 0 else None
 
-    env, slots = build_multi_session(specs, map_name, trajectory_hints)
+    env, slots = build_multi_session(specs, map_name)
     for slot in slots:
         if os.path.exists(slot.save_path):
             choice = (
@@ -459,7 +468,7 @@ def _multi_train_menu():
                 slot.agent.load(slot.save_path)
                 slot.episode = getattr(slot.agent, "episode", 0)
 
-    os.makedirs("outputs", exist_ok=True)
+    os.makedirs(_MULTI_OUTPUT_DIR, exist_ok=True)
     runner = MultiAgentRunner()
     print(f"\n--- Training {len(slots)} agents on {map_name} ---\n")
     try:
