@@ -313,7 +313,7 @@ def _human_play_menu():
             env.human_play()
     finally:
         if env is not None:
-            env.close()
+            env.close(kill_sim=False)
 
 
 def _trajectory_menu():
