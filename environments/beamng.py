@@ -21,7 +21,7 @@ from config import (
 )
 from core.trajectory import TrajectoryData, load_or_generate
 from environments.beamng_camera_util import process_camera_frame
-from environments.beamng_geometry import LidarConfig, ego_local_extents_from_bbox, process_lidar
+from environments.beamng_geometry import LidarConfig
 
 
 class BeamNGDrivingEnv:
