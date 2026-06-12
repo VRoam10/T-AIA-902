@@ -4,8 +4,11 @@ import threading
 import time
 
 import numpy as np
-from beamngpy import BeamNGpy, Scenario, Vehicle
-from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor
+try:
+    from beamngpy import BeamNGpy, Scenario, Vehicle
+    from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor
+except ImportError:
+    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
 
 from config import (
     LIDAR_VISUALISE,

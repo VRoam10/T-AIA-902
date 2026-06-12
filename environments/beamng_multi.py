@@ -9,8 +9,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from beamngpy import BeamNGpy, Scenario, Vehicle
-from beamngpy.sensors import Camera, Damage, Electrics, Lidar
+try:
+    from beamngpy import BeamNGpy, Scenario, Vehicle
+    from beamngpy.sensors import Camera, Damage, Electrics, Lidar
+except ImportError:
+    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = None
 
 from config import (  # noqa: F401  (LOG_LIDAR reserved for future logging parity)
     LIDAR_VISUALISE,
