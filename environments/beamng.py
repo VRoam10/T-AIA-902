@@ -4,6 +4,7 @@ import threading
 import time
 
 import numpy as np
+
 try:
     from beamngpy import BeamNGpy, Scenario, Vehicle
     from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor

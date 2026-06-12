@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+
 try:
     from beamngpy import BeamNGpy, Scenario, Vehicle
     from beamngpy.sensors import Camera, Damage, Electrics, Lidar
