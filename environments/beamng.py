@@ -326,19 +326,30 @@ class BeamNGDrivingEnv:
         except KeyboardInterrupt:
             print("[BeamNGDrivingEnv] Human play stopped.")
 
-    def close(self):
-        """Shut down the BeamNG connection."""
+    def close(self, kill_sim: bool = True):
+        """Close this environment.
+
+        BeamNGpy `close()` kills the BeamNG process by default. Human-play uses
+        `kill_sim=False` so returning to the menu or switching options only
+        disconnects this client and leaves the already-open game running.
+        """
         if self.bng is not None:
-            if self.lidar is not None:
-                t = threading.Thread(target=self.lidar.remove, daemon=True)
-                t.start()
-                t.join(timeout=3.0)
-                self.lidar = None
-            t = threading.Thread(target=self.bng.close, daemon=True)
+            self._remove_lidar()
+            close_fn = self.bng.close if kill_sim else self.bng.disconnect
+            t = threading.Thread(target=close_fn, daemon=True)
             t.start()
             t.join(timeout=5.0)
             self.bng = None
             self.vehicle = None
+
+    def _remove_lidar(self):
+        """Detach the current LiDAR before replacing the ego vehicle/scenario."""
+        if self.lidar is None:
+            return
+        t = threading.Thread(target=self.lidar.remove, daemon=True)
+        t.start()
+        t.join(timeout=3.0)
+        self.lidar = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -382,6 +393,11 @@ class BeamNGDrivingEnv:
 
     def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
+        # A LiDAR is bound to the current BeamNG vehicle. Remove it before
+        # replacing `self.vehicle` so changing vehicle/model cannot leave a
+        # stale sensor attached to the previous ego.
+        self._remove_lidar()
+        self._ego_local_extents = None
         self.scenario = Scenario(
             self.map_name,
             "rl_driving",
@@ -412,29 +428,15 @@ class BeamNGDrivingEnv:
         self.bng.start_scenario()
         time.sleep(1.0)  # let the game settle before polling
 
-        # Lidar must be created after the scenario starts (it communicates with the sim directly)
-        if self.lidar is not None:
-            self.lidar.remove()
+        self._cache_ego_local_bbox()
+
+        # Lidar must be created after the scenario starts (it communicates with the sim directly).
         self.lidar = Lidar(
             "lidar",
             self.bng,
             self.vehicle,
-            pos=self.LIDAR_MOUNT_POS,
-            dir=self.LIDAR_MOUNT_DIR,
-            up=self.LIDAR_MOUNT_UP,
-            requested_update_time=0.05,  # ~2 sensor updates per env step
-            frequency=30,  # aligned with set_deterministic(30)
-            vertical_resolution=self.LIDAR_VERT_RES,
-            vertical_angle=self.LIDAR_VERT_ANGLE,
-            horizontal_angle=self.LIDAR_FOV_DEG,
-            max_distance=self.LIDAR_MAX_DIST,
-            is_360_mode=False,
-            is_rotate_mode=False,
-            is_using_shared_memory=False,
-            is_visualised=LIDAR_VISUALISE,  # off for training; LIDAR_VISUALISE=true to debug
+            **self._lidar_creation_kwargs(),
         )
-
-        self._cache_ego_local_bbox()
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(0)
@@ -530,30 +532,186 @@ class BeamNGDrivingEnv:
             self._ego_local_extents = None
             return
 
-        self._ego_local_extents = ego_local_extents_from_bbox(bbox, state, self.LIDAR_SELF_MARGIN)
+        corners = np.asarray(list(bbox.values()), dtype=np.float32)
+        pos = np.asarray(state.get("pos", (0.0, 0.0, 0.0)), dtype=np.float32)
+        dir_vec = np.asarray(state.get("dir", (1.0, 0.0, 0.0)), dtype=np.float32)
+        heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
+
+        rel = corners - pos
+        c, s = np.cos(-heading), np.sin(-heading)
+        lx = rel[:, 0] * c - rel[:, 1] * s
+        ly = rel[:, 0] * s + rel[:, 1] * c
+        lz = rel[:, 2]
+        m = self.LIDAR_SELF_MARGIN
+        self._ego_local_extents = (
+            float(lx.min() - m),
+            float(lx.max() + m),
+            float(ly.min() - m),
+            float(ly.max() + m),
+            float(lz.min() - m),
+            float(lz.max() + m),
+        )
+
+    def _lidar_keep_mask(self, local_x, local_y, local_z) -> np.ndarray:
+        """Reject points that are (a) inside the ego OBB or (b) ground returns.
+
+        Ground threshold is relative to the ego bbox floor when available, so it
+        tracks the actual vehicle ride height instead of assuming a ref-node-at-
+        ground convention that varies per Jbeam.
+        """
+        n_total = int(local_x.size)
+        inside_self = np.zeros(n_total, dtype=bool)
+
+        if self._ego_local_extents is not None:
+            x_min, x_max, y_min, y_max, z_min, z_max = self._ego_local_extents
+            inside_self = (
+                (local_x >= x_min)
+                & (local_x <= x_max)
+                & (local_y >= y_min)
+                & (local_y <= y_max)
+                & (local_z >= z_min)
+                & (local_z <= z_max)
+            )
+            # z_min already has -LIDAR_SELF_MARGIN baked in, so add it back to
+            # recover the TRUE bbox floor, then require points to clear it by
+            # LIDAR_GROUND_CLEARANCE. (Using z_min directly cancelled the margin
+            # against the clearance, leaving ~0 real clearance, so ground returns
+            # leaked through and every bin read a spurious mid-range distance.)
+            floor = z_min + self.LIDAR_SELF_MARGIN
+            ground_z = floor + self.LIDAR_GROUND_CLEARANCE
+        else:
+            ground_z = self.LIDAR_GROUND_CLEARANCE
+
+        below_ground = local_z <= ground_z
+        keep = ~inside_self & ~below_ground
+
+        self._lidar_debug = {
+            "total": n_total,
+            "self": int(inside_self.sum()),
+            "ground": int((below_ground & ~inside_self).sum()),
+            "kept": int(keep.sum()),
+            "extents_none": self._ego_local_extents is None,
+            "ground_z": float(ground_z),
+        }
+        return keep
+
+    def _resolve_lidar_mount_pos(self) -> tuple[float, float, float]:
+        """Return a vehicle-local LiDAR seed near the roof for BeamNG snapping.
+
+        BeamNG's LiDAR supports `is_snapping_desired`: the simulator moves the
+        requested vehicle-space `pos` to the nearest vehicle triangle. The seed
+        should be close to the desired surface. A point just above the bbox roof
+        lets BeamNG pick the actual roof triangle. Falls back to the configured
+        constant if bbox sampling failed.
+        """
+        if self._ego_local_extents is None:
+            return self.LIDAR_MOUNT_POS
+        _, _, _, _, _, z_max = self._ego_local_extents
+        return (0.0, 0.0, float(z_max + self.LIDAR_SELF_MARGIN))
+
+    def _lidar_creation_kwargs(self) -> dict:
+        """Return BeamNGpy LiDAR kwargs shared by scenario creation and tests."""
+        return {
+            "pos": self._resolve_lidar_mount_pos(),
+            "dir": self.LIDAR_MOUNT_DIR,
+            "up": self.LIDAR_MOUNT_UP,
+            "requested_update_time": 0.05,
+            "frequency": 30,
+            "vertical_resolution": self.LIDAR_VERT_RES,
+            "vertical_angle": self.LIDAR_VERT_ANGLE,
+            "horizontal_angle": self.LIDAR_FOV_DEG,
+            "max_distance": self.LIDAR_MAX_DIST,
+            "is_360_mode": False,
+            "is_rotate_mode": False,
+            "is_using_shared_memory": False,
+            "is_visualised": LIDAR_VISUALISE,
+            "is_snapping_desired": True,
+            "is_force_inside_triangle": True,
+        }
 
     def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
-        """Bin a raw LiDAR point cloud via the shared geometry helper.
+        """Bin a raw LiDAR point cloud into a LIDAR_V_BINS x LIDAR_RAYS grid.
 
-        Preserves the previous side effects: stores the filtering breakdown in
-        self._lidar_debug and optionally logs the bins to the BeamNG console.
+        Pipeline: world -> ego-local -> self/ground filter -> forward-FOV mask ->
+        elevation+azimuth binning. Returns a flat float32 array of shape
+        (LIDAR_V_BINS * LIDAR_RAYS * LIDAR_CHANNELS_PER_RAY,) in [0, 1], where 0
+        means an obstacle is right there and 1 means the cell is clear.
+
+        Layout is row-major by vertical bin then horizontal bin then channel:
+        index = (v * LIDAR_RAYS + h) * LIDAR_CHANNELS_PER_RAY + c. With
+        LIDAR_V_BINS == 1 this reduces to the legacy single row of LIDAR_RAYS
+        values (vertical structure collapsed), so existing models stay valid.
         """
-        distances, debug = process_lidar(
-            point_cloud,
-            vehicle_pos,
-            vehicle_heading,
-            self._ego_local_extents,
-            self._lidar_config(),
-        )
-        self._lidar_debug = debug
+        v_bins = self.LIDAR_V_BINS
+        h_bins = self.LIDAR_RAYS
+        ch = self.LIDAR_CHANNELS_PER_RAY
+        n_out = v_bins * h_bins * ch
+        distances = np.ones(n_out, dtype=np.float32)  # default: clear
 
-        if LOG_LIDAR and self.bng is not None:
-            if point_cloud is None or len(point_cloud) == 0:
+        if point_cloud is None or len(point_cloud) == 0:
+            if LOG_LIDAR:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
-            else:
-                self.bng.queue_lua_command(
-                    "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
-                )
+            return distances
+
+        pts = np.asarray(point_cloud, dtype=np.float32).reshape(-1, 3)
+
+        rel = pts - np.asarray(vehicle_pos, dtype=np.float32)
+        cos_h = np.cos(-vehicle_heading)
+        sin_h = np.sin(-vehicle_heading)
+        local_x = rel[:, 0] * cos_h - rel[:, 1] * sin_h
+        local_y = rel[:, 0] * sin_h + rel[:, 1] * cos_h
+        local_z = rel[:, 2]
+
+        keep = self._lidar_keep_mask(local_x, local_y, local_z)
+        local_x = local_x[keep]
+        local_y = local_y[keep]
+        local_z = local_z[keep]
+        if local_x.size == 0:
+            if LOG_LIDAR:
+                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points filtered')")
+            return distances
+
+        angles = np.arctan2(local_y, local_x)
+        dists = np.hypot(local_x, local_y)
+
+        half_fov = np.radians(self.LIDAR_FOV_DEG / 2.0)
+        in_fov = np.abs(angles) <= half_fov
+        angles = angles[in_fov]
+        dists = dists[in_fov]
+        local_z = local_z[in_fov]
+        if angles.size == 0:
+            if LOG_LIDAR:
+                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
+            return distances
+
+        nearest = int(np.argmin(dists))
+        self._lidar_debug["fov"] = int(angles.size)
+        self._lidar_debug["min_dist_m"] = float(dists[nearest])
+        self._lidar_debug["min_dist_z"] = float(local_z[nearest])
+
+        h_edges = np.linspace(-half_fov, half_fov, h_bins + 1)
+        h_idx = np.clip(np.digitize(angles, h_edges) - 1, 0, h_bins - 1)
+
+        if v_bins == 1:
+            v_idx = np.zeros(angles.shape, dtype=np.intp)
+        else:
+            half_vfov = np.radians(self.LIDAR_VERT_ANGLE / 2.0)
+            elevation = np.arctan2(local_z, dists)
+            v_edges = np.linspace(-half_vfov, half_vfov, v_bins + 1)
+            v_idx = np.clip(np.digitize(elevation, v_edges) - 1, 0, v_bins - 1)
+
+        for v in range(v_bins):
+            for h in range(h_bins):
+                sel = dists[(v_idx == v) & (h_idx == h)]
+                if sel.size:
+                    distances[(v * h_bins + h) * ch] = np.clip(
+                        sel.min() / self.LIDAR_MAX_DIST, 0.0, 1.0
+                    )
+
+        if LOG_LIDAR:
+            self.bng.queue_lua_command(
+                "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
+            )
         return distances
 
     def _get_waypoint_hints(self, pos, vehicle_heading) -> np.ndarray:

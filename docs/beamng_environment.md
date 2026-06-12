@@ -116,7 +116,7 @@ The agent spawns at `(61, −788, 101)` facing north.
 | Channels per ray | 1 (distance). Extensible via `LIDAR_CHANNELS_PER_RAY`. |
 | Field of view | 120° (forward-facing, ±60°) |
 | Max range | 50 m |
-| Mount position | (0, −1.8, 1.15) — forward of bumper, hood-line height |
+| Mount position | Seeded just above the bbox roof from `vehicle.get_bbox()`, then BeamNG LiDAR `is_snapping_desired=True` + `is_force_inside_triangle=True` snaps it onto the nearest vehicle surface. Falls back to `(0, −1.8, 1.15)` if bbox sampling fails. |
 | Direction | forward (0, −1, 0) in BeamNG coords |
 | Vertical angle | 6° |
 | Vertical resolution | 16 layers |
@@ -148,9 +148,9 @@ step(action_idx)
   └─ _compute_reward() — compute reward + done flag
   └─ returns (obs, reward, done, info)
 
-close()
+close(kill_sim=True)
   └─ lidar.remove()
-  └─ bng.close()
+  └─ bng.close() when kill_sim=True, bng.disconnect() when kill_sim=False
 ```
 
 ---
