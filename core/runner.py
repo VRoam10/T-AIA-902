@@ -25,6 +25,8 @@ class PipelineRunner:
         """Run the training loop. Returns history dict."""
         rewards = []
         steps = []
+        speeds = []
+        distances = []
         start = time.time()
 
         ep_begin = start_episode + 1
@@ -40,11 +42,15 @@ class PipelineRunner:
                 state = self._reset_env(env)
                 ep_reward = 0.0
                 ep_losses = []
+                ep_speeds = []
                 done = False
 
                 while not done:
                     action = agent.select_action(state)
                     next_state, reward, done, info = self._step_env(env, action)
+                    # obs[0] = speed/50 in BeamNG; skip for discrete envs (int state)
+                    if isinstance(state, np.ndarray) and len(state) > 0:
+                        ep_speeds.append(float(state[0]) * 50.0)
                     loss = agent.update(state, action, reward, next_state, done)
                     if loss is not None:
                         ep_losses.append(loss)
@@ -57,6 +63,9 @@ class PipelineRunner:
                 rewards.append(ep_reward)
                 ep_steps = info.get("steps", 0) if isinstance(info, dict) else 0
                 steps.append(ep_steps)
+                speeds.append(float(np.mean(ep_speeds)) if ep_speeds else 0.0)
+                ep_distance = info.get("waypoint_idx", 0) if isinstance(info, dict) else 0
+                distances.append(int(ep_distance))
 
                 # Update progress bar
                 avg_r = np.mean(rewards[-20:])
@@ -71,7 +80,9 @@ class PipelineRunner:
                 if save_path and ep % save_every == 0:
                     agent.save(save_path)
                     if plot_path:
-                        self._save_plot(rewards, steps, "Training", plot_path, ep)
+                        self._save_plot(
+                            rewards, steps, "Training", plot_path, ep, speeds, distances
+                        )
 
         except KeyboardInterrupt:
             pbar.write("Training interrupted by user.")
@@ -81,11 +92,13 @@ class PipelineRunner:
             if save_path:
                 agent.save(save_path)
             if plot_path:
-                self._save_plot(rewards, steps, "Training", plot_path, len(rewards))
+                self._save_plot(
+                    rewards, steps, "Training", plot_path, len(rewards), speeds, distances
+                )
 
         elapsed = time.time() - start
         print(f"\nTraining complete in {elapsed:.1f}s ({len(rewards)} episodes).")
-        return {"rewards": rewards, "steps": steps}
+        return {"rewards": rewards, "steps": steps, "speeds": speeds, "distances": distances}
 
     def evaluate(
         self,
@@ -154,37 +167,89 @@ class PipelineRunner:
         return result
 
     @staticmethod
-    def _save_plot(rewards, steps, title, path, episode=None):
+    def _save_plot(rewards, steps, title, path, episode=None, speeds=None, distances=None):
         if not rewards:
             return
         window = min(20, len(rewards))
         eps = range(1, len(rewards) + 1)
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        # Only show speed/distance panels when real (non-zero) data was collected
+        has_speed = bool(speeds) and any(s != 0.0 for s in speeds)
+        has_dist = bool(distances) and any(d != 0 for d in distances)
+        has_extra = has_speed or has_dist
+
+        if has_extra:
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+            ax_reward = axes[0, 0]
+            ax_steps = axes[0, 1]
+            ax_speed = axes[1, 0]
+            ax_dist = axes[1, 1]
+        else:
+            fig, (ax_reward, ax_steps) = plt.subplots(2, 1, figsize=(10, 8))
+
         subtitle = f" - Episode {episode}" if episode else ""
         fig.suptitle(f"{title}{subtitle}")
 
-        ax1.plot(eps, rewards, alpha=0.3, label="Reward")
+        # -- Reward
+        ax_reward.plot(eps, rewards, alpha=0.3, label="Reward")
         if len(rewards) >= window:
             roll = np.convolve(rewards, np.ones(window) / window, mode="valid")
-            ax1.plot(range(window, len(rewards) + 1), roll, label=f"Rolling avg ({window})")
-        ax1.set_ylabel("Total Reward")
-        ax1.legend()
-        ax1.grid(True)
+            ax_reward.plot(range(window, len(rewards) + 1), roll, label=f"Rolling avg ({window})")
+        ax_reward.set_ylabel("Total Reward")
+        ax_reward.legend()
+        ax_reward.grid(True)
 
-        ax2.plot(eps, steps, alpha=0.3, label="Steps", color="orange")
+        # -- Steps
+        ax_steps.plot(eps, steps, alpha=0.3, label="Steps", color="orange")
         if len(steps) >= window:
             roll = np.convolve(steps, np.ones(window) / window, mode="valid")
-            ax2.plot(
+            ax_steps.plot(
                 range(window, len(steps) + 1),
                 roll,
                 label=f"Rolling avg ({window})",
                 color="darkorange",
             )
-        ax2.set_xlabel("Episode")
-        ax2.set_ylabel("Steps per Episode")
-        ax2.legend()
-        ax2.grid(True)
+        ax_steps.set_ylabel("Steps per Episode")
+        ax_steps.legend()
+        ax_steps.grid(True)
+
+        if has_extra:
+            # -- Avg speed (m/s)
+            if has_speed:
+                ax_speed.plot(eps, speeds, alpha=0.3, label="Avg Speed", color="green")
+                if len(speeds) >= window:
+                    roll = np.convolve(speeds, np.ones(window) / window, mode="valid")
+                    ax_speed.plot(
+                        range(window, len(speeds) + 1),
+                        roll,
+                        label=f"Rolling avg ({window})",
+                        color="darkgreen",
+                    )
+                ax_speed.set_xlabel("Episode")
+                ax_speed.set_ylabel("Avg Speed (m/s)")
+                ax_speed.legend()
+                ax_speed.grid(True)
+
+            # -- Distance / waypoints reached
+            if has_dist:
+                ax_dist.plot(eps, distances, alpha=0.3, label="Waypoints Reached", color="purple")
+                if len(distances) >= window:
+                    roll = np.convolve(distances, np.ones(window) / window, mode="valid")
+                    ax_dist.plot(
+                        range(window, len(distances) + 1),
+                        roll,
+                        label=f"Rolling avg ({window})",
+                        color="indigo",
+                    )
+                ax_dist.set_xlabel("Episode")
+                ax_dist.set_ylabel("Waypoints Reached")
+                ax_dist.legend()
+                ax_dist.grid(True)
+
+            ax_reward.set_xlabel("")
+            ax_steps.set_xlabel("")
+        else:
+            ax_steps.set_xlabel("Episode")
 
         os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
         plt.tight_layout()

@@ -52,6 +52,29 @@ registry.register_algorithm(
         "batch_size": 64,
         "memory_size": 20_000,
         "target_update_freq": 100,
+        "hidden": 128,
+        "use_per": False,
+    },
+    compatible_envs=["taxi", "beamng", "beamng_lidar", "beamng_predicted"],
+)
+
+registry.register_algorithm(
+    "dqn_per",
+    DQNAgent,
+    default_config={
+        "lr": 1e-3,
+        "gamma": 0.99,
+        "epsilon": 1.0,
+        "epsilon_min": 0.05,
+        "epsilon_decay": 0.95,
+        "batch_size": 64,
+        "memory_size": 20_000,
+        "target_update_freq": 100,
+        "hidden": 128,
+        "use_per": True,
+        "per_alpha": 0.6,
+        "per_beta": 0.4,
+        "per_beta_steps": 50_000,
     },
     compatible_envs=[
         "taxi",
