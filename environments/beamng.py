@@ -426,7 +426,6 @@ class BeamNGDrivingEnv:
             **self._lidar_creation_kwargs(),
         )
 
-
         # Draw the initial active-waypoint marker
         self._update_active_marker(0)
 
