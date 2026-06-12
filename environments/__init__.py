@@ -47,7 +47,7 @@ def _make_beamng_lidar(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
 registry.register_environment(
     "beamng_lidar",
     factory=_make_beamng_lidar,
-    metadata={"n_states": 37, "n_actions": 7, "state_type": "continuous"},
+    metadata={"n_states": 38, "n_actions": 7, "state_type": "continuous"},
 )
 
 
@@ -88,6 +88,26 @@ registry.register_environment(
     "beamng_camera",
     factory=_make_beamng_camera,
     metadata={"n_states": 262, "n_actions": 3, "state_type": "continuous"},
+)
+
+
+def _make_beamng_continuous_roll(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGContinuousRollEnv
+
+    return BeamNGContinuousRollEnv(
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
+    )
+
+
+registry.register_environment(
+    "beamng_continuous_roll",
+    factory=_make_beamng_continuous_roll,
+    metadata={"n_states": 20, "n_actions": 3, "state_type": "continuous"},
 )
 
 
@@ -134,6 +154,27 @@ registry.register_environment(
     "beamng_continuous_predicted",
     factory=_make_beamng_continuous_predicted,
     metadata={"n_states": 16, "n_actions": 3, "state_type": "continuous"},
+)
+
+
+def _make_beamng_lidar_predicted(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGLidarEnv
+
+    return BeamNGLidarEnv(
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
+        trajectory_hints=1,
+    )
+
+
+registry.register_environment(
+    "beamng_lidar_predicted",
+    factory=_make_beamng_lidar_predicted,
+    metadata={"n_states": 40, "n_actions": 7, "state_type": "continuous"},
 )
 
 

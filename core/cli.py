@@ -2,8 +2,14 @@
 
 import os
 
+import algorithms  # noqa: F401 — triggers registry auto-registration
+import benchmarks  # noqa: F401 — triggers registry auto-registration
+import environments  # noqa: F401 — triggers registry auto-registration
+from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+from core.multi_runner import MultiAgentRunner
 from core.registry import registry
 from core.runner import PipelineRunner
+from environments.beamng_multi import BeamNGMultiEnv, build_slots, slot_n_states
 
 
 def _pick(options: list[str], prompt: str = "Select") -> str:
@@ -41,7 +47,13 @@ _BEAMNG_VEHICLES = {
     "taxi": "Burnside (Taxi)",
     "gavril_t_series": "Gavril T-Series",
     "ibishu_pigeon": "Ibishu Pigeon",
+    "gavril_d_series": "Gavril D-Series",
 }
+
+_MULTI_ALGOS = ["dqn", "ddpg", "td3"]
+
+# Multi-agent checkpoints + plots live in their own subfolder.
+_MULTI_OUTPUT_DIR = os.path.join("outputs", "multi-agents")
 
 
 def _pick_beamng_options() -> tuple[str, str]:
@@ -243,12 +255,12 @@ def _eval_menu():
 def _benchmark_menu():
     print("\n--- Run a Benchmark ---")
 
-    benchmarks = registry.list_benchmarks()
-    if not benchmarks:
+    bench_names = registry.list_benchmarks()
+    if not bench_names:
         print("No benchmarks registered.")
         return
     print("\nAvailable benchmarks:")
-    bench_name = _pick(benchmarks, "Benchmark")
+    bench_name = _pick(bench_names, "Benchmark")
 
     algos = registry.list_algorithms()
     print("\nAvailable algorithms:")
@@ -313,7 +325,7 @@ def _human_play_menu():
             env.human_play()
     finally:
         if env is not None:
-            env.close()
+            env.close(kill_sim=False)
 
 
 def _trajectory_menu():
@@ -327,7 +339,6 @@ def _trajectory_menu():
 
     targets = _BEAMNG_MAPS if choice == "all" else [choice]
 
-    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
     from environments.beamng import BeamNGDrivingEnv
 
     for map_name in targets:
@@ -361,13 +372,112 @@ def _trajectory_menu():
             env.close()
 
 
+def build_multi_session(specs: list[dict], map_name: str):
+    """Create the BeamNGMultiEnv and an agent per spec.
+
+    Each spec carries its own ``env`` name; the agent is sized to that env's
+    observation length (``slot_n_states``) and its action dimensionality from
+    the algorithm's registered defaults. Returns (env, slots).
+    """
+    env = BeamNGMultiEnv(
+        slots=[],
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        map_name=map_name,
+    )
+
+    enriched = []
+    for spec in specs:
+        algo_info = registry.get_algorithm(spec["algo"])
+        cls = algo_info["class"]
+        cfg = dict(algo_info["default_config"])
+        cfg["n_states"] = slot_n_states(spec.get("env", "beamng"))
+        # Discrete (DQN) uses the 7-action table; continuous algos keep their
+        # configured action dimensionality (n_actions from defaults, else 3).
+        if spec["algo"] == "dqn":
+            cfg["n_actions"] = BeamNGMultiEnv.N_ACTIONS_DISCRETE
+        else:
+            cfg.setdefault("n_actions", 3)
+        cfg.pop("state_type", None)
+        agent = cls(**cfg)
+        enriched.append({**spec, "agent": agent})
+
+    slots = build_slots(enriched)
+    env.slots = slots
+    return env, slots
+
+
+def _multi_train_menu():
+    print("\n--- Multi-Agent Training (BeamNG) ---")
+    print("\nAvailable maps:")
+    map_name = _pick(_BEAMNG_MAPS, "Map")
+
+    vehicle_keys = list(_BEAMNG_VEHICLES.keys())
+    vehicle_labels = list(_BEAMNG_VEHICLES.values())
+    colors = ["Yellow", "Red", "Blue", "Green", "Orange", "White", "Black"]
+
+    specs = []
+    while True:
+        print(f"\n--- Vehicle {len(specs)} ---")
+        print("Algorithm:")
+        algo = _pick(_MULTI_ALGOS, "Algorithm")
+        # Environments compatible with this algorithm (BeamNG only).
+        env_options = [e for e in registry.compatible_environments(algo) if e.startswith("beamng")]
+        print("Environment:")
+        env_name = _pick(env_options, "Environment")
+        print("Vehicle model:")
+        vlabel = _pick(vehicle_labels, "Vehicle")
+        vehicle_id = vehicle_keys[vehicle_labels.index(vlabel)]
+        color = colors[len(specs) % len(colors)]
+        default_path = os.path.join(_MULTI_OUTPUT_DIR, f"{algo}_{env_name}_{len(specs)}.pth")
+        save_path = input(f"  Model save path [{default_path}]: ").strip() or default_path
+        specs.append(
+            {
+                "algo": algo,
+                "env": env_name,
+                "vehicle_id": vehicle_id,
+                "color": color,
+                "save_path": save_path,
+            }
+        )
+        more = input("\nAdd another vehicle? [y/N]: ").strip().lower()
+        if more != "y":
+            break
+
+    if not specs:
+        print("No vehicles configured.")
+        return
+
+    n_episodes = _ask_int("\nEpisodes per agent", 500)
+    minutes = _ask_float("Time limit (minutes, 0 = none)", 0.0)
+    time_limit = minutes * 60.0 if minutes > 0 else None
+
+    env, slots = build_multi_session(specs, map_name)
+    for slot in slots:
+        if os.path.exists(slot.save_path):
+            choice = (
+                input(f"  [{slot.name}] '{slot.save_path}' exists. [C]ontinue / [R]eset? [C/R]: ")
+                .strip()
+                .lower()
+            )
+            if choice == "r":
+                os.remove(slot.save_path)
+            else:
+                slot.agent.load(slot.save_path)
+                slot.episode = getattr(slot.agent, "episode", 0)
+
+    os.makedirs(_MULTI_OUTPUT_DIR, exist_ok=True)
+    runner = MultiAgentRunner()
+    print(f"\n--- Training {len(slots)} agents on {map_name} ---\n")
+    try:
+        runner.train(env, n_episodes=n_episodes, time_limit=time_limit)
+    finally:
+        env.close()
+
+
 def main_menu():
     """Main interactive CLI loop."""
-    # Trigger auto-registration by importing packages
-    import algorithms  # noqa: F401
-    import benchmarks  # noqa: F401
-    import environments  # noqa: F401
-
     while True:
         print("\n" + "=" * 50)
         print("   RL Pipeline")
@@ -377,7 +487,8 @@ def main_menu():
         print("3. Run a benchmark")
         print("4. Human play (BeamNG)")
         print("5. Generate trajectories (BeamNG)")
-        print("6. Quit")
+        print("6. Multi-agent training (BeamNG)")
+        print("7. Quit")
 
         choice = input("\nSelect: ").strip()
 
@@ -392,6 +503,8 @@ def main_menu():
         elif choice == "5":
             _trajectory_menu()
         elif choice == "6":
+            _multi_train_menu()
+        elif choice == "7":
             print("Bye!")
             break
         else:

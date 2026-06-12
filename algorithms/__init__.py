@@ -76,7 +76,13 @@ registry.register_algorithm(
         "per_beta": 0.4,
         "per_beta_steps": 50_000,
     },
-    compatible_envs=["taxi", "beamng", "beamng_lidar", "beamng_predicted"],
+    compatible_envs=[
+        "taxi",
+        "beamng",
+        "beamng_predicted",
+        "beamng_lidar",
+        "beamng_lidar_predicted",
+    ],
 )
 
 registry.register_algorithm(
