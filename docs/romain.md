@@ -19,3 +19,9 @@ the ia goes in reverse even with all this fix for no apparent cause.
 self.vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
 ```
 Cause the ia to go in reverse, since beamng Automatic shifting makes it that if you are standing still and tries to brake, the reverse engages.
+
+Fifth issue:
+The lidar is directly attached to the car, with how bad the suspension of it, it will skew the result of the lidar. The fix is to give the pitch and roll of the car to the algo to better understand the position of the car.
+
+Sixth issue:
+Last follow-up i was asked how we can see if a new changement actually improved the algorithm. For this, i've added a multi agent and multiple environment as to test different combination at the same time. It's not a perfect solution as the vehicule as collision as well as lidar rays (which doesn't have a fix).

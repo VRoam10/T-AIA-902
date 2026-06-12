@@ -4,8 +4,12 @@ import threading
 import time
 
 import numpy as np
-from beamngpy import BeamNGpy, Scenario, Vehicle
-from beamngpy.sensors import Camera, Damage, Electrics, Lidar
+
+try:
+    from beamngpy import BeamNGpy, Scenario, Vehicle
+    from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor
+except ImportError:
+    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
 
 from config import (
     LIDAR_VISUALISE,
@@ -16,6 +20,8 @@ from config import (
     LOG_LIDAR,
 )
 from core.trajectory import TrajectoryData, load_or_generate
+from environments.beamng_camera_util import process_camera_frame
+from environments.beamng_geometry import LidarConfig
 
 
 class BeamNGDrivingEnv:
@@ -62,7 +68,7 @@ class BeamNGDrivingEnv:
     LIDAR_SELF_MARGIN = 0.30  # metres expansion of ego OBB when rejecting self-hits
 
     # Physical sensor mount/params — overridable per subclass.
-    LIDAR_MOUNT_POS = (0, -1.8, 1.15)  # vehicle-local: forward of bumper, hood-line height
+    LIDAR_MOUNT_POS = (0, -2.2, 1.15)  # vehicle-local: forward of bumper, hood-line height
     LIDAR_MOUNT_DIR = (0, -1, 0)  # forward in vehicle space
     LIDAR_MOUNT_UP = (0, 0, 1)
     LIDAR_VERT_RES = 8  # vertical layers emitted by the sensor
@@ -88,7 +94,7 @@ class BeamNGDrivingEnv:
             "part_config": "vehicles/burnside/4door_early_v8_3M_taxi.pc",
         },
         "gavril_t_series": {
-            "model": "us-semi",
+            "model": "us_semi",
             "licence": "T-Series",
             "color": "White",
             "part_config": "vehicles/us_semi/t83_sleeper.pc",
@@ -98,6 +104,12 @@ class BeamNGDrivingEnv:
             "licence": "Pigeon",
             "color": "Red",
             "part_config": "vehicles/pigeon/base.pc",
+        },
+        "gavril_d_series": {
+            "model": "pickup",
+            "licence": "D-Series",
+            "color": "green",
+            "part_config": "vehicles/pickup/d25_longbed_4wd_lifted_A.pc",
         },
     }
 
@@ -481,6 +493,18 @@ class BeamNGDrivingEnv:
 
         return obs
 
+    def _lidar_config(self) -> LidarConfig:
+        return LidarConfig(
+            rays=self.LIDAR_RAYS,
+            v_bins=self.LIDAR_V_BINS,
+            channels=self.LIDAR_CHANNELS_PER_RAY,
+            fov_deg=self.LIDAR_FOV_DEG,
+            vert_angle=self.LIDAR_VERT_ANGLE,
+            max_dist=self.LIDAR_MAX_DIST,
+            self_margin=self.LIDAR_SELF_MARGIN,
+            ground_clearance=self.LIDAR_GROUND_CLEARANCE,
+        )
+
     def _cache_ego_local_bbox(self):
         """Sample the ego OBB once and store its extents in vehicle-local frame.
 
@@ -528,42 +552,6 @@ class BeamNGDrivingEnv:
             float(lz.max() + m),
         )
 
-    def _resolve_lidar_mount_pos(self) -> tuple[float, float, float]:
-        """Return a vehicle-local LiDAR seed near the roof for BeamNG snapping.
-
-        BeamNG's LiDAR supports `is_snapping_desired`: the simulator moves the
-        requested vehicle-space `pos` to the nearest vehicle triangle. The seed
-        should therefore be close to the desired surface, not outside the front
-        bbox. A point just above the bbox roof lets BeamNG pick the actual roof
-        triangle for cars with different lengths and heights. If bbox sampling
-        failed, keep the configured fallback rather than guessing.
-        """
-        if self._ego_local_extents is None:
-            return self.LIDAR_MOUNT_POS
-
-        _, _, _, _, _, z_max = self._ego_local_extents
-        return (0.0, 0.0, float(z_max + self.LIDAR_SELF_MARGIN))
-
-    def _lidar_creation_kwargs(self) -> dict:
-        """Return BeamNGpy LiDAR kwargs shared by scenario creation and tests."""
-        return {
-            "pos": self._resolve_lidar_mount_pos(),
-            "dir": self.LIDAR_MOUNT_DIR,
-            "up": self.LIDAR_MOUNT_UP,
-            "requested_update_time": 0.05,  # ~2 sensor updates per env step
-            "frequency": 30,  # aligned with set_deterministic(30)
-            "vertical_resolution": self.LIDAR_VERT_RES,
-            "vertical_angle": self.LIDAR_VERT_ANGLE,
-            "horizontal_angle": self.LIDAR_FOV_DEG,
-            "max_distance": self.LIDAR_MAX_DIST,
-            "is_360_mode": False,
-            "is_rotate_mode": False,
-            "is_using_shared_memory": False,
-            "is_visualised": LIDAR_VISUALISE,  # off for training; LIDAR_VISUALISE=true to debug
-            "is_snapping_desired": True,
-            "is_force_inside_triangle": True,
-        }
-
     def _lidar_keep_mask(self, local_x, local_y, local_z) -> np.ndarray:
         """Reject points that are (a) inside the ego OBB or (b) ground returns.
 
@@ -607,6 +595,40 @@ class BeamNGDrivingEnv:
         }
         return keep
 
+    def _resolve_lidar_mount_pos(self) -> tuple[float, float, float]:
+        """Return a vehicle-local LiDAR seed near the roof for BeamNG snapping.
+
+        BeamNG's LiDAR supports `is_snapping_desired`: the simulator moves the
+        requested vehicle-space `pos` to the nearest vehicle triangle. The seed
+        should be close to the desired surface. A point just above the bbox roof
+        lets BeamNG pick the actual roof triangle. Falls back to the configured
+        constant if bbox sampling failed.
+        """
+        if self._ego_local_extents is None:
+            return self.LIDAR_MOUNT_POS
+        _, _, _, _, _, z_max = self._ego_local_extents
+        return (0.0, 0.0, float(z_max + self.LIDAR_SELF_MARGIN))
+
+    def _lidar_creation_kwargs(self) -> dict:
+        """Return BeamNGpy LiDAR kwargs shared by scenario creation and tests."""
+        return {
+            "pos": self._resolve_lidar_mount_pos(),
+            "dir": self.LIDAR_MOUNT_DIR,
+            "up": self.LIDAR_MOUNT_UP,
+            "requested_update_time": 0.05,
+            "frequency": 30,
+            "vertical_resolution": self.LIDAR_VERT_RES,
+            "vertical_angle": self.LIDAR_VERT_ANGLE,
+            "horizontal_angle": self.LIDAR_FOV_DEG,
+            "max_distance": self.LIDAR_MAX_DIST,
+            "is_360_mode": False,
+            "is_rotate_mode": False,
+            "is_using_shared_memory": False,
+            "is_visualised": LIDAR_VISUALISE,
+            "is_snapping_desired": True,
+            "is_force_inside_triangle": True,
+        }
+
     def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
         """Bin a raw LiDAR point cloud into a LIDAR_V_BINS x LIDAR_RAYS grid.
 
@@ -627,13 +649,12 @@ class BeamNGDrivingEnv:
         distances = np.ones(n_out, dtype=np.float32)  # default: clear
 
         if point_cloud is None or len(point_cloud) == 0:
-            if LOG_LIDAR:
+            if LOG_LIDAR and self.bng is not None:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
             return distances
 
         pts = np.asarray(point_cloud, dtype=np.float32).reshape(-1, 3)
 
-        # World -> vehicle-local (keep z so we can do self/ground filtering)
         rel = pts - np.asarray(vehicle_pos, dtype=np.float32)
         cos_h = np.cos(-vehicle_heading)
         sin_h = np.sin(-vehicle_heading)
@@ -646,7 +667,7 @@ class BeamNGDrivingEnv:
         local_y = local_y[keep]
         local_z = local_z[keep]
         if local_x.size == 0:
-            if LOG_LIDAR:
+            if LOG_LIDAR and self.bng is not None:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points filtered')")
             return distances
 
@@ -659,24 +680,18 @@ class BeamNGDrivingEnv:
         dists = dists[in_fov]
         local_z = local_z[in_fov]
         if angles.size == 0:
-            if LOG_LIDAR:
+            if LOG_LIDAR and self.bng is not None:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
             return distances
 
-        # Diagnostics: distance + height of the nearest in-FOV point that survived
-        # filtering — lets a human_play session tell ground (z≈floor) from a real
-        # obstacle (z higher) from self-hits (dist small).
         nearest = int(np.argmin(dists))
         self._lidar_debug["fov"] = int(angles.size)
         self._lidar_debug["min_dist_m"] = float(dists[nearest])
         self._lidar_debug["min_dist_z"] = float(local_z[nearest])
 
-        # Azimuth (horizontal) bin index, right-to-left across the FOV.
         h_edges = np.linspace(-half_fov, half_fov, h_bins + 1)
         h_idx = np.clip(np.digitize(angles, h_edges) - 1, 0, h_bins - 1)
 
-        # Elevation (vertical) bin index. With v_bins == 1 every point collapses
-        # to row 0, reproducing the legacy single-row behaviour exactly.
         if v_bins == 1:
             v_idx = np.zeros(angles.shape, dtype=np.intp)
         else:
@@ -689,12 +704,11 @@ class BeamNGDrivingEnv:
             for h in range(h_bins):
                 sel = dists[(v_idx == v) & (h_idx == h)]
                 if sel.size:
-                    # Channel 0: nearest-obstacle distance in the cell, normalized.
                     distances[(v * h_bins + h) * ch] = np.clip(
                         sel.min() / self.LIDAR_MAX_DIST, 0.0, 1.0
                     )
 
-        if LOG_LIDAR:
+        if LOG_LIDAR and self.bng is not None:
             self.bng.queue_lua_command(
                 "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
             )
@@ -934,9 +948,9 @@ class BeamNGLidarEnv(BeamNGDrivingEnv):
     LIDAR_VERT_RES = 16  # more layers to populate the wider vertical FOV
     LIDAR_VERT_ANGLE = 20.0  # wider vertical FOV (±10°) so the rows span useful elevations
 
-    # 5 kinematic + (4 vertical × 8 horizontal × 1 channel) = 37
+    # 6 kinematic + (4 vertical × 8 horizontal × 1 channel) = 38
     N_STATES = (
-        5 + BeamNGDrivingEnv.LIDAR_RAYS * LIDAR_V_BINS * BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
+        6 + BeamNGDrivingEnv.LIDAR_RAYS * LIDAR_V_BINS * BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
     )
 
 
@@ -1006,6 +1020,94 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
         reward, done = self._compute_reward(obs)
         info = {"steps": self._steps, "waypoint_idx": self._waypoint_idx}
         return obs, reward, done, info
+
+
+class BeamNGContinuousRollEnv(BeamNGContinuousEnv):
+    """
+    BeamNGContinuousEnv extended with body-orientation features.
+
+    Two extra state dims appended after the base 14:
+        pitch  - forward/backward tilt of the vehicle body, normalized to [-1, 1]
+                 (positive = nose up / going uphill, negative = nose down)
+        roll   - left/right tilt, normalized to [-1, 1]
+                 (positive = tilting right, negative = tilting left)
+
+    Both are derived from the vehicle's world-space `up` vector projected onto
+    the vehicle's forward and lateral axes respectively.  A flat vehicle reads
+    (0, 0); maximum tilt (90°) saturates at ±1.
+    """
+
+    # base 14 + pitch + roll + 4 wheel terrain
+    N_STATES = BeamNGDrivingEnv.N_STATES + 2 + 4
+
+    # Half the vehicle track width in metres — used to project road-edge distances
+    # onto each wheel's lateral position. 0.7 m fits most BeamNG passenger cars.
+    HALF_TRACK_WIDTH = 0.7
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.n_states = self.N_STATES + self.trajectory_hints * 2
+        self.roads_sensor: RoadsSensor = None
+
+    def _load_scenario(self, human_control=False):
+        super()._load_scenario(human_control=human_control)
+        if self.roads_sensor is not None:
+            self.roads_sensor.remove()
+        self.roads_sensor = RoadsSensor("roads", self.bng, self.vehicle)
+
+    def close(self):
+        if self.roads_sensor is not None:
+            self.roads_sensor.remove()
+            self.roads_sensor = None
+        super().close()
+
+    def _observe(self) -> np.ndarray:
+        base_obs = super()._observe()
+
+        state = self.vehicle.state or {}
+        dir_vec = state.get("dir", (0.0, 1.0, 0.0))
+        up_vec = state.get("up", (0.0, 0.0, 1.0))
+
+        # Normalize forward direction in the horizontal plane
+        fwd_len = float(np.hypot(dir_vec[0], dir_vec[1])) or 1.0
+        fwd_x = dir_vec[0] / fwd_len
+        fwd_y = dir_vec[1] / fwd_len
+
+        # Pitch: how much the up vector leans against the forward axis
+        pitch = -(float(up_vec[0]) * fwd_x + float(up_vec[1]) * fwd_y)
+
+        # Roll: how much the up vector leans against the lateral axis (right = +)
+        lat_x = -fwd_y
+        lat_y = fwd_x
+        roll = float(up_vec[0]) * lat_x + float(up_vec[1]) * lat_y
+
+        # Per-wheel terrain: +1 = well on road, 0 = at edge, -1 = off road.
+        # RoadsSensor measures at the front-axle midpoint, so FL/RL share the
+        # left-edge distance and FR/RR share the right-edge distance.
+        roads = self.roads_sensor.poll() if self.roads_sensor is not None else {}
+        if isinstance(roads, list):
+            roads = roads[0] if roads else {}
+        half_w = max(float(roads.get("halfWidth", 3.0)), 0.5)
+        d_left = float(roads.get("dist2Left", self.HALF_TRACK_WIDTH))
+        d_right = float(roads.get("dist2Right", self.HALF_TRACK_WIDTH))
+        left_terrain = float(np.clip((d_left - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
+        right_terrain = float(np.clip((d_right - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
+
+        self.bng.queue_lua_command(
+            f"log('I', 'RL', 'pitch: min={pitch:.3f} roll={roll:.3f} left_terrain={left_terrain}')"
+        )
+        extra = np.array(
+            [
+                np.clip(pitch, -1.0, 1.0),
+                np.clip(roll, -1.0, 1.0),
+                left_terrain,  # FL
+                right_terrain,  # FR
+                left_terrain,  # RL (same road-edge measurement)
+                right_terrain,  # RR
+            ],
+            dtype=np.float32,
+        )
+        return np.concatenate([base_obs, extra])
 
 
 class BeamNGCameraEnv(BeamNGContinuousEnv):
@@ -1190,47 +1292,17 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
     # ------------------------------------------------------------------
 
     def _process_camera(self) -> np.ndarray:
-        """Poll camera and return a flattened grayscale image normalized to [0, 1]."""
-        n_pixels = self.CAM_OUT_SIZE[0] * self.CAM_OUT_SIZE[1]
-        if self.camera is None:
-            return np.ones(n_pixels, dtype=np.float32)
+        """Poll camera and return a flattened grayscale image normalized to [0, 1].
 
-        data = self.camera.poll()
-        colour = data.get("colour", None)
-        if colour is None:
-            return np.ones(n_pixels, dtype=np.float32)
-
-        # beamngpy may return a PIL Image or a numpy array depending on version
-        img = np.asarray(colour, dtype=np.float32)
-
-        # Convert RGB(A) to grayscale using luminosity weights
-        if img.ndim == 3 and img.shape[2] >= 3:
-            gray = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
-        else:
-            gray = img.squeeze().astype(np.float32)
-
-        # Resize to CAM_OUT_SIZE
-        oh, ow = self.CAM_OUT_SIZE
-        try:
-            from PIL import Image as PILImage
-
-            pil = PILImage.fromarray(np.clip(gray, 0, 255).astype(np.uint8), mode="L")
-            pil = pil.resize((ow, oh), PILImage.BILINEAR)
-            small = np.array(pil, dtype=np.float32)
-        except ImportError:
-            h, w = gray.shape
-            sh, sw = max(1, h // oh), max(1, w // ow)
-            small = gray[::sh, ::sw][:oh, :ow]
-            if small.shape != (oh, ow):
-                padded = np.zeros((oh, ow), dtype=np.float32)
-                padded[: small.shape[0], : small.shape[1]] = small
-                small = padded
-
-        self.last_frame = small / 255.0  # 2-D (CAM_OUT_SIZE), values in [0, 1]
-        if LOG_CAMERA:
-            flat = self.last_frame.flatten()
+        Delegates the frame math to the shared `process_camera_frame` helper;
+        keeps the poll, `last_frame` cache, and optional Lua logging here.
+        """
+        colour = self.camera.poll().get("colour", None) if self.camera is not None else None
+        flat = process_camera_frame(colour, self.CAM_OUT_SIZE)
+        self.last_frame = flat.reshape(self.CAM_OUT_SIZE)  # 2-D (CAM_OUT_SIZE), values in [0, 1]
+        if LOG_CAMERA and self.bng is not None:
             mn, mx, avg = float(flat.min()), float(flat.max()), float(flat.mean())
             self.bng.queue_lua_command(
                 f"log('I', 'RL', 'Camera: min={mn:.3f} max={mx:.3f} mean={avg:.3f}')"
             )
-        return self.last_frame.flatten()
+        return flat
