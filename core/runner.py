@@ -80,7 +80,9 @@ class PipelineRunner:
                 if save_path and ep % save_every == 0:
                     agent.save(save_path)
                     if plot_path:
-                        self._save_plot(rewards, steps, "Training", plot_path, ep, speeds, distances)
+                        self._save_plot(
+                            rewards, steps, "Training", plot_path, ep, speeds, distances
+                        )
 
         except KeyboardInterrupt:
             pbar.write("Training interrupted by user.")
@@ -90,7 +92,9 @@ class PipelineRunner:
             if save_path:
                 agent.save(save_path)
             if plot_path:
-                self._save_plot(rewards, steps, "Training", plot_path, len(rewards), speeds, distances)
+                self._save_plot(
+                    rewards, steps, "Training", plot_path, len(rewards), speeds, distances
+                )
 
         elapsed = time.time() - start
         print(f"\nTraining complete in {elapsed:.1f}s ({len(rewards)} episodes).")
