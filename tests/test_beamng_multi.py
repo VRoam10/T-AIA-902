@@ -97,18 +97,22 @@ SPECS = [
 
 
 class TestEnvProfiles:
-    def test_env_profile_perception_and_hints(self):
-        assert env_profile("beamng") == ("lidar", 0)
-        assert env_profile("beamng_lidar") == ("lidar_grid", 0)
-        assert env_profile("beamng_camera") == ("camera", 0)
-        assert env_profile("beamng_camera_predicted") == ("camera", 1)
+    def test_env_profile_returns_perception_type(self):
+        assert env_profile("beamng") == "lidar"
+        assert env_profile("beamng_lidar") == "lidar_grid"
+        assert env_profile("beamng_camera") == "camera"
+        assert env_profile("beamng_continuous") == "lidar"
+        assert env_profile("unknown_env") == "lidar"  # fallback
 
-    def test_slot_n_states_per_env(self):
+    def test_slot_n_states_no_hints(self):
         assert slot_n_states("beamng") == 14  # 6 + 8 lidar
-        assert slot_n_states("beamng_predicted") == 16  # + 2 hints
         assert slot_n_states("beamng_lidar") == 38  # 6 + 32 grid
         assert slot_n_states("beamng_camera") == 262  # 6 + 256 pixels
-        assert slot_n_states("beamng_camera_predicted") == 264  # + 2 hints
+
+    def test_slot_n_states_with_hints(self):
+        assert slot_n_states("beamng", trajectory_hints=1) == 16  # 14 + 2
+        assert slot_n_states("beamng", trajectory_hints=2) == 18  # 14 + 4
+        assert slot_n_states("beamng_camera", trajectory_hints=1) == 264  # 262 + 2
 
 
 class TestBuildSlots:

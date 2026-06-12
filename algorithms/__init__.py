@@ -56,9 +56,7 @@ registry.register_algorithm(
     compatible_envs=[
         "taxi",
         "beamng",
-        "beamng_predicted",
         "beamng_lidar",
-        "beamng_lidar_predicted",
     ],
 )
 

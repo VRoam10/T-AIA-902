@@ -104,16 +104,13 @@ class VehicleSlot:
 # Algorithms whose action space is continuous (actor outputs in [-1, 1]).
 _CONTINUOUS_ALGOS = {"ddpg", "td3"}
 
-# Registered BeamNG env name -> (perception type, trajectory_hints). Each car
-# in a multi-agent session can run a different one.
+# Registered BeamNG env name -> perception type.
+# trajectory_hints is now a per-session prompt, not encoded in the env name.
 _ENV_PROFILES = {
-    "beamng": ("lidar", 0),
-    "beamng_predicted": ("lidar", 1),
-    "beamng_continuous": ("lidar", 0),
-    "beamng_continuous_predicted": ("lidar", 1),
-    "beamng_lidar": ("lidar_grid", 0),
-    "beamng_camera": ("camera", 0),
-    "beamng_camera_predicted": ("camera", 1),
+    "beamng": "lidar",
+    "beamng_continuous": "lidar",
+    "beamng_lidar": "lidar_grid",
+    "beamng_camera": "camera",
 }
 
 # Perception type -> number of perception features in the observation vector.
@@ -129,15 +126,15 @@ _LIDAR_PERCEPTION = {
 _KINEMATIC_FEATURES = 6  # speed, steering, heading_err, lateral_err, damage, dist
 
 
-def env_profile(env_name: str) -> tuple[str, int]:
-    """Return (perception, trajectory_hints) for a registered BeamNG env name."""
-    return _ENV_PROFILES.get(env_name, ("lidar", 0))
+def env_profile(env_name: str) -> str:
+    """Return the perception type for a registered BeamNG env name."""
+    return _ENV_PROFILES.get(env_name, "lidar")
 
 
-def slot_n_states(env_name: str) -> int:
-    """Observation length for a vehicle running the given env."""
-    perception, hints = env_profile(env_name)
-    return _KINEMATIC_FEATURES + _PERCEPTION_FEATURES[perception] + 2 * hints
+def slot_n_states(env_name: str, trajectory_hints: int = 0) -> int:
+    """Observation length for a vehicle running the given env with the given hints count."""
+    perception = env_profile(env_name)
+    return _KINEMATIC_FEATURES + _PERCEPTION_FEATURES[perception] + 2 * trajectory_hints
 
 
 # Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
@@ -162,17 +159,17 @@ def _color_rgba(name: str) -> tuple[float, float, float, float]:
 def build_slots(specs: list[dict]) -> list[VehicleSlot]:
     """Turn a list of vehicle specs into VehicleSlots.
 
-    Each spec dict: {"algo", "env", "agent", "vehicle_id", "color", "save_path"}.
-    action_space comes from the algorithm; perception, trajectory_hints and
-    n_states come from the chosen env. reward_mode uses the LiDAR-aware DDPG
-    reward only for continuous algos on a LiDAR perception (camera and discrete
-    DQN fall back to the default reward, which reads no LiDAR bins).
+    Each spec dict: {"algo", "env", "agent", "vehicle_id", "color", "save_path",
+    "trajectory_hints"}. trajectory_hints defaults to 0 when absent.
+    reward_mode uses the LiDAR-aware DDPG reward only for continuous algos on a
+    LiDAR perception (camera and discrete DQN fall back to the default reward).
     """
     slots = []
     for i, spec in enumerate(specs):
         algo = spec["algo"]
         env_name = spec.get("env", "beamng")
-        perception, hints = env_profile(env_name)
+        trajectory_hints = spec.get("trajectory_hints", 0)
+        perception = env_profile(env_name)
         continuous = algo in _CONTINUOUS_ALGOS
         ddpg_reward = continuous and perception in ("lidar", "lidar_grid")
         slots.append(
@@ -186,8 +183,8 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
                 save_path=spec["save_path"],
                 env_name=env_name,
                 perception=perception,
-                trajectory_hints=hints,
-                n_states=slot_n_states(env_name),
+                trajectory_hints=trajectory_hints,
+                n_states=slot_n_states(env_name, trajectory_hints),
             )
         )
     return slots
