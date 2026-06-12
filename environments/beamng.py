@@ -314,19 +314,30 @@ class BeamNGDrivingEnv:
         except KeyboardInterrupt:
             print("[BeamNGDrivingEnv] Human play stopped.")
 
-    def close(self):
-        """Shut down the BeamNG connection."""
+    def close(self, kill_sim: bool = True):
+        """Close this environment.
+
+        BeamNGpy `close()` kills the BeamNG process by default. Human-play uses
+        `kill_sim=False` so returning to the menu or switching options only
+        disconnects this client and leaves the already-open game running.
+        """
         if self.bng is not None:
-            if self.lidar is not None:
-                t = threading.Thread(target=self.lidar.remove, daemon=True)
-                t.start()
-                t.join(timeout=3.0)
-                self.lidar = None
-            t = threading.Thread(target=self.bng.close, daemon=True)
+            self._remove_lidar()
+            close_fn = self.bng.close if kill_sim else self.bng.disconnect
+            t = threading.Thread(target=close_fn, daemon=True)
             t.start()
             t.join(timeout=5.0)
             self.bng = None
             self.vehicle = None
+
+    def _remove_lidar(self):
+        """Detach the current LiDAR before replacing the ego vehicle/scenario."""
+        if self.lidar is None:
+            return
+        t = threading.Thread(target=self.lidar.remove, daemon=True)
+        t.start()
+        t.join(timeout=3.0)
+        self.lidar = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -370,6 +381,11 @@ class BeamNGDrivingEnv:
 
     def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
+        # A LiDAR is bound to the current BeamNG vehicle. Remove it before
+        # replacing `self.vehicle` so changing vehicle/model cannot leave a
+        # stale sensor attached to the previous ego.
+        self._remove_lidar()
+        self._ego_local_extents = None
         self.scenario = Scenario(
             self.map_name,
             "rl_driving",
@@ -400,29 +416,15 @@ class BeamNGDrivingEnv:
         self.bng.start_scenario()
         time.sleep(1.0)  # let the game settle before polling
 
-        # Lidar must be created after the scenario starts (it communicates with the sim directly)
-        if self.lidar is not None:
-            self.lidar.remove()
+        self._cache_ego_local_bbox()
+
+        # Lidar must be created after the scenario starts (it communicates with the sim directly).
         self.lidar = Lidar(
             "lidar",
             self.bng,
             self.vehicle,
-            pos=self.LIDAR_MOUNT_POS,
-            dir=self.LIDAR_MOUNT_DIR,
-            up=self.LIDAR_MOUNT_UP,
-            requested_update_time=0.05,  # ~2 sensor updates per env step
-            frequency=30,  # aligned with set_deterministic(30)
-            vertical_resolution=self.LIDAR_VERT_RES,
-            vertical_angle=self.LIDAR_VERT_ANGLE,
-            horizontal_angle=self.LIDAR_FOV_DEG,
-            max_distance=self.LIDAR_MAX_DIST,
-            is_360_mode=False,
-            is_rotate_mode=False,
-            is_using_shared_memory=False,
-            is_visualised=LIDAR_VISUALISE,  # off for training; LIDAR_VISUALISE=true to debug
+            **self._lidar_creation_kwargs(),
         )
-
-        self._cache_ego_local_bbox()
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(0)
@@ -525,6 +527,42 @@ class BeamNGDrivingEnv:
             float(lz.min() - m),
             float(lz.max() + m),
         )
+
+    def _resolve_lidar_mount_pos(self) -> tuple[float, float, float]:
+        """Return a vehicle-local LiDAR seed near the roof for BeamNG snapping.
+
+        BeamNG's LiDAR supports `is_snapping_desired`: the simulator moves the
+        requested vehicle-space `pos` to the nearest vehicle triangle. The seed
+        should therefore be close to the desired surface, not outside the front
+        bbox. A point just above the bbox roof lets BeamNG pick the actual roof
+        triangle for cars with different lengths and heights. If bbox sampling
+        failed, keep the configured fallback rather than guessing.
+        """
+        if self._ego_local_extents is None:
+            return self.LIDAR_MOUNT_POS
+
+        _, _, _, _, _, z_max = self._ego_local_extents
+        return (0.0, 0.0, float(z_max + self.LIDAR_SELF_MARGIN))
+
+    def _lidar_creation_kwargs(self) -> dict:
+        """Return BeamNGpy LiDAR kwargs shared by scenario creation and tests."""
+        return {
+            "pos": self._resolve_lidar_mount_pos(),
+            "dir": self.LIDAR_MOUNT_DIR,
+            "up": self.LIDAR_MOUNT_UP,
+            "requested_update_time": 0.05,  # ~2 sensor updates per env step
+            "frequency": 30,  # aligned with set_deterministic(30)
+            "vertical_resolution": self.LIDAR_VERT_RES,
+            "vertical_angle": self.LIDAR_VERT_ANGLE,
+            "horizontal_angle": self.LIDAR_FOV_DEG,
+            "max_distance": self.LIDAR_MAX_DIST,
+            "is_360_mode": False,
+            "is_rotate_mode": False,
+            "is_using_shared_memory": False,
+            "is_visualised": LIDAR_VISUALISE,  # off for training; LIDAR_VISUALISE=true to debug
+            "is_snapping_desired": True,
+            "is_force_inside_triangle": True,
+        }
 
     def _lidar_keep_mask(self, local_x, local_y, local_z) -> np.ndarray:
         """Reject points that are (a) inside the ego OBB or (b) ground returns.
