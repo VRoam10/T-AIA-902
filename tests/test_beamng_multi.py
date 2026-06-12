@@ -69,12 +69,30 @@ class _FakeAgent:
 
 
 SPECS = [
-    {"algo": "dqn", "env": "beamng", "agent": _FakeAgent(), "vehicle_id": "taxi",
-     "color": "Yellow", "save_path": "outputs/dqn.pth"},
-    {"algo": "ddpg", "env": "beamng_continuous", "agent": _FakeAgent(),
-     "vehicle_id": "ibishu_pigeon", "color": "Red", "save_path": "outputs/ddpg.pth"},
-    {"algo": "td3", "env": "beamng_continuous", "agent": _FakeAgent(),
-     "vehicle_id": "taxi", "color": "Blue", "save_path": "outputs/td3.pth"},
+    {
+        "algo": "dqn",
+        "env": "beamng",
+        "agent": _FakeAgent(),
+        "vehicle_id": "taxi",
+        "color": "Yellow",
+        "save_path": "outputs/dqn.pth",
+    },
+    {
+        "algo": "ddpg",
+        "env": "beamng_continuous",
+        "agent": _FakeAgent(),
+        "vehicle_id": "ibishu_pigeon",
+        "color": "Red",
+        "save_path": "outputs/ddpg.pth",
+    },
+    {
+        "algo": "td3",
+        "env": "beamng_continuous",
+        "agent": _FakeAgent(),
+        "vehicle_id": "taxi",
+        "color": "Blue",
+        "save_path": "outputs/td3.pth",
+    },
 ]
 
 
@@ -117,8 +135,16 @@ class TestBuildSlots:
     def test_continuous_algo_on_camera_uses_default_reward(self):
         # DDPG on a camera env: no LiDAR bins to reason about -> default reward.
         slots = build_slots(
-            [{"algo": "ddpg", "env": "beamng_camera", "agent": _FakeAgent(),
-              "vehicle_id": "taxi", "color": "Red", "save_path": "outputs/x.pth"}]
+            [
+                {
+                    "algo": "ddpg",
+                    "env": "beamng_camera",
+                    "agent": _FakeAgent(),
+                    "vehicle_id": "taxi",
+                    "color": "Red",
+                    "save_path": "outputs/x.pth",
+                }
+            ]
         )
         assert slots[0].perception == "camera"
         assert slots[0].reward_mode == "default"
@@ -237,8 +263,13 @@ class TestObserve:
         env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
         self._wire_slot_sensors(
-            slot, speed=10.0, steering=0.0, damage=0.0,
-            pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), lidar_points=None,
+            slot,
+            speed=10.0,
+            steering=0.0,
+            damage=0.0,
+            pos=(0.0, 0.0, 0.0),
+            vel=(1.0, 0.0, 0.0),
+            lidar_points=None,
         )
         obs = env.observe(slot)
         assert obs.shape == (slot.n_states,)
@@ -249,8 +280,13 @@ class TestObserve:
         env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
         self._wire_slot_sensors(
-            slot, speed=0.0, steering=0.0, damage=0.0,
-            pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), lidar_points=None,
+            slot,
+            speed=0.0,
+            steering=0.0,
+            damage=0.0,
+            pos=(0.0, 0.0, 0.0),
+            vel=(1.0, 0.0, 0.0),
+            lidar_points=None,
         )
         env.observe(slot)
         slot.vehicle.poll_sensors.assert_called_once()
@@ -295,8 +331,13 @@ class TestLifecycle:
 class TestStartingGrid:
     def _env_with_spawn(self, n_slots, spawn_pos, spawn_rot):
         specs = [
-            {"algo": "dqn", "agent": _FakeAgent(), "vehicle_id": "taxi",
-             "color": "Yellow", "save_path": f"outputs/a{i}.pth"}
+            {
+                "algo": "dqn",
+                "agent": _FakeAgent(),
+                "vehicle_id": "taxi",
+                "color": "Yellow",
+                "save_path": f"outputs/a{i}.pth",
+            }
             for i in range(n_slots)
         ]
         env = BeamNGMultiEnv(slots=build_slots(specs), beamng_home="unused")

@@ -135,6 +135,7 @@ def slot_n_states(env_name: str) -> int:
     perception, hints = env_profile(env_name)
     return _KINEMATIC_FEATURES + _PERCEPTION_FEATURES[perception] + 2 * hints
 
+
 # Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
 # matches its car. Falls back to the single-agent env's green for unknown names.
 _MARKER_RGBA = {

@@ -7,10 +7,20 @@ from core.cli import build_multi_session
 
 def test_build_multi_session_builds_one_agent_per_spec():
     specs = [
-        {"algo": "dqn", "env": "beamng", "vehicle_id": "taxi", "color": "Yellow",
-         "save_path": "outputs/multi-agents/dqn.pth"},
-        {"algo": "ddpg", "env": "beamng_continuous", "vehicle_id": "taxi", "color": "Red",
-         "save_path": "outputs/multi-agents/ddpg.pth"},
+        {
+            "algo": "dqn",
+            "env": "beamng",
+            "vehicle_id": "taxi",
+            "color": "Yellow",
+            "save_path": "outputs/multi-agents/dqn.pth",
+        },
+        {
+            "algo": "ddpg",
+            "env": "beamng_continuous",
+            "vehicle_id": "taxi",
+            "color": "Red",
+            "save_path": "outputs/multi-agents/ddpg.pth",
+        },
     ]
     # Patch the env so no BeamNG launch happens.
     with patch("core.cli.BeamNGMultiEnv") as EnvCls:
@@ -26,8 +36,13 @@ def test_build_multi_session_builds_one_agent_per_spec():
 
 def test_build_multi_session_passes_map_to_env():
     specs = [
-        {"algo": "dqn", "env": "beamng", "vehicle_id": "taxi", "color": "Yellow",
-         "save_path": "outputs/multi-agents/dqn.pth"},
+        {
+            "algo": "dqn",
+            "env": "beamng",
+            "vehicle_id": "taxi",
+            "color": "Yellow",
+            "save_path": "outputs/multi-agents/dqn.pth",
+        },
     ]
     with patch("core.cli.BeamNGMultiEnv") as EnvCls:
         EnvCls.return_value = MagicMock()
@@ -40,10 +55,20 @@ def test_build_multi_session_sizes_agent_to_each_env():
     # A camera env (262 states) and a lidar env (14 states) -> agents built with
     # the matching observation size for each.
     specs = [
-        {"algo": "dqn", "env": "beamng", "vehicle_id": "taxi", "color": "Yellow",
-         "save_path": "outputs/multi-agents/dqn.pth"},
-        {"algo": "ddpg", "env": "beamng_camera", "vehicle_id": "taxi", "color": "Red",
-         "save_path": "outputs/multi-agents/ddpg.pth"},
+        {
+            "algo": "dqn",
+            "env": "beamng",
+            "vehicle_id": "taxi",
+            "color": "Yellow",
+            "save_path": "outputs/multi-agents/dqn.pth",
+        },
+        {
+            "algo": "ddpg",
+            "env": "beamng_camera",
+            "vehicle_id": "taxi",
+            "color": "Red",
+            "save_path": "outputs/multi-agents/ddpg.pth",
+        },
     ]
     with patch("core.cli.BeamNGMultiEnv") as EnvCls:
         EnvCls.return_value = MagicMock()

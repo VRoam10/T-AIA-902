@@ -47,6 +47,7 @@ _BEAMNG_VEHICLES = {
     "taxi": "Burnside (Taxi)",
     "gavril_t_series": "Gavril T-Series",
     "ibishu_pigeon": "Ibishu Pigeon",
+    "gavril_d_series": "Gavril D-Series",
 }
 
 _MULTI_ALGOS = ["dqn", "ddpg", "td3"]
@@ -422,9 +423,7 @@ def _multi_train_menu():
         print("Algorithm:")
         algo = _pick(_MULTI_ALGOS, "Algorithm")
         # Environments compatible with this algorithm (BeamNG only).
-        env_options = [
-            e for e in registry.compatible_environments(algo) if e.startswith("beamng")
-        ]
+        env_options = [e for e in registry.compatible_environments(algo) if e.startswith("beamng")]
         print("Environment:")
         env_name = _pick(env_options, "Environment")
         print("Vehicle model:")

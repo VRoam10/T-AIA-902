@@ -91,6 +91,26 @@ registry.register_environment(
 )
 
 
+def _make_beamng_continuous_roll(vehicle_id="taxi", map_name="gridmap_v2", **_kwargs):
+    from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
+    from environments.beamng import BeamNGContinuousRollEnv
+
+    return BeamNGContinuousRollEnv(
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        vehicle_id=vehicle_id,
+        map_name=map_name,
+    )
+
+
+registry.register_environment(
+    "beamng_continuous_roll",
+    factory=_make_beamng_continuous_roll,
+    metadata={"n_states": 20, "n_actions": 3, "state_type": "continuous"},
+)
+
+
 # --- Predicted variants (trajectory_hints=1: adds 2 floats per next waypoint) ---
 
 
