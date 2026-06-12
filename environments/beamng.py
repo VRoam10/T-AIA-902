@@ -649,7 +649,7 @@ class BeamNGDrivingEnv:
         distances = np.ones(n_out, dtype=np.float32)  # default: clear
 
         if point_cloud is None or len(point_cloud) == 0:
-            if LOG_LIDAR:
+            if LOG_LIDAR and self.bng is not None:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
             return distances
 
@@ -667,7 +667,7 @@ class BeamNGDrivingEnv:
         local_y = local_y[keep]
         local_z = local_z[keep]
         if local_x.size == 0:
-            if LOG_LIDAR:
+            if LOG_LIDAR and self.bng is not None:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points filtered')")
             return distances
 
@@ -680,7 +680,7 @@ class BeamNGDrivingEnv:
         dists = dists[in_fov]
         local_z = local_z[in_fov]
         if angles.size == 0:
-            if LOG_LIDAR:
+            if LOG_LIDAR and self.bng is not None:
                 self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
             return distances
 
@@ -708,7 +708,7 @@ class BeamNGDrivingEnv:
                         sel.min() / self.LIDAR_MAX_DIST, 0.0, 1.0
                     )
 
-        if LOG_LIDAR:
+        if LOG_LIDAR and self.bng is not None:
             self.bng.queue_lua_command(
                 "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
             )
