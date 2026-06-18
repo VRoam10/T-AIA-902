@@ -74,3 +74,24 @@ class TestExtraFeatures:
         left, right = env._wheel_terrain_features()
         assert left == pytest.approx(1.0, abs=1e-6)
         assert right == pytest.approx(0.0, abs=1e-6)
+
+
+class TestRoadsSensorLifecycle:
+    def test_attach_roads_sensor_noop_when_flag_off(self):
+        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=False)
+        env.bng = MagicMock()
+        env.vehicle = MagicMock()
+        env._attach_roads_sensor()
+        assert env.roads_sensor is None
+
+    def test_remove_roads_sensor_clears_handle(self):
+        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
+        env.roads_sensor = MagicMock()
+        env._remove_roads_sensor()
+        assert env.roads_sensor is None
+
+
+class TestContinuousRollDeleted:
+    def test_class_is_gone(self):
+        import environments.beamng as m
+        assert not hasattr(m, "BeamNGContinuousRollEnv")

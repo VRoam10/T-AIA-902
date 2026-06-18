@@ -350,6 +350,7 @@ class BeamNGDrivingEnv:
         """
         if self.bng is not None:
             self._remove_lidar()
+            self._remove_roads_sensor()
             close_fn = self.bng.close if kill_sim else self.bng.disconnect
             t = threading.Thread(target=close_fn, daemon=True)
             t.start()
@@ -365,6 +366,21 @@ class BeamNGDrivingEnv:
         t.start()
         t.join(timeout=3.0)
         self.lidar = None
+
+    def _attach_roads_sensor(self):
+        """Attach a RoadsSensor when wheel_terrain is on; replace any prior one."""
+        if not self.wheel_terrain:
+            return
+        self._remove_roads_sensor()
+        self.roads_sensor = RoadsSensor("roads", self.bng, self.vehicle)
+
+    def _remove_roads_sensor(self):
+        if self.roads_sensor is None:
+            return
+        t = threading.Thread(target=self.roads_sensor.remove, daemon=True)
+        t.start()
+        t.join(timeout=3.0)
+        self.roads_sensor = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -412,6 +428,7 @@ class BeamNGDrivingEnv:
         # replacing `self.vehicle` so changing vehicle/model cannot leave a
         # stale sensor attached to the previous ego.
         self._remove_lidar()
+        self._remove_roads_sensor()
         self._ego_local_extents = None
         self.scenario = Scenario(
             self.map_name,
@@ -455,6 +472,7 @@ class BeamNGDrivingEnv:
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(0)
+        self._attach_roads_sensor()
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return a normalized state vector (7 floats)."""
@@ -503,6 +521,7 @@ class BeamNGDrivingEnv:
                 ),
                 lidar_bins,
                 waypoint_hints,
+                self._extra_features(state),
             ]
         )
 
@@ -1063,94 +1082,6 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
         return obs, reward, done, info
 
 
-class BeamNGContinuousRollEnv(BeamNGContinuousEnv):
-    """
-    BeamNGContinuousEnv extended with body-orientation features.
-
-    Two extra state dims appended after the base 14:
-        pitch  - forward/backward tilt of the vehicle body, normalized to [-1, 1]
-                 (positive = nose up / going uphill, negative = nose down)
-        roll   - left/right tilt, normalized to [-1, 1]
-                 (positive = tilting right, negative = tilting left)
-
-    Both are derived from the vehicle's world-space `up` vector projected onto
-    the vehicle's forward and lateral axes respectively.  A flat vehicle reads
-    (0, 0); maximum tilt (90°) saturates at ±1.
-    """
-
-    # base 14 + pitch + roll + 4 wheel terrain
-    N_STATES = BeamNGDrivingEnv.N_STATES + 2 + 4
-
-    # Half the vehicle track width in metres — used to project road-edge distances
-    # onto each wheel's lateral position. 0.7 m fits most BeamNG passenger cars.
-    HALF_TRACK_WIDTH = 0.7
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.n_states = self.N_STATES + self.trajectory_hints * 2
-        self.roads_sensor: RoadsSensor = None
-
-    def _load_scenario(self, human_control=False):
-        super()._load_scenario(human_control=human_control)
-        if self.roads_sensor is not None:
-            self.roads_sensor.remove()
-        self.roads_sensor = RoadsSensor("roads", self.bng, self.vehicle)
-
-    def close(self):
-        if self.roads_sensor is not None:
-            self.roads_sensor.remove()
-            self.roads_sensor = None
-        super().close()
-
-    def _observe(self) -> np.ndarray:
-        base_obs = super()._observe()
-
-        state = self.vehicle.state or {}
-        dir_vec = state.get("dir", (0.0, 1.0, 0.0))
-        up_vec = state.get("up", (0.0, 0.0, 1.0))
-
-        # Normalize forward direction in the horizontal plane
-        fwd_len = float(np.hypot(dir_vec[0], dir_vec[1])) or 1.0
-        fwd_x = dir_vec[0] / fwd_len
-        fwd_y = dir_vec[1] / fwd_len
-
-        # Pitch: how much the up vector leans against the forward axis
-        pitch = -(float(up_vec[0]) * fwd_x + float(up_vec[1]) * fwd_y)
-
-        # Roll: how much the up vector leans against the lateral axis (right = +)
-        lat_x = -fwd_y
-        lat_y = fwd_x
-        roll = float(up_vec[0]) * lat_x + float(up_vec[1]) * lat_y
-
-        # Per-wheel terrain: +1 = well on road, 0 = at edge, -1 = off road.
-        # RoadsSensor measures at the front-axle midpoint, so FL/RL share the
-        # left-edge distance and FR/RR share the right-edge distance.
-        roads = self.roads_sensor.poll() if self.roads_sensor is not None else {}
-        if isinstance(roads, list):
-            roads = roads[0] if roads else {}
-        half_w = max(float(roads.get("halfWidth", 3.0)), 0.5)
-        d_left = float(roads.get("dist2Left", self.HALF_TRACK_WIDTH))
-        d_right = float(roads.get("dist2Right", self.HALF_TRACK_WIDTH))
-        left_terrain = float(np.clip((d_left - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
-        right_terrain = float(np.clip((d_right - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
-
-        self.bng.queue_lua_command(
-            f"log('I', 'RL', 'pitch: min={pitch:.3f} roll={roll:.3f} left_terrain={left_terrain}')"
-        )
-        extra = np.array(
-            [
-                np.clip(pitch, -1.0, 1.0),
-                np.clip(roll, -1.0, 1.0),
-                left_terrain,  # FL
-                right_terrain,  # FR
-                left_terrain,  # RL (same road-edge measurement)
-                right_terrain,  # RR
-            ],
-            dtype=np.float32,
-        )
-        return np.concatenate([base_obs, extra])
-
-
 class BeamNGCameraEnv(BeamNGContinuousEnv):
     """
     BeamNG continuous-action environment using a front-facing dashcam
@@ -1244,6 +1175,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         )
 
         self._update_active_marker(0)
+        self._attach_roads_sensor()
 
     def _observe(self) -> np.ndarray:
         self.vehicle.poll_sensors()
@@ -1285,6 +1217,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
                 ),
                 cam_pixels,
                 waypoint_hints,
+                self._extra_features(state),
             ]
         )
 
