@@ -46,6 +46,35 @@ class TrajectoryData:
         )
 
 
+@dataclass(frozen=True)
+class MapTrajectories:
+    """All generated paths for one map: one TrajectoryData per teleport point."""
+
+    map_name: str
+    generated_at: str
+    paths: list[TrajectoryData]
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "map_name": self.map_name,
+                "generated_at": self.generated_at,
+                "paths": [json.loads(p.to_json()) for p in self.paths],
+            },
+            indent=2,
+        )
+
+    @classmethod
+    def from_json(cls, payload: str) -> MapTrajectories:
+        d = json.loads(payload)
+        # Back-compat: an old cache is a single TrajectoryData object.
+        if "paths" not in d and "spawn_pos" in d:
+            traj = TrajectoryData.from_json(payload)
+            return cls(map_name=traj.map_name, generated_at=traj.generated_at, paths=[traj])
+        paths = [TrajectoryData.from_json(json.dumps(p)) for p in d["paths"]]
+        return cls(map_name=d["map_name"], generated_at=d["generated_at"], paths=paths)
+
+
 def _segment_length(a: Vec3, b: Vec3) -> float:
     return math.hypot(b[0] - a[0], b[1] - a[1])
 

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.trajectory import (
+    MapTrajectories,
     TrajectoryData,
     _edge_center,
     _extract_longest_road,
@@ -37,6 +38,39 @@ def test_trajectorydata_json_roundtrip():
 
     restored = TrajectoryData.from_json(payload)
     assert restored == data
+
+
+def _sample_traj(map_name="italy", source="road_network:r1"):
+    return TrajectoryData(
+        spawn_pos=(1.0, 2.0, 3.0),
+        spawn_rot=(0.0, 0.0, 0.707, 0.707),
+        sparse_waypoints=[(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)],
+        dense_waypoints=[(0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (10.0, 0.0, 0.0)],
+        map_name=map_name,
+        generated_at="2026-06-18T12:00:00+00:00",
+        source=source,
+    )
+
+
+def test_maptrajectories_json_roundtrip():
+    mt = MapTrajectories(
+        map_name="italy",
+        generated_at="2026-06-18T12:00:00+00:00",
+        paths=[_sample_traj(source="teleport:r1"), _sample_traj(source="teleport:r2")],
+    )
+    restored = MapTrajectories.from_json(mt.to_json())
+    assert restored == mt
+    assert len(restored.paths) == 2
+    assert restored.paths[1].source == "teleport:r2"
+
+
+def test_maptrajectories_from_json_accepts_old_single_object_format():
+    # Old caches stored a single TrajectoryData object at the top level.
+    old_payload = _sample_traj(map_name="gridmap_v2").to_json()
+    mt = MapTrajectories.from_json(old_payload)
+    assert mt.map_name == "gridmap_v2"
+    assert len(mt.paths) == 1
+    assert mt.paths[0] == _sample_traj(map_name="gridmap_v2")
 
 
 def test_resample_straight_line_uniform_spacing():
