@@ -1039,6 +1039,8 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
         vehicle_id: str = "taxi",
         map_name: str = "gridmap_v2",
         trajectory_hints: int = 0,
+        body_orientation: bool = False,
+        wheel_terrain: bool = False,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -1050,6 +1052,8 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
             vehicle_id=vehicle_id,
             map_name=map_name,
             trajectory_hints=trajectory_hints,
+            body_orientation=body_orientation,
+            wheel_terrain=wheel_terrain,
         )
 
     def step(self, action):
@@ -1112,6 +1116,8 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         vehicle_id: str = "taxi",
         map_name: str = "gridmap_v2",
         trajectory_hints: int = 0,
+        body_orientation: bool = False,
+        wheel_terrain: bool = False,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -1122,6 +1128,8 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             vehicle_id=vehicle_id,
             map_name=map_name,
             trajectory_hints=trajectory_hints,
+            body_orientation=body_orientation,
+            wheel_terrain=wheel_terrain,
         )
         self.camera: Camera = None
         self.last_frame: np.ndarray | None = None  # 2-D grayscale (CAM_OUT_SIZE), updated each step
