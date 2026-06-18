@@ -54,11 +54,13 @@ class PipelineRunner:
                 ep_reward = 0.0
                 ep_losses = []
                 ep_speeds = []
+                ep_step_count = 0
                 done = False
 
                 while not done:
                     action = agent.select_action(state)
                     next_state, reward, done, info = self._step_env(env, action)
+                    ep_step_count += 1
                     # obs[0] = speed/50 in BeamNG; skip for discrete envs (int state)
                     if isinstance(state, np.ndarray) and len(state) > 0:
                         ep_speeds.append(float(state[0]) * 50.0)
@@ -72,7 +74,7 @@ class PipelineRunner:
                 if hasattr(agent, "episode"):
                     agent.episode = ep
                 rewards.append(ep_reward)
-                ep_steps = info.get("steps", 0) if isinstance(info, dict) else 0
+                ep_steps = self._episode_steps(info, ep_step_count)
                 steps.append(ep_steps)
                 speeds.append(float(np.mean(ep_speeds)) if ep_speeds else 0.0)
                 ep_distance = info.get("waypoint_idx", 0) if isinstance(info, dict) else 0
@@ -140,15 +142,17 @@ class PipelineRunner:
                 state = self._reset_env(env, seed=first_reset)
                 first_reset = None
                 ep_reward = 0.0
+                ep_step_count = 0
                 done = False
 
                 while not done:
                     action = agent.select_action(state)
                     next_state, reward, done, info = self._step_env(env, action)
+                    ep_step_count += 1
                     state = next_state
                     ep_reward += reward
 
-                ep_steps = info.get("steps", 0) if isinstance(info, dict) else 0
+                ep_steps = self._episode_steps(info, ep_step_count)
                 rewards.append(ep_reward)
                 steps.append(ep_steps)
 
@@ -188,6 +192,18 @@ class PipelineRunner:
         if isinstance(result, tuple):
             return result[0]
         return result
+
+    @staticmethod
+    def _episode_steps(info, fallback_count: int) -> int:
+        """Return the episode step count.
+
+        Prefers an explicit ``steps`` entry in the env's info dict (e.g. BeamNG)
+        and falls back to the number of loop iterations, so step tracking works
+        for environments like Taxi-v3 that do not report steps in info.
+        """
+        if isinstance(info, dict) and "steps" in info:
+            return int(info["steps"])
+        return fallback_count
 
     @staticmethod
     def _step_env(env, action):
