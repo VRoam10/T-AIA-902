@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from environments.beamng_geometry import body_orientation_features, wheel_terrain_features
 from environments.beamng_multi import (
     BeamNGMultiEnv,
     VehicleSlot,
@@ -313,6 +314,10 @@ class TestObserve:
         slot.roads_sensor.poll.return_value = {"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}
         obs = env.observe(slot)
         assert obs.shape == (18,)
+        expected_body = body_orientation_features((1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        expected_wheel = wheel_terrain_features({"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}, 0.7)
+        np.testing.assert_allclose(obs[-4:-2], expected_body, atol=1e-6)
+        np.testing.assert_allclose(obs[-2:], expected_wheel, atol=1e-6)
 
 
 class TestSlotExtraFeatures:

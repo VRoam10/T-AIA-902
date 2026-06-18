@@ -502,6 +502,7 @@ class BeamNGMultiEnv:
 
         Calls the shared geometry helpers; empty when both flags are off.
         """
+        state = state or {}
         blocks = []
         if slot.body_orientation:
             blocks.append(
