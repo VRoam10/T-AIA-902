@@ -4,7 +4,7 @@
 
 **Goal:** Make pitch+roll (`body_orientation`) and per-wheel road position (`wheel_terrain`) two independent opt-in observation flags available to every BeamNG environment (single-agent and multi-agent), plumbed like `trajectory_hints`.
 
-**Architecture:** Lift the feature math out of the one-off `BeamNGContinuousRollEnv` subclass into helper methods on the base `BeamNGDrivingEnv`, gated by two boolean flags. Extra blocks are appended at the *end* of the observation vector (after waypoint hints) so flag-off observations are byte-identical to today. The multi-agent env (`BeamNGMultiEnv`, a separate class) mirrors the same helpers per slot. CLI prompts and registry factories thread the flags through exactly like `trajectory_hints`.
+**Architecture:** The feature math lives once, as pure stateless functions in `environments/beamng_geometry.py`. Both the base `BeamNGDrivingEnv` and the separate `BeamNGMultiEnv` call those functions through thin wrappers, gated by two boolean flags. Extra blocks are appended at the *end* of the observation vector (after waypoint hints) so flag-off observations are byte-identical to today. CLI prompts and registry factories thread the flags through exactly like `trajectory_hints`.
 
 **Tech Stack:** Python, NumPy, beamngpy (`RoadsSensor`), pytest.
 
@@ -15,31 +15,175 @@
 - Observation order is fixed: `kinematic(6) | perception(P) | hints(2·H) | [pitch,roll]? | [left,right]?`.
 - `n_states = N_STATES + 2·trajectory_hints + 2·body_orientation + 2·wheel_terrain` (booleans as 0/1).
 - `HALF_TRACK_WIDTH = 0.7` m (half vehicle track), reused from the deleted subclass.
+- The feature math exists in exactly one place (`beamng_geometry.py`); both envs call it — no duplicated logic block.
 - Observation only — no reward-function changes.
 - `BeamNGContinuousRollEnv` and its `beamng_continuous_roll` registry entry are deleted; no references may remain.
 
 ---
 
-### Task 1: Feature helpers + flags on `BeamNGDrivingEnv`
+### Task 1: Shared orientation/terrain geometry helpers
 
 **Files:**
-- Modify: `environments/beamng.py` (`BeamNGDrivingEnv.__init__` ~116-172; add helper methods)
-- Test: `tests/test_beamng.py`
+- Modify: `environments/beamng_geometry.py` (add two module-level functions)
+- Test: `tests/test_beamng_geometry.py`
 
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
+  - `body_orientation_features(dir_vec, up_vec) -> np.ndarray` → shape `(2,)` `[pitch, roll]`, each clipped to `[-1, 1]`
+  - `wheel_terrain_features(roads_payload, half_track_width) -> np.ndarray` → shape `(2,)` `[left, right]`, each clipped to `[-1, 1]`; accepts a dict, a list, or `None` and falls back to neutral `(0, 0)`
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `tests/test_beamng_geometry.py`:
+
+```python
+class TestBodyOrientationFeatures:
+    def test_flat_vehicle_reads_zero(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        out = body_orientation_features((0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        assert out.shape == (2,)
+        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+
+    def test_nose_up_is_positive_pitch_zero_roll(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        # facing +Y, body tilted nose-up: up vector leans backward (-Y)
+        pitch, roll = body_orientation_features((0.0, 1.0, 0.0), (0.0, -0.3, 0.95))
+        assert pitch > 0.0
+        assert abs(roll) < 1e-6
+
+    def test_lean_right_is_positive_roll(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        # facing +Y (lateral axis = +X), up vector leans right (+X) -> roll > 0
+        pitch, roll = body_orientation_features((0.0, 1.0, 0.0), (0.3, 0.0, 0.95))
+        assert roll > 0.0
+        assert abs(pitch) < 1e-6
+
+    def test_saturates_at_one(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        pitch, _ = body_orientation_features((0.0, 1.0, 0.0), (0.0, -5.0, 0.1))
+        assert pitch == pytest.approx(1.0)
+
+
+class TestWheelTerrainFeatures:
+    def test_none_payload_is_neutral(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        out = wheel_terrain_features(None, 0.7)
+        assert out.shape == (2,)
+        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+
+    def test_dict_payload_normalizes_and_clamps(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        left, right = wheel_terrain_features(
+            {"halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7}, 0.7
+        )
+        assert left == pytest.approx(1.0, abs=1e-6)   # (3.7-0.7)/3.0 = 1.0
+        assert right == pytest.approx(0.0, abs=1e-6)  # (0.7-0.7)/3.0 = 0.0
+
+    def test_list_payload_uses_first_element(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        out = wheel_terrain_features(
+            [{"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}], 0.7
+        )
+        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+
+    def test_empty_list_is_neutral(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        np.testing.assert_allclose(wheel_terrain_features([], 0.7), [0.0, 0.0], atol=1e-6)
+```
+
+Confirm `tests/test_beamng_geometry.py` imports `numpy as np` and `pytest` at the top; add them if missing.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python -m pytest tests/test_beamng_geometry.py::TestBodyOrientationFeatures tests/test_beamng_geometry.py::TestWheelTerrainFeatures -v`
+Expected: FAIL — `ImportError: cannot import name 'body_orientation_features'`.
+
+- [ ] **Step 3: Add the two functions**
+
+Append to `environments/beamng_geometry.py`:
+
+```python
+def body_orientation_features(dir_vec, up_vec) -> np.ndarray:
+    """Return [pitch, roll] in [-1, 1] from a vehicle's forward and up vectors.
+
+    pitch: + = nose up (uphill), - = nose down.
+    roll:  + = leaning right, - = leaning left.
+    A flat vehicle reads (0, 0); a 90 deg tilt saturates at +/-1. Derived by
+    projecting the world-space up vector onto the vehicle's forward and lateral
+    axes (the lateral axis is the forward axis rotated +90 deg in the XY plane).
+    """
+    fwd_len = float(np.hypot(dir_vec[0], dir_vec[1])) or 1.0
+    fwd_x = dir_vec[0] / fwd_len
+    fwd_y = dir_vec[1] / fwd_len
+    pitch = -(float(up_vec[0]) * fwd_x + float(up_vec[1]) * fwd_y)
+    roll = float(up_vec[0]) * (-fwd_y) + float(up_vec[1]) * fwd_x
+    return np.array([np.clip(pitch, -1.0, 1.0), np.clip(roll, -1.0, 1.0)], dtype=np.float32)
+
+
+def wheel_terrain_features(roads_payload, half_track_width) -> np.ndarray:
+    """Return [left, right] road-edge position in [-1, 1] from a RoadsSensor poll.
+
+    +1 = well on road, 0 = at the edge, -1 = off road. Measured at the
+    front-axle midpoint, so this is the honest left/right road position (no
+    per-wheel duplication). Accepts the raw poll payload (dict, list, or None)
+    and falls back to neutral (0, 0) when data is missing.
+    """
+    roads = roads_payload
+    if isinstance(roads, list):
+        roads = roads[0] if roads else {}
+    if not isinstance(roads, dict):
+        roads = {}
+    half_w = max(float(roads.get("halfWidth", 3.0)), 0.5)
+    d_left = float(roads.get("dist2Left", half_track_width))
+    d_right = float(roads.get("dist2Right", half_track_width))
+    left = float(np.clip((d_left - half_track_width) / half_w, -1.0, 1.0))
+    right = float(np.clip((d_right - half_track_width) / half_w, -1.0, 1.0))
+    return np.array([left, right], dtype=np.float32)
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python -m pytest tests/test_beamng_geometry.py -v`
+Expected: PASS (new tests plus the pre-existing LiDAR-geometry tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add environments/beamng_geometry.py tests/test_beamng_geometry.py
+git commit -m "feat: add shared body_orientation/wheel_terrain geometry helpers"
+```
+
+---
+
+### Task 2: Flags + wrappers on `BeamNGDrivingEnv`
+
+**Files:**
+- Modify: `environments/beamng.py` (import ~24; `BeamNGDrivingEnv.__init__` ~116-172; add helper methods)
+- Test: `tests/test_beamng.py`
+
+**Interfaces:**
+- Consumes: `body_orientation_features`, `wheel_terrain_features` (Task 1).
+- Produces:
   - `BeamNGDrivingEnv(__init__ ..., body_orientation: bool = False, wheel_terrain: bool = False)`
   - `self.body_orientation: bool`, `self.wheel_terrain: bool`, `self.roads_sensor` (default `None`)
   - `BeamNGDrivingEnv.HALF_TRACK_WIDTH = 0.7` (class attr)
-  - `_body_orientation_features(state: dict) -> np.ndarray` → shape `(2,)` `[pitch, roll]`
-  - `_wheel_terrain_features() -> np.ndarray` → shape `(2,)` `[left, right]`
-  - `_extra_features(state: dict) -> np.ndarray` → shape `(0,)`, `(2,)`, or `(4,)` depending on flags
+  - `_body_orientation_features(state: dict) -> np.ndarray` → `(2,)` (wrapper)
+  - `_wheel_terrain_features() -> np.ndarray` → `(2,)` (wrapper, polls `self.roads_sensor`)
+  - `_extra_features(state: dict) -> np.ndarray` → `(0,)`, `(2,)`, or `(4,)` depending on flags
   - `self.n_states` includes `+2` per enabled flag
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_beamng.py`:
+Add to `tests/test_beamng.py` (and add `from unittest.mock import MagicMock` to its imports):
 
 ```python
 class TestExtraFeatures:
@@ -63,57 +207,44 @@ class TestExtraFeatures:
         )
         assert env.n_states == BeamNGDrivingEnv.N_STATES + 4 + 2 + 2
 
-    def test_body_orientation_flat_vehicle_reads_zero(self):
-        env = BeamNGDrivingEnv(beamng_home="x", body_orientation=True)
-        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, 0.0, 1.0)}
-        out = env._body_orientation_features(state)
-        assert out.shape == (2,)
-        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
-
-    def test_body_orientation_nose_up_is_positive_pitch(self):
-        env = BeamNGDrivingEnv(beamng_home="x", body_orientation=True)
-        # facing +Y, body tilted nose-up: up vector leans backward (-Y)
-        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, -0.3, 0.95)}
-        pitch, roll = env._body_orientation_features(state)
-        assert pitch > 0.0
-        assert abs(roll) < 1e-6
-
-    def test_wheel_terrain_defaults_to_neutral_without_sensor(self):
-        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
+    def test_extra_features_order_is_orientation_then_terrain(self):
+        env = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, wheel_terrain=True)
         env.roads_sensor = None
-        out = env._wheel_terrain_features()
-        assert out.shape == (2,)
-        # dist2Left/Right default to HALF_TRACK_WIDTH -> (0 - 0)/half_w == 0
-        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, -0.3, 0.95)}
+        out = env._extra_features(state)
+        assert out.shape == (4,)
+        assert out[0] > 0.0          # pitch (nose up) first
+        assert out[2] == pytest.approx(0.0, abs=1e-6)  # left terrain (neutral) after
 
-    def test_wheel_terrain_reads_sensor_and_clamps(self):
+    def test_wheel_terrain_wrapper_reads_sensor(self):
         env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
         env.roads_sensor = MagicMock()
-        env.roads_sensor.poll.return_value = {
-            "halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7
-        }
+        env.roads_sensor.poll.return_value = {"halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7}
         left, right = env._wheel_terrain_features()
-        assert left == pytest.approx(1.0, abs=1e-6)   # (3.7-0.7)/3.0 = 1.0
-        assert right == pytest.approx(0.0, abs=1e-6)  # (0.7-0.7)/3.0 = 0.0
-
-    def test_wheel_terrain_handles_list_payload(self):
-        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
-        env.roads_sensor = MagicMock()
-        env.roads_sensor.poll.return_value = [{"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}]
-        out = env._wheel_terrain_features()
-        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+        assert left == pytest.approx(1.0, abs=1e-6)
+        assert right == pytest.approx(0.0, abs=1e-6)
 ```
-
-Add `from unittest.mock import MagicMock` to the test file's imports.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_beamng.py::TestExtraFeatures -v`
-Expected: FAIL — `__init__() got an unexpected keyword argument 'body_orientation'` / `AttributeError: ... _extra_features`.
+Expected: FAIL — `__init__() got an unexpected keyword argument 'body_orientation'`.
 
-- [ ] **Step 3: Add the class attribute and constructor params**
+- [ ] **Step 3: Import the shared helpers**
 
-In `environments/beamng.py`, add the class attribute near the other tunables (after `MAX_DAMAGE`, ~line 85):
+In `environments/beamng.py`, extend the geometry import (~line 24):
+
+```python
+from environments.beamng_geometry import (
+    LidarConfig,
+    body_orientation_features,
+    wheel_terrain_features,
+)
+```
+
+- [ ] **Step 4: Add the class attribute and constructor params**
+
+Add the class attribute near the other tunables (after `MAX_DAMAGE`, ~line 85):
 
 ```python
     HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
@@ -143,55 +274,28 @@ Inside `__init__`, replace the `self.n_states = ...` line (~160) and add state:
         )
 ```
 
-Add `self.roads_sensor = None` alongside the other sensor attributes (~line 146, near `self.lidar: Lidar = None`):
+Add `self.roads_sensor = None` alongside the other sensor attributes (~line 146):
 
 ```python
         self.lidar: Lidar = None
         self.roads_sensor: RoadsSensor = None
 ```
 
-- [ ] **Step 4: Add the helper methods**
+- [ ] **Step 5: Add the wrapper helpers**
 
 Add these methods to `BeamNGDrivingEnv` (place them just after `_get_waypoint_hints`, ~line 738):
 
 ```python
     def _body_orientation_features(self, state) -> np.ndarray:
-        """Return [pitch, roll] in [-1, 1] from the vehicle's up/forward vectors.
-
-        pitch: + = nose up (uphill), - = nose down.
-        roll:  + = leaning right, - = leaning left.
-        """
-        dir_vec = state.get("dir", (0.0, 1.0, 0.0))
-        up_vec = state.get("up", (0.0, 0.0, 1.0))
-        fwd_len = float(np.hypot(dir_vec[0], dir_vec[1])) or 1.0
-        fwd_x = dir_vec[0] / fwd_len
-        fwd_y = dir_vec[1] / fwd_len
-        pitch = -(float(up_vec[0]) * fwd_x + float(up_vec[1]) * fwd_y)
-        lat_x = -fwd_y
-        lat_y = fwd_x
-        roll = float(up_vec[0]) * lat_x + float(up_vec[1]) * lat_y
-        return np.array(
-            [np.clip(pitch, -1.0, 1.0), np.clip(roll, -1.0, 1.0)], dtype=np.float32
+        """[pitch, roll] from the vehicle's forward/up vectors (see geometry helper)."""
+        return body_orientation_features(
+            state.get("dir", (0.0, 1.0, 0.0)), state.get("up", (0.0, 0.0, 1.0))
         )
 
     def _wheel_terrain_features(self) -> np.ndarray:
-        """Return [left_terrain, right_terrain] in [-1, 1] from the RoadsSensor.
-
-        +1 = well on road, 0 = at the edge, -1 = off road. Measured at the
-        front-axle midpoint, so it is the honest left/right road-edge position
-        (no per-wheel duplication). Falls back to neutral (0, 0) without a sensor.
-        """
-        roads = self.roads_sensor.poll() if self.roads_sensor is not None else {}
-        if isinstance(roads, list):
-            roads = roads[0] if roads else {}
-        if not isinstance(roads, dict):
-            roads = {}
-        half_w = max(float(roads.get("halfWidth", 3.0)), 0.5)
-        d_left = float(roads.get("dist2Left", self.HALF_TRACK_WIDTH))
-        d_right = float(roads.get("dist2Right", self.HALF_TRACK_WIDTH))
-        left = float(np.clip((d_left - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
-        right = float(np.clip((d_right - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
-        return np.array([left, right], dtype=np.float32)
+        """[left, right] road-edge position from the RoadsSensor (neutral without one)."""
+        payload = self.roads_sensor.poll() if self.roads_sensor is not None else None
+        return wheel_terrain_features(payload, self.HALF_TRACK_WIDTH)
 
     def _extra_features(self, state) -> np.ndarray:
         """Optional observation tail: body orientation and/or wheel terrain.
@@ -209,28 +313,28 @@ Add these methods to `BeamNGDrivingEnv` (place them just after `_get_waypoint_hi
         return np.concatenate(blocks)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_beamng.py::TestExtraFeatures -v`
-Expected: PASS (all 8 tests).
+Expected: PASS (all 5 tests).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add environments/beamng.py tests/test_beamng.py
-git commit -m "feat: add body_orientation/wheel_terrain feature helpers to BeamNGDrivingEnv"
+git commit -m "feat: add body_orientation/wheel_terrain flags + wrappers to BeamNGDrivingEnv"
 ```
 
 ---
 
-### Task 2: Wire extras into observation + RoadsSensor lifecycle; delete `BeamNGContinuousRollEnv`
+### Task 3: Wire extras into observation + RoadsSensor lifecycle; delete `BeamNGContinuousRollEnv`
 
 **Files:**
-- Modify: `environments/beamng.py` (`_observe` ~444-494; `_load_scenario` ~394-442; `close` ~329-343; `BeamNGCameraEnv._load_scenario` ~1161; `BeamNGCameraEnv._observe` ~1207; delete `BeamNGContinuousRollEnv` ~1025-1110)
+- Modify: `environments/beamng.py` (`_observe` ~444-494; `_load_scenario` ~394-442; `close` ~329-343; add sensor helpers after `_remove_lidar` ~353; `BeamNGCameraEnv._load_scenario` ~1161; `BeamNGCameraEnv._observe` ~1207; delete `BeamNGContinuousRollEnv` ~1025-1110)
 - Test: `tests/test_beamng.py`
 
 **Interfaces:**
-- Consumes: `_extra_features`, `body_orientation`, `wheel_terrain`, `roads_sensor` (Task 1).
+- Consumes: `_extra_features`, `body_orientation`, `wheel_terrain`, `roads_sensor` (Task 2).
 - Produces:
   - `_attach_roads_sensor()` — creates `self.roads_sensor` when `wheel_terrain` is on (no-op otherwise)
   - `_remove_roads_sensor()` — tears it down
@@ -266,7 +370,7 @@ class TestContinuousRollDeleted:
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_beamng.py::TestRoadsSensorLifecycle tests/test_beamng.py::TestContinuousRollDeleted -v`
-Expected: FAIL — `AttributeError: ... _attach_roads_sensor` and the deletion test fails (class still present).
+Expected: FAIL — `AttributeError: ... _attach_roads_sensor`; deletion test fails (class still present).
 
 - [ ] **Step 3: Add the sensor lifecycle helpers**
 
@@ -291,7 +395,7 @@ Add to `BeamNGDrivingEnv`, right after `_remove_lidar` (~line 353):
 
 - [ ] **Step 4: Wire into base `_load_scenario`, `close`, and `_observe`**
 
-In `BeamNGDrivingEnv._load_scenario`, at the top where `self._remove_lidar()` is called (~line 399), add the roads removal:
+In `BeamNGDrivingEnv._load_scenario`, where `self._remove_lidar()` is called at the top (~line 399), add the roads removal right after it:
 
 ```python
         self._remove_lidar()
@@ -311,22 +415,9 @@ In `BeamNGDrivingEnv.close`, after `self._remove_lidar()` (~line 337), add:
             self._remove_roads_sensor()
 ```
 
-In `BeamNGDrivingEnv._observe`, the `state` dict is already fetched (~line 455). Change the final `np.concatenate([...])` (~line 476-492) to append the extras as a fourth block:
+In `BeamNGDrivingEnv._observe`, the `state` dict is already fetched (~line 455). Append the extras as a fourth block of the final `np.concatenate` (~line 476-492):
 
 ```python
-        obs = np.concatenate(
-            [
-                np.array(
-                    [
-                        np.clip(speed / 50.0, -1.0, 1.0),
-                        np.clip(steering, -1.0, 1.0),
-                        np.clip(heading_err / np.pi, -1.0, 1.0),
-                        np.clip(lateral_err / 5.0, -1.0, 1.0),
-                        np.clip(damage / 1000.0, 0.0, 1.0),
-                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
-                    ],
-                    dtype=np.float32,
-                ),
                 lidar_bins,
                 waypoint_hints,
                 self._extra_features(state),
@@ -349,19 +440,6 @@ In `BeamNGCameraEnv._load_scenario`, after `self._update_active_marker(0)` (~lin
 In `BeamNGCameraEnv._observe`, `state` is already fetched (~line 1217). Append the extras to its final `np.concatenate` (~line 1232-1248):
 
 ```python
-        return np.concatenate(
-            [
-                np.array(
-                    [
-                        np.clip(speed / 50.0, -1.0, 1.0),
-                        np.clip(steering, -1.0, 1.0),
-                        np.clip(heading_err / np.pi, -1.0, 1.0),
-                        np.clip(lateral_err / 5.0, -1.0, 1.0),
-                        np.clip(damage / 1000.0, 0.0, 1.0),
-                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
-                    ],
-                    dtype=np.float32,
-                ),
                 cam_pixels,
                 waypoint_hints,
                 self._extra_features(state),
@@ -387,14 +465,14 @@ git commit -m "feat: append optional extras to BeamNG observations; drop BeamNGC
 
 ---
 
-### Task 3: Registry — forward flags, delete `beamng_continuous_roll`
+### Task 4: Registry — forward flags, delete `beamng_continuous_roll`
 
 **Files:**
 - Modify: `environments/__init__.py` (all `_make_beamng*` factories; delete `_make_beamng_continuous_roll` ~102-119)
 - Test: `tests/test_beamng.py` (registry assertion)
 
 **Interfaces:**
-- Consumes: `BeamNGDrivingEnv(..., body_orientation, wheel_terrain)` (Task 1); deleted class (Task 2).
+- Consumes: `BeamNGDrivingEnv(..., body_orientation, wheel_terrain)` (Task 2); deleted class (Task 3).
 - Produces: every `_make_beamng*` factory accepts and forwards `body_orientation=False, wheel_terrain=False`; no `beamng_continuous_roll` registration.
 
 - [ ] **Step 1: Write the failing test**
@@ -497,14 +575,14 @@ git commit -m "feat: forward orientation/terrain flags through registry; drop be
 
 ---
 
-### Task 4: Multi-agent env — slot flags, sizing, per-slot sensor, observation
+### Task 5: Multi-agent env — slot flags, sizing, per-slot sensor, observation
 
 **Files:**
-- Modify: `environments/beamng_multi.py` (imports ~15; `VehicleSlot` ~33-91; `slot_n_states` ~138-141; `build_slots` ~163-194; `_create_slot_sensor` ~561-604; `observe` ~420-463; `close` ~701-717; add helpers + `HALF_TRACK_WIDTH`)
+- Modify: `environments/beamng_multi.py` (imports ~15, ~26-30; `VehicleSlot` ~33-91; `slot_n_states` ~138-141; `build_slots` ~163-194; `_create_slot_sensor` ~561-604; `observe` ~420-463; `close` ~701-717; add helper + `HALF_TRACK_WIDTH`)
 - Test: `tests/test_beamng_multi.py`
 
 **Interfaces:**
-- Consumes: same feature math as `BeamNGDrivingEnv` (Task 1), re-implemented per slot.
+- Consumes: `body_orientation_features`, `wheel_terrain_features` (Task 1).
 - Produces:
   - `VehicleSlot(..., body_orientation: bool = False, wheel_terrain: bool = False, roads_sensor: Any = None)`
   - `slot_n_states(env_name, trajectory_hints=0, body_orientation=False, wheel_terrain=False) -> int`
@@ -579,9 +657,9 @@ Extend the `TestObserve` class with a flagged-observation test:
 Run: `python -m pytest tests/test_beamng_multi.py::TestSlotExtraFeatures tests/test_beamng_multi.py::TestObserve -v`
 Expected: FAIL — `slot_n_states() got an unexpected keyword argument 'body_orientation'` / `VehicleSlot` has no such field.
 
-- [ ] **Step 3: Import RoadsSensor and add slot fields + class constant**
+- [ ] **Step 3: Import shared helpers + RoadsSensor and add slot fields + class constant**
 
-In `environments/beamng_multi.py`, add `RoadsSensor` to the import (~line 15) and the `except ImportError` fallback (~line 17):
+In `environments/beamng_multi.py`, add `RoadsSensor` to the beamngpy import (~line 15) and the `except ImportError` fallback (~line 17):
 
 ```python
     from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor
@@ -589,7 +667,19 @@ except ImportError:
     BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
 ```
 
-Add fields to `VehicleSlot`. Under the "Environment profile" group (~line 50-54), add:
+Extend the geometry import (~line 26):
+
+```python
+from environments.beamng_geometry import (
+    LidarConfig,
+    body_orientation_features,
+    ego_local_extents_from_bbox,
+    process_lidar,
+    wheel_terrain_features,
+)
+```
+
+Add fields to `VehicleSlot`. Under the "Environment profile" group (~line 50-54):
 
 ```python
     perception: str = "lidar"  # "lidar" | "lidar_grid" | "camera"
@@ -599,7 +689,7 @@ Add fields to `VehicleSlot`. Under the "Environment profile" group (~line 50-54)
     n_states: int = 14  # observation length for this vehicle's env
 ```
 
-Under the "Sensors" group (~line 58-62), add the roads sensor handle:
+Under the "Sensors" group (~line 58-62):
 
 ```python
     lidar: Any = None
@@ -667,66 +757,34 @@ In `build_slots` (~line 172), read the flags and pass them through:
         )
 ```
 
-- [ ] **Step 5: Add the feature helpers and wire into `observe`**
+- [ ] **Step 5: Add the slot-extras helper and wire into `observe`**
 
-Add helpers to `BeamNGMultiEnv` (place after `_waypoint_hints`, ~line 493):
+Add the helper to `BeamNGMultiEnv` (place after `_waypoint_hints`, ~line 493):
 
 ```python
-    def _body_orientation_features(self, state) -> np.ndarray:
-        """[pitch, roll] in [-1, 1] from the vehicle up/forward vectors."""
-        dir_vec = state.get("dir", (0.0, 1.0, 0.0))
-        up_vec = state.get("up", (0.0, 0.0, 1.0))
-        fwd_len = float(np.hypot(dir_vec[0], dir_vec[1])) or 1.0
-        fwd_x = dir_vec[0] / fwd_len
-        fwd_y = dir_vec[1] / fwd_len
-        pitch = -(float(up_vec[0]) * fwd_x + float(up_vec[1]) * fwd_y)
-        roll = float(up_vec[0]) * (-fwd_y) + float(up_vec[1]) * fwd_x
-        return np.array(
-            [np.clip(pitch, -1.0, 1.0), np.clip(roll, -1.0, 1.0)], dtype=np.float32
-        )
-
-    def _wheel_terrain_features(self, slot) -> np.ndarray:
-        """[left, right] road-edge position in [-1, 1] from the slot's RoadsSensor."""
-        roads = slot.roads_sensor.poll() if slot.roads_sensor is not None else {}
-        if isinstance(roads, list):
-            roads = roads[0] if roads else {}
-        if not isinstance(roads, dict):
-            roads = {}
-        half_w = max(float(roads.get("halfWidth", 3.0)), 0.5)
-        d_left = float(roads.get("dist2Left", self.HALF_TRACK_WIDTH))
-        d_right = float(roads.get("dist2Right", self.HALF_TRACK_WIDTH))
-        left = float(np.clip((d_left - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
-        right = float(np.clip((d_right - self.HALF_TRACK_WIDTH) / half_w, -1.0, 1.0))
-        return np.array([left, right], dtype=np.float32)
-
     def _slot_extra_features(self, slot, state) -> np.ndarray:
-        """Optional observation tail for a slot (body orientation / wheel terrain)."""
+        """Optional observation tail for a slot (body orientation / wheel terrain).
+
+        Calls the shared geometry helpers; empty when both flags are off.
+        """
         blocks = []
         if slot.body_orientation:
-            blocks.append(self._body_orientation_features(state))
+            blocks.append(
+                body_orientation_features(
+                    state.get("dir", (0.0, 1.0, 0.0)), state.get("up", (0.0, 0.0, 1.0))
+                )
+            )
         if slot.wheel_terrain:
-            blocks.append(self._wheel_terrain_features(slot))
+            payload = slot.roads_sensor.poll() if slot.roads_sensor is not None else None
+            blocks.append(wheel_terrain_features(payload, self.HALF_TRACK_WIDTH))
         if not blocks:
             return np.empty(0, dtype=np.float32)
         return np.concatenate(blocks)
 ```
 
-In `observe` (~line 447), append the extras as the final block of the `np.concatenate`:
+In `observe` (~line 447), append the extras as the final block of the `np.concatenate`. The `state` dict is already in scope (`state = slot.vehicle.state or {}`, ~line 430):
 
 ```python
-        return np.concatenate(
-            [
-                np.array(
-                    [
-                        np.clip(speed / 50.0, -1.0, 1.0),
-                        np.clip(steering, -1.0, 1.0),
-                        np.clip(heading_err / np.pi, -1.0, 1.0),
-                        np.clip(lateral_err / 5.0, -1.0, 1.0),
-                        np.clip(damage / 1000.0, 0.0, 1.0),
-                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
-                    ],
-                    dtype=np.float32,
-                ),
                 perception,
                 waypoint_hints,
                 self._slot_extra_features(slot, state),
@@ -736,7 +794,7 @@ In `observe` (~line 447), append the extras as the final block of the `np.concat
 
 - [ ] **Step 6: Attach the per-slot RoadsSensor and tear it down**
 
-In `_create_slot_sensor`, at the very end of the method (~line 604, after `self._cache_ego_local_bbox(slot)` for the LiDAR branch), attach the roads sensor for any slot that needs it. Because the camera branch returns early, add the attach for both paths — put it just before the `if slot.perception == "camera":` early-return branch by restructuring: attach roads first, then create the perception sensor. Insert at the top of `_create_slot_sensor` (~line 568):
+In `_create_slot_sensor`, attach the roads sensor at the very top of the method (~line 568), before the `if slot.perception == "camera":` early-return branch:
 
 ```python
         if slot.wheel_terrain:
@@ -768,14 +826,14 @@ git commit -m "feat: per-slot body_orientation/wheel_terrain options in BeamNGMu
 
 ---
 
-### Task 5: CLI — prompts thread flags into single & multi sessions
+### Task 6: CLI — prompts thread flags into single & multi sessions
 
 **Files:**
-- Modify: `core/cli.py` (add `_ask_bool` ~after `_ask_int` line 41; single-train ~147-164; single-eval/play ~248-265; `build_multi_session` ~415-432; `_multi_train_menu` spec builder ~459-471)
+- Modify: `core/cli.py` (add `_ask_bool` after `_ask_int` ~line 41; single-train ~147-164; single-eval/play ~248-265; `build_multi_session` ~415-432; `_multi_train_menu` spec builder ~459-471)
 - Test: `tests/test_cli_multi.py`
 
 **Interfaces:**
-- Consumes: `slot_n_states(env_name, trajectory_hints, body_orientation, wheel_terrain)` (Task 4); registry factories forwarding flags (Task 3).
+- Consumes: `slot_n_states(env_name, trajectory_hints, body_orientation, wheel_terrain)` (Task 5); registry factories forwarding flags (Task 4).
 - Produces: `_ask_bool(prompt: str, default: bool = False) -> bool`; spec dicts and `beamng_kwargs` carrying `body_orientation`/`wheel_terrain`; agent `n_states` sized with the flags.
 
 - [ ] **Step 1: Write the failing test**
@@ -802,11 +860,8 @@ def test_build_multi_session_sizes_agent_with_flags():
     assert slots[0].n_states == 18
     assert slots[0].body_orientation is True
     assert slots[0].wheel_terrain is True
-```
 
-Add to `tests/test_cli_multi.py` a unit test for the helper:
 
-```python
 def test_ask_bool_parses_yes_no():
     from core.cli import _ask_bool
     with patch("builtins.input", return_value="y"):
@@ -822,7 +877,7 @@ def test_ask_bool_parses_yes_no():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_cli_multi.py::test_build_multi_session_sizes_agent_with_flags tests/test_cli_multi.py::test_ask_bool_parses_yes_no -v`
-Expected: FAIL — `cannot import name '_ask_bool'`; and `slot_n_states` ignores the flags so n_states would be 14.
+Expected: FAIL — `cannot import name '_ask_bool'`; `slot_n_states` ignores flags so n_states would be 14.
 
 - [ ] **Step 3: Add the `_ask_bool` helper**
 
@@ -951,7 +1006,7 @@ git commit -m "feat: CLI prompts for body_orientation/wheel_terrain in single an
 
 ---
 
-### Task 6: Regression sweep & docs
+### Task 7: Regression sweep & docs
 
 **Files:**
 - Modify: `docs/romain.md` (note the fifth-issue fix is now an option); any stray references.
@@ -998,16 +1053,17 @@ git commit -m "docs: note body_orientation/wheel_terrain are now opt-in options"
 ## Self-Review
 
 **Spec coverage:**
-- Two independent flags → Tasks 1, 3, 4, 5. ✓
-- Available to every BeamNG env (lidar/lidar_grid/camera/continuous, single + multi) → base class (Task 1/2), camera override (Task 2), registry (Task 3), multi (Task 4). ✓
-- Honest 2-value wheel terrain → `_wheel_terrain_features` returns `(2,)` (Tasks 1, 4). ✓
-- Append at end / order fixed → Tasks 2, 4. ✓
-- `n_states` formula → Tasks 1, 4, 5. ✓
-- RoadsSensor lifecycle + safe fallback → Tasks 1, 2, 4. ✓
-- Delete `BeamNGContinuousRollEnv` + registration → Tasks 2, 3, 6. ✓
-- CLI prompts (train, play, multi) → Task 5. ✓
-- Tests for flag combinations + regression → Tasks 1, 4, 5, 6. ✓
+- Feature math in exactly one place → Task 1 (`beamng_geometry.py`); both envs call it (Tasks 2, 5). ✓
+- Two independent flags → Tasks 2, 4, 5, 6. ✓
+- Available to every BeamNG env (lidar/lidar_grid/camera/continuous, single + multi) → base class (Tasks 2/3), camera override (Task 3), registry (Task 4), multi (Task 5). ✓
+- Honest 2-value wheel terrain → `wheel_terrain_features` returns `(2,)` (Task 1). ✓
+- Append at end / order fixed → Tasks 3, 5. ✓
+- `n_states` formula → Tasks 2, 5, 6. ✓
+- RoadsSensor lifecycle + safe fallback → Tasks 1, 3, 5. ✓
+- Delete `BeamNGContinuousRollEnv` + registration → Tasks 3, 4, 7. ✓
+- CLI prompts (train, play, multi) → Task 6. ✓
+- Tests for flag combinations + regression → Tasks 1, 2, 5, 6, 7. ✓
 
 **Placeholder scan:** No TBD/TODO; every code step shows full code. ✓
 
-**Type consistency:** `_body_orientation_features(state)`, `_wheel_terrain_features()` (single) / `_wheel_terrain_features(slot)` (multi), `_extra_features(state)` (single) / `_slot_extra_features(slot, state)` (multi), `_attach_roads_sensor()`, `_remove_roads_sensor()`, `slot_n_states(env_name, trajectory_hints, body_orientation, wheel_terrain)`, `_ask_bool(prompt, default)` — names used consistently across tasks. ✓
+**Type consistency:** shared `body_orientation_features(dir_vec, up_vec)` / `wheel_terrain_features(roads_payload, half_track_width)` (Task 1); single-env wrappers `_body_orientation_features(state)` / `_wheel_terrain_features()` / `_extra_features(state)` (Task 2); `_attach_roads_sensor()` / `_remove_roads_sensor()` (Task 3); `_slot_extra_features(slot, state)` (Task 5); `slot_n_states(env_name, trajectory_hints, body_orientation, wheel_terrain)` (Task 5); `_ask_bool(prompt, default)` (Task 6) — names used consistently across tasks. ✓
