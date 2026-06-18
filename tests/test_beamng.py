@@ -95,3 +95,16 @@ class TestContinuousRollDeleted:
     def test_class_is_gone(self):
         import environments.beamng as m
         assert not hasattr(m, "BeamNGContinuousRollEnv")
+
+
+class TestRegistry:
+    def test_continuous_roll_not_registered(self):
+        from core.registry import registry
+        import environments  # noqa: F401  (triggers registration)
+        assert "beamng_continuous_roll" not in registry.list_environments()
+
+    def test_beamng_factory_forwards_flags(self):
+        from environments import _make_beamng
+        env = _make_beamng(body_orientation=True, wheel_terrain=True)
+        assert env.body_orientation is True
+        assert env.wheel_terrain is True
