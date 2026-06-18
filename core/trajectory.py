@@ -377,7 +377,7 @@ def _path_from_teleport(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         source=f"teleport:{road_id}",
     )
-    return traj, _path_length(path)
+    return traj, _path_length(centerline)
 
 
 def generate(bng, map_name: str) -> MapTrajectories:
