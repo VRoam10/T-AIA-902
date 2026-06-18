@@ -255,6 +255,69 @@ def _extract_longest_road(network: dict) -> tuple[str | None, list[Vec3] | None]
     return (best_id, best_centerline)
 
 
+def _road_centerlines(network: dict) -> list[tuple[str, list[Vec3]]]:
+    """Every road in `network` with >= 2 valid edges, as (road_id, centerline)."""
+    out: list[tuple[str, list[Vec3]]] = []
+    for road_id, road in network.items():
+        edges = road.get("edges", []) if isinstance(road, dict) else []
+        if len(edges) < 2:
+            continue
+        try:
+            centerline = [_edge_center(e) for e in edges]
+        except ValueError:
+            continue
+        out.append((road_id, centerline))
+    return out
+
+
+def _quat_to_forward(rot: Quat) -> tuple[float, float]:
+    """XY forward unit vector for a pure-Z-yaw quaternion (identity -> +Y)."""
+    yaw = 2.0 * math.atan2(rot[2], rot[3])
+    return (-math.sin(yaw), math.cos(yaw))
+
+
+def _nearest_road(
+    point: Vec3, roads: list[tuple[str, list[Vec3]]]
+) -> tuple[str, list[Vec3]] | None:
+    """Road whose closest centerline vertex is nearest `point` in the XY plane."""
+    best: tuple[str, list[Vec3]] | None = None
+    best_d = float("inf")
+    for road_id, centerline in roads:
+        d = min(math.hypot(v[0] - point[0], v[1] - point[1]) for v in centerline)
+        if d < best_d:
+            best_d = d
+            best = (road_id, centerline)
+    return best
+
+
+def _road_path_from_teleport(
+    centerline: list[Vec3], tele_pos: Vec3, forward_xy: tuple[float, float]
+) -> list[Vec3]:
+    """Sub-polyline from the vertex nearest `tele_pos`, walking with `forward_xy`.
+
+    Picks the traversal direction whose road tangent best aligns with the
+    teleport heading, so the car always drives forward along the returned path.
+    Falls back to the whole oriented centerline if the snap vertex leaves fewer
+    than two points ahead.
+    """
+    k = min(
+        range(len(centerline)),
+        key=lambda i: math.hypot(centerline[i][0] - tele_pos[0], centerline[i][1] - tele_pos[1]),
+    )
+    # Tangent at k (forward along increasing index).
+    j = k + 1 if k + 1 < len(centerline) else k - 1
+    tangent = (centerline[j][0] - centerline[k][0], centerline[j][1] - centerline[k][1])
+    if j < k:  # tangent was measured backward; flip it to point forward-in-index
+        tangent = (-tangent[0], -tangent[1])
+    aligned = tangent[0] * forward_xy[0] + tangent[1] * forward_xy[1] >= 0.0
+
+    forward_path = centerline[k:] if aligned else list(reversed(centerline[: k + 1]))
+    if len(forward_path) >= 2:
+        return forward_path
+    # Snap sat at the far end; use the whole centerline oriented to the heading.
+    return centerline if aligned else list(reversed(centerline))
+
+
 def generate(bng, map_name: str) -> TrajectoryData:
     """Probe BeamNG for the map's road network and build a TrajectoryData.
 

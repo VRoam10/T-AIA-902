@@ -11,6 +11,10 @@ from core.trajectory import (
     TrajectoryData,
     _edge_center,
     _extract_longest_road,
+    _nearest_road,
+    _quat_to_forward,
+    _road_centerlines,
+    _road_path_from_teleport,
     _square_loop_fallback,
     generate,
     heading_to_quat,
@@ -305,3 +309,58 @@ def test_load_or_generate_regenerates_on_corrupt_cache(tmp_path, monkeypatch):
     assert out.map_name == "italy"
     # Cache rewritten with valid content
     TrajectoryData.from_json((tmp_path / "italy.json").read_text())
+
+
+def test_road_centerlines_lists_all_multi_edge_roads():
+    network = {
+        "a": {"edges": [{"middle": (0.0, 0.0, 0.0)}, {"middle": (10.0, 0.0, 0.0)}]},
+        "b": {"edges": [{"middle": (0.0, 0.0, 0.0)}]},  # single edge -> skipped
+        "c": {"edges": [{"middle": (0.0, 5.0, 0.0)}, {"middle": (0.0, 15.0, 0.0)}]},
+    }
+    roads = _road_centerlines(network)
+    ids = {rid for rid, _ in roads}
+    assert ids == {"a", "c"}
+
+
+def test_quat_to_forward_identity_is_north():
+    fx, fy = _quat_to_forward((0.0, 0.0, 0.0, 1.0))
+    assert fx == pytest.approx(0.0, abs=1e-6)
+    assert fy == pytest.approx(1.0, abs=1e-6)
+
+
+def test_quat_to_forward_east():
+    # yaw -pi/2 faces +X (East): forward = (1, 0)
+    rot = (0.0, 0.0, math.sin(-math.pi / 4), math.cos(-math.pi / 4))
+    fx, fy = _quat_to_forward(rot)
+    assert fx == pytest.approx(1.0, abs=1e-6)
+    assert fy == pytest.approx(0.0, abs=1e-6)
+
+
+def test_nearest_road_picks_closest():
+    roads = [
+        ("far", [(100.0, 100.0, 0.0), (200.0, 100.0, 0.0)]),
+        ("near", [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)]),
+    ]
+    rid, centerline = _nearest_road((1.0, 1.0, 0.0), roads)
+    assert rid == "near"
+    assert centerline[0] == (0.0, 0.0, 0.0)
+
+
+def test_nearest_road_none_when_empty():
+    assert _nearest_road((0.0, 0.0, 0.0), []) is None
+
+
+def test_road_path_from_teleport_walks_in_heading_direction():
+    # Straight east-west road; teleport mid-road facing East -> path heads +X.
+    centerline = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (20.0, 0.0, 0.0), (30.0, 0.0, 0.0)]
+    path = _road_path_from_teleport(centerline, (10.0, 0.0, 0.0), (1.0, 0.0))
+    assert path[0] == (10.0, 0.0, 0.0)
+    assert path[-1] == (30.0, 0.0, 0.0)
+
+
+def test_road_path_from_teleport_reverses_when_facing_back():
+    centerline = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (20.0, 0.0, 0.0), (30.0, 0.0, 0.0)]
+    # Same snap vertex but facing West -> path heads -X.
+    path = _road_path_from_teleport(centerline, (20.0, 0.0, 0.0), (-1.0, 0.0))
+    assert path[0] == (20.0, 0.0, 0.0)
+    assert path[-1] == (0.0, 0.0, 0.0)
