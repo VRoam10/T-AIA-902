@@ -12,6 +12,13 @@ from core.runner import PipelineRunner
 from environments.beamng_multi import BeamNGMultiEnv, build_slots, slot_n_states
 
 
+def format_trajectory_summary(mt) -> str:
+    """One-line summary of a MapTrajectories: path count + per-path sources."""
+    n = len(mt.paths)
+    sources = ", ".join(p.source for p in mt.paths)
+    return f"{mt.map_name}: {n} path(s) [{sources}]"
+
+
 def _pick(options: list[str], prompt: str = "Select") -> str:
     """Display numbered options and return the chosen one."""
     for i, name in enumerate(options, 1):
@@ -414,11 +421,10 @@ def _trajectory_menu():
         )
         try:
             env.reset()
-            print(
-                f"    Done. Source: {env.trajectory.source}, "
-                f"{len(env.trajectory.sparse_waypoints)} sparse / "
-                f"{len(env.trajectory.dense_waypoints)} dense waypoints."
-            )
+            from core.trajectory import load_or_generate
+
+            mt = load_or_generate(map_name, bng=None)
+            print(f"    Done. {format_trajectory_summary(mt)}")
         finally:
             env.close()
 
