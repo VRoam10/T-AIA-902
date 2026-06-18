@@ -150,6 +150,7 @@ DENSE_SPACING_M = 8.0
 SPAWN_Z_OFFSET_M = 1.0
 FALLBACK_SIDE_M = 80.0
 FALLBACK_GROUND_Z = 1.0
+MIN_PATH_SEPARATION_M = 30.0
 
 CACHE_DIR = Path("outputs/trajectories")
 
@@ -318,37 +319,130 @@ def _road_path_from_teleport(
     return centerline if aligned else list(reversed(centerline))
 
 
-def generate(bng, map_name: str) -> TrajectoryData:
-    """Probe BeamNG for the map's road network and build a TrajectoryData.
+def _teleport_points(bng) -> list[tuple[Vec3, Quat]]:
+    """Map teleport/spawn points as (pos, rot_quat).
 
-    Requires `bng` to be already connected with the target map's scenario loaded
-    (any scenario on the right map is fine — only get_road_network is called).
+    Reads BeamNG `SpawnSphere` objects; falls back to named waypoints. Returns
+    an empty list if neither is available (older beamngpy or map without them).
     """
-    network = bng.scenario.get_road_network(include_edges=True, drivable_only=True)
-    road_id, centerline = _extract_longest_road(network)
+    for getter in (
+        lambda: bng.scenario.find_objects_class("SpawnSphere"),
+        lambda: bng.scenario.find_waypoints(),
+    ):
+        try:
+            objs = getter()
+        except Exception:
+            continue
+        pts: list[tuple[Vec3, Quat]] = []
+        for o in objs or []:
+            pos = tuple(getattr(o, "pos", None)) if getattr(o, "pos", None) else None
+            if pos is None:
+                continue
+            rot = getattr(o, "rot_quat", None) or (0.0, 0.0, 0.0, 1.0)
+            pts.append((pos, tuple(rot)))
+        if pts:
+            return pts
+    return []
 
-    if centerline is None:
-        return _square_loop_fallback(map_name=map_name)
 
-    sparse = resample(centerline, SPARSE_SPACING_M)
-    dense = resample(centerline, DENSE_SPACING_M)
-    spawn_pos = (sparse[0][0], sparse[0][1], sparse[0][2] + SPAWN_Z_OFFSET_M)
-    spawn_rot = heading_to_quat(sparse[0], sparse[1])
-    # Drop the first sample: it coincides with spawn, otherwise the first
-    # checkpoint ring would overlap the vehicle and "auto-hit" at episode start.
-    return TrajectoryData(
+def _path_length(centerline: list[Vec3]) -> float:
+    return sum(_segment_length(centerline[i], centerline[i + 1]) for i in range(len(centerline) - 1))
+
+
+def _path_from_teleport(
+    tele_pos: Vec3, tele_rot: Quat, roads: list[tuple[str, list[Vec3]]], map_name: str
+) -> tuple[TrajectoryData, float] | None:
+    """Build one TrajectoryData by snapping a teleport point to its nearest road.
+
+    Returns (trajectory, road_length) for length-based sorting, or None when no
+    usable road yields a 2+ point path.
+    """
+    nearest = _nearest_road(tele_pos, roads)
+    if nearest is None:
+        return None
+    road_id, centerline = nearest
+    forward = _quat_to_forward(tele_rot)
+    path = _road_path_from_teleport(centerline, tele_pos, forward)
+    if len(path) < 2:
+        return None
+    sparse = resample(path, SPARSE_SPACING_M)
+    dense = resample(path, DENSE_SPACING_M)
+    spawn_pos = (tele_pos[0], tele_pos[1], tele_pos[2] + SPAWN_Z_OFFSET_M)
+    traj = TrajectoryData(
         spawn_pos=spawn_pos,
-        spawn_rot=spawn_rot,
-        sparse_waypoints=sparse[1:],
-        dense_waypoints=dense[1:],
+        spawn_rot=tele_rot,
+        sparse_waypoints=sparse,
+        dense_waypoints=dense,
         map_name=map_name,
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
-        source=f"road_network:{road_id}",
+        source=f"teleport:{road_id}",
+    )
+    return traj, _path_length(path)
+
+
+def generate(bng, map_name: str) -> MapTrajectories:
+    """Probe BeamNG for the map's roads + teleport points and build all paths.
+
+    One path per teleport point (snapped to its nearest road, oriented to the
+    teleport heading), deduped by MIN_PATH_SEPARATION_M and sorted longest-road
+    first. Falls back to a single longest-road path, then a square loop.
+    """
+    generated_at = datetime.now(UTC).isoformat(timespec="seconds")
+    network = bng.scenario.get_road_network(include_edges=True, drivable_only=True)
+    roads = _road_centerlines(network)
+    teleports = _teleport_points(bng)
+
+    if roads and teleports:
+        scored: list[tuple[TrajectoryData, float]] = []
+        accepted_spawns: list[Vec3] = []
+        for pos, rot in teleports:
+            built = _path_from_teleport(pos, rot, roads, map_name)
+            if built is None:
+                continue
+            traj, length = built
+            if any(
+                _segment_length(traj.spawn_pos, s) < MIN_PATH_SEPARATION_M
+                for s in accepted_spawns
+            ):
+                continue
+            accepted_spawns.append(traj.spawn_pos)
+            scored.append((traj, length))
+        if scored:
+            scored.sort(key=lambda t: t[1], reverse=True)
+            return MapTrajectories(
+                map_name=map_name,
+                generated_at=generated_at,
+                paths=[t[0] for t in scored],
+            )
+
+    # Fallback 1: single longest road.
+    road_id, centerline = _extract_longest_road(network)
+    if centerline is not None:
+        sparse = resample(centerline, SPARSE_SPACING_M)
+        dense = resample(centerline, DENSE_SPACING_M)
+        spawn_pos = (sparse[0][0], sparse[0][1], sparse[0][2] + SPAWN_Z_OFFSET_M)
+        spawn_rot = heading_to_quat(sparse[0], sparse[1])
+        traj = TrajectoryData(
+            spawn_pos=spawn_pos,
+            spawn_rot=spawn_rot,
+            sparse_waypoints=sparse[1:],
+            dense_waypoints=dense[1:],
+            map_name=map_name,
+            generated_at=generated_at,
+            source=f"road_network:{road_id}",
+        )
+        return MapTrajectories(map_name=map_name, generated_at=generated_at, paths=[traj])
+
+    # Fallback 2: square loop.
+    return MapTrajectories(
+        map_name=map_name,
+        generated_at=generated_at,
+        paths=[_square_loop_fallback(map_name=map_name)],
     )
 
 
-def load_or_generate(map_name: str, bng) -> TrajectoryData:
-    """Return the cached trajectory for `map_name` or generate one via BeamNG.
+def load_or_generate(map_name: str, bng) -> MapTrajectories:
+    """Return the cached MapTrajectories for `map_name` or generate via BeamNG.
 
     Raises RuntimeError if no cache exists and `bng` is None.
     A corrupt cache file is logged, deleted, and regenerated (if `bng` is given).
@@ -356,7 +450,7 @@ def load_or_generate(map_name: str, bng) -> TrajectoryData:
     cache_path = CACHE_DIR / f"{map_name}.json"
     if cache_path.exists():
         try:
-            return TrajectoryData.from_json(cache_path.read_text())
+            return MapTrajectories.from_json(cache_path.read_text())
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             print(f"[trajectory] cache for '{map_name}' is corrupt ({exc}); regenerating")
             cache_path.unlink(missing_ok=True)
