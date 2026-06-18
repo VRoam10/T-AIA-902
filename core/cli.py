@@ -41,6 +41,14 @@ def _ask_int(prompt: str, default: int, min_val: int = 1) -> int:
             print("  Invalid input.")
 
 
+def _ask_bool(prompt: str, default: bool = False) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    raw = input(f"{prompt} {suffix}: ").strip().lower()
+    if raw == "":
+        return default
+    return raw in ("y", "yes")
+
+
 _BEAMNG_MAPS = ["gridmap_v2", "italy", "west_coast_usa"]
 
 _BEAMNG_VEHICLES = {
@@ -146,21 +154,28 @@ def _train_menu():
 
     beamng_kwargs = {}
     trajectory_hints = 0
+    body_orientation = False
+    wheel_terrain = False
     if env_name.startswith("beamng"):
         map_name, vehicle_id = _pick_beamng_options()
         trajectory_hints = _ask_int(
             "\nCheckpoint hints (waypoints ahead in obs, 0 = none)", 0, min_val=0
         )
+        body_orientation = _ask_bool("Include body orientation (pitch + roll) in obs?")
+        wheel_terrain = _ask_bool("Include per-wheel road position in obs?")
         beamng_kwargs = {
             "map_name": map_name,
             "vehicle_id": vehicle_id,
             "trajectory_hints": trajectory_hints,
+            "body_orientation": body_orientation,
+            "wheel_terrain": wheel_terrain,
         }
 
-    # Adjust n_states for the chosen number of hints before building the agent
+    # Adjust n_states for the chosen options before building the agent
+    extra_states = trajectory_hints * 2 + (2 if body_orientation else 0) + (2 if wheel_terrain else 0)
     env_meta = {
         **env_info["metadata"],
-        "n_states": env_info["metadata"]["n_states"] + trajectory_hints * 2,
+        "n_states": env_info["metadata"]["n_states"] + extra_states,
     }
     agent = _build_agent(algo_info, {**env_info, "metadata": env_meta})
 
@@ -247,20 +262,27 @@ def _eval_menu():
 
     beamng_kwargs = {}
     trajectory_hints = 0
+    body_orientation = False
+    wheel_terrain = False
     if env_name.startswith("beamng"):
         map_name, vehicle_id = _pick_beamng_options()
         trajectory_hints = _ask_int(
             "\nCheckpoint hints (must match the trained model)", 0, min_val=0
         )
+        body_orientation = _ask_bool("Body orientation in obs? (must match the trained model)")
+        wheel_terrain = _ask_bool("Per-wheel road position in obs? (must match the trained model)")
         beamng_kwargs = {
             "map_name": map_name,
             "vehicle_id": vehicle_id,
             "trajectory_hints": trajectory_hints,
+            "body_orientation": body_orientation,
+            "wheel_terrain": wheel_terrain,
         }
 
+    extra_states = trajectory_hints * 2 + (2 if body_orientation else 0) + (2 if wheel_terrain else 0)
     env_meta = {
         **env_info["metadata"],
-        "n_states": env_info["metadata"]["n_states"] + trajectory_hints * 2,
+        "n_states": env_info["metadata"]["n_states"] + extra_states,
     }
     agent = _build_agent(algo_info, {**env_info, "metadata": env_meta}, prompt_params=False)
     agent.load(model_path)
@@ -418,7 +440,11 @@ def build_multi_session(specs: list[dict], map_name: str):
         cls = algo_info["class"]
         cfg = dict(algo_info["default_config"])
         trajectory_hints = spec.get("trajectory_hints", 0)
-        cfg["n_states"] = slot_n_states(spec.get("env", "beamng"), trajectory_hints)
+        body_orientation = spec.get("body_orientation", False)
+        wheel_terrain = spec.get("wheel_terrain", False)
+        cfg["n_states"] = slot_n_states(
+            spec.get("env", "beamng"), trajectory_hints, body_orientation, wheel_terrain
+        )
         # Discrete (DQN) uses the 7-action table; continuous algos keep their
         # configured action dimensionality (n_actions from defaults, else 3).
         if spec["algo"] == "dqn":
@@ -457,6 +483,8 @@ def _multi_train_menu():
         vehicle_id = vehicle_keys[vehicle_labels.index(vlabel)]
         color = colors[len(specs) % len(colors)]
         hints = _ask_int("Checkpoint hints (waypoints ahead in obs, 0 = none)", 0, min_val=0)
+        body_orientation = _ask_bool("Include body orientation (pitch + roll) in obs?")
+        wheel_terrain = _ask_bool("Include per-wheel road position in obs?")
         default_path = os.path.join(_MULTI_OUTPUT_DIR, f"{algo}_{env_name}_{len(specs)}.pth")
         save_path = input(f"  Model save path [{default_path}]: ").strip() or default_path
         specs.append(
@@ -467,6 +495,8 @@ def _multi_train_menu():
                 "color": color,
                 "save_path": save_path,
                 "trajectory_hints": hints,
+                "body_orientation": body_orientation,
+                "wheel_terrain": wheel_terrain,
             }
         )
         more = input("\nAdd another vehicle? [y/N]: ").strip().lower()
