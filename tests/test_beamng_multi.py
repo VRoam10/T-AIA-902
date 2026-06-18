@@ -296,6 +296,59 @@ class TestObserve:
         slot.vehicle.poll_sensors.assert_called_once()
         slot.lidar.poll.assert_called_once()
 
+    def test_observe_appends_extras_when_flags_on(self):
+        env = _env()
+        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        slot = env.slots[0]
+        slot.body_orientation = True
+        slot.wheel_terrain = True
+        slot.n_states = 18
+        self._wire_slot_sensors(
+            slot, speed=10.0, steering=0.0, damage=0.0,
+            pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), lidar_points=None,
+        )
+        slot.vehicle.state = {"pos": (0.0, 0.0, 0.0), "vel": (1.0, 0.0, 0.0),
+                              "dir": (1.0, 0.0, 0.0), "up": (0.0, 0.0, 1.0)}
+        slot.roads_sensor = MagicMock()
+        slot.roads_sensor.poll.return_value = {"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}
+        obs = env.observe(slot)
+        assert obs.shape == (18,)
+
+
+class TestSlotExtraFeatures:
+    def test_slot_n_states_with_flags(self):
+        assert slot_n_states("beamng", body_orientation=True) == 16        # 14 + 2
+        assert slot_n_states("beamng", wheel_terrain=True) == 16           # 14 + 2
+        assert slot_n_states("beamng", body_orientation=True, wheel_terrain=True) == 18
+        assert (
+            slot_n_states("beamng", trajectory_hints=1, body_orientation=True, wheel_terrain=True)
+            == 14 + 2 + 2 + 2
+        )
+
+    def test_build_slots_reads_flags(self):
+        specs = [
+            {
+                "algo": "dqn",
+                "env": "beamng",
+                "agent": _FakeAgent(),
+                "vehicle_id": "taxi",
+                "color": "Yellow",
+                "save_path": "outputs/x.pth",
+                "body_orientation": True,
+                "wheel_terrain": True,
+            }
+        ]
+        slot = build_slots(specs)[0]
+        assert slot.body_orientation is True
+        assert slot.wheel_terrain is True
+        assert slot.n_states == 18
+
+    def test_build_slots_flags_default_off(self):
+        slot = build_slots(SPECS)[0]
+        assert slot.body_orientation is False
+        assert slot.wheel_terrain is False
+        assert slot.n_states == 14
+
 
 class TestLifecycle:
     def test_step_physics_steps_once_for_all(self):

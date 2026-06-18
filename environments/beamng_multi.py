@@ -12,9 +12,9 @@ import numpy as np
 
 try:
     from beamngpy import BeamNGpy, Scenario, Vehicle
-    from beamngpy.sensors import Camera, Damage, Electrics, Lidar
+    from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor
 except ImportError:
-    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = None
+    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
 
 from config import (  # noqa: F401  (LOG_LIDAR reserved for future logging parity)
     LIDAR_VISUALISE,
@@ -25,8 +25,10 @@ from environments.beamng import BeamNGDrivingEnv
 from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import (
     LidarConfig,
+    body_orientation_features,
     ego_local_extents_from_bbox,
     process_lidar,
+    wheel_terrain_features,
 )
 
 
@@ -51,6 +53,8 @@ class VehicleSlot:
     env_name: str = "beamng"
     perception: str = "lidar"  # "lidar" | "lidar_grid" | "camera"
     trajectory_hints: int = 0
+    body_orientation: bool = False
+    wheel_terrain: bool = False
     n_states: int = 14  # observation length for this vehicle's env
 
     # Sensors (assigned during scenario load)
@@ -59,6 +63,7 @@ class VehicleSlot:
     damage_sensor: Any = None
     lidar: Any = None
     camera: Any = None
+    roads_sensor: Any = None
 
     # Per-vehicle starting-grid pose (assigned during scenario load)
     spawn_pos: tuple = (0.0, 0.0, 0.0)
@@ -81,11 +86,14 @@ class VehicleSlot:
     # Per-episode running accumulators
     ep_reward: float = 0.0
     ep_losses: list = field(default_factory=list)
+    ep_speeds: list = field(default_factory=list)
 
     # Cross-episode training stats
     episode: int = 0
     reward_history: list = field(default_factory=list)
     steps_history: list = field(default_factory=list)
+    speed_history: list = field(default_factory=list)
+    distance_history: list = field(default_factory=list)
 
     def reset_episode(self) -> None:
         """Zero running episode state. Keeps episode counter + histories."""
@@ -98,6 +106,7 @@ class VehicleSlot:
         self.steps = 0
         self.ep_reward = 0.0
         self.ep_losses = []
+        self.ep_speeds = []
         self.done = False
 
 
@@ -131,10 +140,21 @@ def env_profile(env_name: str) -> str:
     return _ENV_PROFILES.get(env_name, "lidar")
 
 
-def slot_n_states(env_name: str, trajectory_hints: int = 0) -> int:
-    """Observation length for a vehicle running the given env with the given hints count."""
+def slot_n_states(
+    env_name: str,
+    trajectory_hints: int = 0,
+    body_orientation: bool = False,
+    wheel_terrain: bool = False,
+) -> int:
+    """Observation length for a vehicle running the given env with the given options."""
     perception = env_profile(env_name)
-    return _KINEMATIC_FEATURES + _PERCEPTION_FEATURES[perception] + 2 * trajectory_hints
+    return (
+        _KINEMATIC_FEATURES
+        + _PERCEPTION_FEATURES[perception]
+        + 2 * trajectory_hints
+        + (2 if body_orientation else 0)
+        + (2 if wheel_terrain else 0)
+    )
 
 
 # Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
@@ -169,6 +189,8 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
         algo = spec["algo"]
         env_name = spec.get("env", "beamng")
         trajectory_hints = spec.get("trajectory_hints", 0)
+        body_orientation = spec.get("body_orientation", False)
+        wheel_terrain = spec.get("wheel_terrain", False)
         perception = env_profile(env_name)
         continuous = algo in _CONTINUOUS_ALGOS
         ddpg_reward = continuous and perception in ("lidar", "lidar_grid")
@@ -184,7 +206,11 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
                 env_name=env_name,
                 perception=perception,
                 trajectory_hints=trajectory_hints,
-                n_states=slot_n_states(env_name, trajectory_hints),
+                body_orientation=body_orientation,
+                wheel_terrain=wheel_terrain,
+                n_states=slot_n_states(
+                    env_name, trajectory_hints, body_orientation, wheel_terrain
+                ),
             )
         )
     return slots
@@ -227,6 +253,7 @@ class BeamNGMultiEnv:
     # own lane spaced laterally so none starts behind another (safe with
     # collisions enabled).
     GRID_LANE_OFFSET = 4.0  # metres between adjacent vehicles
+    HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
 
     # Dashcam config for camera-perception vehicles (mirrors BeamNGCameraEnv).
     CAM_RESOLUTION = (84, 84)
@@ -455,6 +482,7 @@ class BeamNGMultiEnv:
                 ),
                 perception,
                 waypoint_hints,
+                self._slot_extra_features(slot, state),
             ]
         )
 
@@ -468,6 +496,25 @@ class BeamNGMultiEnv:
             point_cloud, pos, vehicle_heading, slot.ego_local_extents, self._lidar_config_for(slot)
         )
         return bins
+
+    def _slot_extra_features(self, slot, state) -> np.ndarray:
+        """Optional observation tail for a slot (body orientation / wheel terrain).
+
+        Calls the shared geometry helpers; empty when both flags are off.
+        """
+        blocks = []
+        if slot.body_orientation:
+            blocks.append(
+                body_orientation_features(
+                    state.get("dir", (0.0, 1.0, 0.0)), state.get("up", (0.0, 0.0, 1.0))
+                )
+            )
+        if slot.wheel_terrain:
+            payload = slot.roads_sensor.poll() if slot.roads_sensor is not None else None
+            blocks.append(wheel_terrain_features(payload, self.HALF_TRACK_WIDTH))
+        if not blocks:
+            return np.empty(0, dtype=np.float32)
+        return np.concatenate(blocks)
 
     def _waypoint_hints(self, slot, pos, vehicle_heading) -> np.ndarray:
         """Vehicle-local (forward, left) coords for the next trajectory_hints waypoints."""
@@ -561,6 +608,9 @@ class BeamNGMultiEnv:
         dashcam; LiDAR/LiDAR-grid slots get a LiDAR sized for their perception
         plus a cached ego bbox for self-hit filtering.
         """
+        if slot.wheel_terrain:
+            slot.roads_sensor = RoadsSensor(f"roads_{slot.name}", self.bng, slot.vehicle)
+
         if slot.perception == "camera":
             slot.camera = Camera(
                 f"cam_{slot.name}",
@@ -700,7 +750,7 @@ class BeamNGMultiEnv:
         import threading
 
         for slot in self.slots:
-            for sensor_attr in ("lidar", "camera"):
+            for sensor_attr in ("lidar", "camera", "roads_sensor"):
                 sensor = getattr(slot, sensor_attr)
                 if sensor is not None:
                     t = threading.Thread(target=sensor.remove, daemon=True)
