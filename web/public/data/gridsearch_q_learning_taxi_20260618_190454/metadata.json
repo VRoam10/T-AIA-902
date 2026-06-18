@@ -1,0 +1,15 @@
+{
+  "git_commit": "975d7f3",
+  "python": "3.11.5",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "numpy": "2.3.5",
+  "torch": "2.10.0+cu126",
+  "device": "cuda",
+  "benchmark": "gridsearch",
+  "algo": "q_learning",
+  "env": "taxi",
+  "seeds": [
+    0,
+    1
+  ]
+}
