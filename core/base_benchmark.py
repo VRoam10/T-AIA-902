@@ -7,6 +7,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 
+from core.run_metadata import collect_metadata
 from core.runner import PipelineRunner
 from core.stats import aggregate, numeric_keys, summary_line
 
@@ -136,12 +137,31 @@ class BaseBenchmark(ABC):
 
         self._save_plots(multi_results["representative"], run_dir, algo_name, env_name)
         self._save_seed_band_plot(multi_results, run_dir, algo_name, env_name)
-        self._save_multi_markdown(
-            multi_results, os.path.join(run_dir, "report.md"), algo_name, env_name
+        md_path = os.path.join(run_dir, "report.md")
+        self._save_multi_markdown(multi_results, md_path, algo_name, env_name)
+
+        self._write_metadata(
+            run_dir,
+            md_path,
+            {"seeds": multi_results["seeds"], "n_seeds": multi_results["n_seeds"]},
         )
 
         print(f"\n[Benchmark] Multi-seed reports saved to: {run_dir}/")
         return run_dir
+
+    def _write_metadata(self, run_dir: str, md_path: str, extra: dict | None = None):
+        """Write metadata.json and append a reproducibility section to the report."""
+        clean = {key: value for key, value in (extra or {}).items() if value is not None}
+        metadata = collect_metadata({"benchmark": self.name, **clean})
+        self._save_json(metadata, os.path.join(run_dir, "metadata.json"))
+
+        if not os.path.exists(md_path):
+            return
+        lines = ["", "## Reproducibility", "", "| Field | Value |", "|-------|-------|"]
+        lines += [f"| {key} | {value} |" for key, value in metadata.items()]
+        lines.append("")
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines))
 
     def _save_seed_band_plot(
         self, multi_results: dict, run_dir: str, algo_name: str, env_name: str
@@ -228,6 +248,10 @@ class BaseBenchmark(ABC):
         # Markdown
         md_path = os.path.join(run_dir, "report.md")
         self._save_markdown(results, md_path, algo_name, env_name)
+
+        self._write_metadata(
+            run_dir, md_path, {"seeds": results.get("seeds"), "seed": results.get("seed")}
+        )
 
         print(f"\n[Benchmark] Reports saved to: {run_dir}/")
         return run_dir
