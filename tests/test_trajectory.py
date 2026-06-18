@@ -422,3 +422,19 @@ def test_road_path_from_teleport_reverses_when_facing_back():
     path = _road_path_from_teleport(centerline, (20.0, 0.0, 0.0), (-1.0, 0.0))
     assert path[0] == (20.0, 0.0, 0.0)
     assert path[-1] == (0.0, 0.0, 0.0)
+
+
+def test_single_env_resolve_trajectory_takes_first_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.trajectory.CACHE_DIR", tmp_path)
+    mt = MapTrajectories(
+        map_name="italy",
+        generated_at="2026-06-18T12:00:00+00:00",
+        paths=[_sample_traj(source="teleport:first"), _sample_traj(source="teleport:second")],
+    )
+    (tmp_path / "italy.json").write_text(mt.to_json())
+
+    from environments.beamng import BeamNGDrivingEnv
+
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")
+    traj = env._resolve_trajectory()
+    assert traj.source == "teleport:first"

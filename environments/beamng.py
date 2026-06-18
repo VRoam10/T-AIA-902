@@ -407,7 +407,7 @@ class BeamNGDrivingEnv:
 
         cache_path = CACHE_DIR / f"{self.map_name}.json"
         if cache_path.exists():
-            return load_or_generate(self.map_name, bng=None)
+            return load_or_generate(self.map_name, bng=None).paths[0]
 
         # No cache → run a probe scenario so we can call get_road_network
         probe = Scenario(self.map_name, "trajectory_probe", description="Road probe")
@@ -417,7 +417,7 @@ class BeamNGDrivingEnv:
         self.bng.load_scenario(probe)
         self.bng.start_scenario()
         time.sleep(0.5)
-        return load_or_generate(self.map_name, self.bng)
+        return load_or_generate(self.map_name, self.bng).paths[0]
 
     def _randomize_waypoints(self):
         self.waypoints = random.sample(self.waypoints, len(self.waypoints))
