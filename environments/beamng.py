@@ -21,7 +21,11 @@ from config import (
 )
 from core.trajectory import TrajectoryData, load_or_generate
 from environments.beamng_camera_util import process_camera_frame
-from environments.beamng_geometry import LidarConfig
+from environments.beamng_geometry import (
+    LidarConfig,
+    body_orientation_features,
+    wheel_terrain_features,
+)
 
 
 class BeamNGDrivingEnv:
@@ -83,6 +87,7 @@ class BeamNGDrivingEnv:
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 500
     MAX_DAMAGE = 1000.0  # damage threshold that ends the episode
+    HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
 
     AVAILABLE_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "smallgrid"]
 
@@ -124,6 +129,8 @@ class BeamNGDrivingEnv:
         vehicle_id: str = "taxi",
         map_name: str = "gridmap_v2",
         trajectory_hints: int = 0,
+        body_orientation: bool = False,
+        wheel_terrain: bool = False,
     ):
         """
         Args:
@@ -144,6 +151,7 @@ class BeamNGDrivingEnv:
         self.electrics: Electrics = None
         self.damage_sensor: Damage = None
         self.lidar: Lidar = None
+        self.roads_sensor: RoadsSensor = None
 
         self.reward_mode = reward_mode  # "default" or "ddpg"
         self.vehicle_id = vehicle_id
@@ -157,7 +165,14 @@ class BeamNGDrivingEnv:
         self._checkpoint_dist = 0.0
         self.headless = headless
         self.trajectory_hints = trajectory_hints
-        self.n_states = self.N_STATES + trajectory_hints * 2
+        self.body_orientation = body_orientation
+        self.wheel_terrain = wheel_terrain
+        self.n_states = (
+            self.N_STATES
+            + trajectory_hints * 2
+            + (2 if body_orientation else 0)
+            + (2 if wheel_terrain else 0)
+        )
 
         # Filled on first _launch() — either read from cache or generated then.
         self.trajectory: TrajectoryData | None = None
@@ -736,6 +751,32 @@ class BeamNGDrivingEnv:
             hints.append(float(np.clip(local_x / NORM, -1.0, 1.0)))
             hints.append(float(np.clip(local_y / NORM, -1.0, 1.0)))
         return np.array(hints, dtype=np.float32)
+
+    def _body_orientation_features(self, state) -> np.ndarray:
+        """[pitch, roll] from the vehicle's forward/up vectors (see geometry helper)."""
+        return body_orientation_features(
+            state.get("dir", (0.0, 1.0, 0.0)), state.get("up", (0.0, 0.0, 1.0))
+        )
+
+    def _wheel_terrain_features(self) -> np.ndarray:
+        """[left, right] road-edge position from the RoadsSensor (neutral without one)."""
+        payload = self.roads_sensor.poll() if self.roads_sensor is not None else None
+        return wheel_terrain_features(payload, self.HALF_TRACK_WIDTH)
+
+    def _extra_features(self, state) -> np.ndarray:
+        """Optional observation tail: body orientation and/or wheel terrain.
+
+        Appended after the waypoint hints. Empty array when both flags are off,
+        so flag-off observations are unchanged.
+        """
+        blocks = []
+        if self.body_orientation:
+            blocks.append(self._body_orientation_features(state))
+        if self.wheel_terrain:
+            blocks.append(self._wheel_terrain_features())
+        if not blocks:
+            return np.empty(0, dtype=np.float32)
+        return np.concatenate(blocks)
 
     def _path_errors(self, pos, state):
         """Return (heading_error_rad, lateral_error_m) relative to next waypoint.

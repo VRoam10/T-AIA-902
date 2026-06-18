@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from unittest.mock import MagicMock
 
 from environments.beamng import BeamNGDrivingEnv
 
@@ -34,3 +35,42 @@ class TestNoNpcApi:
     def test_npc_helpers_removed(self):
         assert not hasattr(BeamNGDrivingEnv, "_spawn_npc_vehicles")
         assert not hasattr(BeamNGDrivingEnv, "NPC_COUNT")
+
+
+class TestExtraFeatures:
+    def test_flags_default_off_no_extra(self):
+        env = BeamNGDrivingEnv(beamng_home="unused")
+        assert env.body_orientation is False
+        assert env.wheel_terrain is False
+        assert env._extra_features({}).shape == (0,)
+        assert env.n_states == BeamNGDrivingEnv.N_STATES  # 14
+
+    def test_n_states_accounts_for_flags(self):
+        base = BeamNGDrivingEnv.N_STATES
+        assert BeamNGDrivingEnv(beamng_home="x", body_orientation=True).n_states == base + 2
+        assert BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True).n_states == base + 2
+        both = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, wheel_terrain=True)
+        assert both.n_states == base + 4
+
+    def test_n_states_combines_flags_and_hints(self):
+        env = BeamNGDrivingEnv(
+            beamng_home="x", trajectory_hints=2, body_orientation=True, wheel_terrain=True
+        )
+        assert env.n_states == BeamNGDrivingEnv.N_STATES + 4 + 2 + 2
+
+    def test_extra_features_order_is_orientation_then_terrain(self):
+        env = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, wheel_terrain=True)
+        env.roads_sensor = None
+        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, -0.3, 0.95)}
+        out = env._extra_features(state)
+        assert out.shape == (4,)
+        assert out[0] > 0.0          # pitch (nose up) first
+        assert out[2] == pytest.approx(0.0, abs=1e-6)  # left terrain (neutral) after
+
+    def test_wheel_terrain_wrapper_reads_sensor(self):
+        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
+        env.roads_sensor = MagicMock()
+        env.roads_sensor.poll.return_value = {"halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7}
+        left, right = env._wheel_terrain_features()
+        assert left == pytest.approx(1.0, abs=1e-6)
+        assert right == pytest.approx(0.0, abs=1e-6)
