@@ -77,3 +77,39 @@ def test_build_multi_session_sizes_agent_to_each_env():
     assert slots[0].n_states == 14
     assert slots[1].n_states == 262
     assert slots[1].perception == "camera"
+
+
+def test_build_multi_session_sizes_agent_with_flags():
+    # Body orientation + wheel terrain on a lidar env -> 14 + 2 + 2 = 18 states.
+    specs = [
+        {
+            "algo": "dqn",
+            "env": "beamng",
+            "vehicle_id": "taxi",
+            "color": "Yellow",
+            "save_path": "outputs/multi-agents/dqn.pth",
+            "body_orientation": True,
+            "wheel_terrain": True,
+        },
+    ]
+    with patch("core.cli.BeamNGMultiEnv") as EnvCls:
+        EnvCls.return_value = MagicMock()
+        _, slots = build_multi_session(specs, map_name="gridmap_v2")
+    assert slots[0].n_states == 18
+    assert slots[0].body_orientation is True
+    assert slots[0].wheel_terrain is True
+    # The built DQN agent's network must also be sized to 18 inputs.
+    assert slots[0].agent.q_net.feature[0].in_features == 18
+
+
+def test_ask_bool_parses_yes_no():
+    from core.cli import _ask_bool
+
+    with patch("builtins.input", return_value="y"):
+        assert _ask_bool("?") is True
+    with patch("builtins.input", return_value=""):
+        assert _ask_bool("?", default=False) is False
+    with patch("builtins.input", return_value="yes"):
+        assert _ask_bool("?") is True
+    with patch("builtins.input", return_value="n"):
+        assert _ask_bool("?", default=True) is False

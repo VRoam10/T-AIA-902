@@ -52,6 +52,8 @@ class MultiAgentRunner:
                     if loss is not None:
                         slot.ep_losses.append(loss)
                     slot.ep_reward += reward
+                    if isinstance(state, np.ndarray) and len(state) > 0:
+                        slot.ep_speeds.append(float(state[0]) * 50.0)
                     slot.last_obs = next_obs
 
                     if done:
@@ -73,8 +75,11 @@ class MultiAgentRunner:
         }
 
     def _finish_episode(self, env, slot, save_every):
+        avg_speed = float(np.mean(slot.ep_speeds)) if slot.ep_speeds else 0.0
         slot.reward_history.append(slot.ep_reward)
         slot.steps_history.append(slot.steps)
+        slot.speed_history.append(avg_speed)
+        slot.distance_history.append(slot.waypoint_idx)
         slot.agent.decay_epsilon()
         if hasattr(slot.agent, "episode"):
             slot.agent.episode = slot.episode + 1
@@ -83,11 +88,13 @@ class MultiAgentRunner:
         avg = np.mean(slot.reward_history[-20:])
         print(
             f"[{slot.name}] ep {slot.episode} reward={slot.ep_reward:.1f} "
-            f"avg20={avg:.1f} eps={getattr(slot.agent, 'epsilon', 0.0):.3f}"
+            f"avg20={avg:.1f} eps={getattr(slot.agent, 'epsilon', 0.0):.3f} "
+            f"speed={avg_speed:.1f}m/s wpts={slot.waypoint_idx}"
         )
 
         if save_every and slot.episode % save_every == 0:
             slot.agent.save(slot.save_path)
+            print(f"[{slot.name}] checkpoint saved -> {slot.save_path}")
 
         env.reset_vehicle(slot)
 
@@ -106,4 +113,6 @@ class MultiAgentRunner:
             slot.name,
             os.path.join(plot_dir, f"{slot.name}_training.png"),
             slot.episode,
+            slot.speed_history,
+            slot.distance_history,
         )

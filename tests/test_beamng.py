@@ -1,5 +1,7 @@
 """Tests for environments.beamng — refactored LiDAR delegation (no sim)."""
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 
@@ -34,3 +36,100 @@ class TestNoNpcApi:
     def test_npc_helpers_removed(self):
         assert not hasattr(BeamNGDrivingEnv, "_spawn_npc_vehicles")
         assert not hasattr(BeamNGDrivingEnv, "NPC_COUNT")
+
+
+class TestExtraFeatures:
+    def test_flags_default_off_no_extra(self):
+        env = BeamNGDrivingEnv(beamng_home="unused")
+        assert env.body_orientation is False
+        assert env.wheel_terrain is False
+        assert env._extra_features({}).shape == (0,)
+        assert env.n_states == BeamNGDrivingEnv.N_STATES  # 14
+
+    def test_n_states_accounts_for_flags(self):
+        base = BeamNGDrivingEnv.N_STATES
+        assert BeamNGDrivingEnv(beamng_home="x", body_orientation=True).n_states == base + 2
+        assert BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True).n_states == base + 2
+        both = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, wheel_terrain=True)
+        assert both.n_states == base + 4
+
+    def test_n_states_combines_flags_and_hints(self):
+        env = BeamNGDrivingEnv(
+            beamng_home="x", trajectory_hints=2, body_orientation=True, wheel_terrain=True
+        )
+        assert env.n_states == BeamNGDrivingEnv.N_STATES + 4 + 2 + 2
+
+    def test_extra_features_order_is_orientation_then_terrain(self):
+        env = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, wheel_terrain=True)
+        env.roads_sensor = None
+        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, -0.3, 0.95)}
+        out = env._extra_features(state)
+        assert out.shape == (4,)
+        assert out[0] > 0.0  # pitch (nose up) first
+        assert out[2] == pytest.approx(0.0, abs=1e-6)  # left terrain (neutral) after
+
+    def test_wheel_terrain_wrapper_reads_sensor(self):
+        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
+        env.roads_sensor = MagicMock()
+        env.roads_sensor.poll.return_value = {"halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7}
+        left, right = env._wheel_terrain_features()
+        assert left == pytest.approx(1.0, abs=1e-6)
+        assert right == pytest.approx(0.0, abs=1e-6)
+
+
+class TestRoadsSensorLifecycle:
+    def test_attach_roads_sensor_noop_when_flag_off(self):
+        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=False)
+        env.bng = MagicMock()
+        env.vehicle = MagicMock()
+        env._attach_roads_sensor()
+        assert env.roads_sensor is None
+
+    def test_remove_roads_sensor_clears_handle(self):
+        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
+        env.roads_sensor = MagicMock()
+        env._remove_roads_sensor()
+        assert env.roads_sensor is None
+
+
+class TestContinuousRollDeleted:
+    def test_class_is_gone(self):
+        import environments.beamng as m
+
+        assert not hasattr(m, "BeamNGContinuousRollEnv")
+
+
+class TestRegistry:
+    def test_continuous_roll_not_registered(self):
+        import environments  # noqa: F401  (triggers registration)
+        from core.registry import registry
+
+        assert "beamng_continuous_roll" not in registry.list_environments()
+
+    def test_beamng_factory_forwards_flags(self):
+        from environments import _make_beamng
+
+        env = _make_beamng(body_orientation=True, wheel_terrain=True)
+        assert env.body_orientation is True
+        assert env.wheel_terrain is True
+
+    def test_all_beamng_factories_forward_flags(self):
+        # Every registered beamng factory must accept and forward both flags —
+        # the subclasses override __init__, so a base-only change misses them.
+        from environments import (
+            _make_beamng,
+            _make_beamng_camera,
+            _make_beamng_continuous,
+            _make_beamng_lidar,
+        )
+
+        for factory in (
+            _make_beamng,
+            _make_beamng_lidar,
+            _make_beamng_continuous,
+            _make_beamng_camera,
+        ):
+            env = factory(body_orientation=True, wheel_terrain=True)
+            assert env.body_orientation is True, factory.__name__
+            assert env.wheel_terrain is True, factory.__name__
+            assert env.n_states == env.N_STATES + 4, factory.__name__

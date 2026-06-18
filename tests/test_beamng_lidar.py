@@ -6,8 +6,12 @@ from environments.beamng import BeamNGDrivingEnv
 
 
 def _env_with_extents(extents):
+    # __new__ bypasses __init__, so set the sensor handles that close() touches
+    # (real construction always sets these in __init__).
     env = BeamNGDrivingEnv.__new__(BeamNGDrivingEnv)
     env._ego_local_extents = extents
+    env.lidar = None
+    env.roads_sensor = None
     return env
 
 
