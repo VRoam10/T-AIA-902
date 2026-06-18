@@ -6,6 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 from core.base_agent import BaseAgent
+from core.seeding import seed_action_space, set_global_seed
 
 
 class PipelineRunner:
@@ -21,8 +22,16 @@ class PipelineRunner:
         time_limit: float = None,
         plot_path: str = None,
         start_episode: int = 0,
+        seed: int | None = None,
     ) -> dict:
-        """Run the training loop. Returns history dict."""
+        """Run the training loop. Returns history dict.
+
+        When ``seed`` is given, every global RNG is seeded and the seed is
+        forwarded to the environment's first reset, making the run reproducible.
+        """
+        if seed is not None:
+            set_global_seed(seed)
+
         rewards = []
         steps = []
         speeds = []
@@ -32,6 +41,7 @@ class PipelineRunner:
         ep_begin = start_episode + 1
         ep_end = start_episode + n_episodes + 1
         pbar = tqdm(range(ep_begin, ep_end), desc="Training", unit="ep")
+        first_reset = seed
 
         try:
             for ep in pbar:
@@ -39,7 +49,8 @@ class PipelineRunner:
                     pbar.write(f"Time limit reached after {ep - 1} episodes.")
                     break
 
-                state = self._reset_env(env)
+                state = self._reset_env(env, seed=first_reset)
+                first_reset = None
                 ep_reward = 0.0
                 ep_losses = []
                 ep_speeds = []
@@ -105,8 +116,16 @@ class PipelineRunner:
         agent: BaseAgent,
         env,
         n_episodes: int = 10,
+        seed: int | None = None,
     ) -> dict:
-        """Run the agent in pure exploitation mode (epsilon=0)."""
+        """Run the agent in pure exploitation mode (epsilon=0).
+
+        When ``seed`` is given, the global RNGs and the environment's first
+        reset are seeded so the evaluation is reproducible.
+        """
+        if seed is not None:
+            set_global_seed(seed)
+
         old_eps = agent.epsilon
         agent.epsilon = 0.0
 
@@ -114,10 +133,12 @@ class PipelineRunner:
         steps = []
 
         pbar = tqdm(range(1, n_episodes + 1), desc="Evaluating", unit="ep")
+        first_reset = seed
 
         try:
             for _ep in pbar:
-                state = self._reset_env(env)
+                state = self._reset_env(env, seed=first_reset)
+                first_reset = None
                 ep_reward = 0.0
                 done = False
 
@@ -150,9 +171,20 @@ class PipelineRunner:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _reset_env(env):
-        """Normalise Gymnasium reset (obs, info) vs old-style (obs)."""
-        result = env.reset()
+    def _reset_env(env, seed: int | None = None):
+        """Normalise Gymnasium reset (obs, info) vs old-style (obs).
+
+        When ``seed`` is provided, it is forwarded to the environment's reset
+        (and to the action space) so the episode starts deterministically.
+        """
+        if seed is not None:
+            seed_action_space(env, seed)
+            try:
+                result = env.reset(seed=seed)
+            except TypeError:
+                result = env.reset()
+        else:
+            result = env.reset()
         if isinstance(result, tuple):
             return result[0]
         return result
