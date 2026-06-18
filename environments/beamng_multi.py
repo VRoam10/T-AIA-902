@@ -180,7 +180,9 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
     """Turn a list of vehicle specs into VehicleSlots.
 
     Each spec dict: {"algo", "env", "agent", "vehicle_id", "color", "save_path",
-    "trajectory_hints"}. trajectory_hints defaults to 0 when absent.
+    "trajectory_hints", "body_orientation", "wheel_terrain"}.
+    trajectory_hints defaults to 0 when absent; body_orientation and
+    wheel_terrain both default to False when absent.
     reward_mode uses the LiDAR-aware DDPG reward only for continuous algos on a
     LiDAR perception (camera and discrete DQN fall back to the default reward).
     """
