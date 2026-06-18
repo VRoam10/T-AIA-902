@@ -29,5 +29,11 @@ per vehicle, instead of being hardcoded into a single env.
 Sixth issue:
 Last follow-up i was asked how we can see if a new changement actually improved the algorithm. For this, i've added a multi agent and multiple environment as to test different combination at the same time. It's not a perfect solution as the vehicule as collision as well as lidar rays (which doesn't have a fix).
 
+Follow-up to the sixth issue: trajectory generation now emits one road-snapped
+path per map teleport point (`SpawnSphere`). Multi-agent training assigns one
+path per vehicle in a different part of the map, so vehicles no longer share a
+start line or collide. If more vehicles than paths are requested, the session
+errors out rather than doubling up.
+
 tester de lui donner le prochain checkpoint
 parler des habitudes pour compenser le temps d'entrainement
