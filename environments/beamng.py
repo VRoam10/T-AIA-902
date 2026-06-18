@@ -375,7 +375,7 @@ class BeamNGDrivingEnv:
         self.roads_sensor = RoadsSensor("roads", self.bng, self.vehicle)
 
     def _remove_roads_sensor(self):
-        if self.roads_sensor is None:
+        if getattr(self, "roads_sensor", None) is None:
             return
         t = threading.Thread(target=self.roads_sensor.remove, daemon=True)
         t.start()
