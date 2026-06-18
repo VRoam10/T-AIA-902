@@ -41,6 +41,10 @@ class TestVehicleSlot:
         assert s.episode == 0
         assert s.reward_history == []
 
+    def test_vehicle_slot_has_waypoints_field(self):
+        s = _slot()
+        assert s.waypoints == []
+
     def test_reset_episode_zeros_running_state_but_keeps_episode_count(self):
         s = _slot()
         s.waypoint_idx = 4
@@ -208,8 +212,8 @@ class TestApplyAction:
 class TestPathErrorsAndReward:
     def test_path_errors_advance_waypoint_when_close(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot.waypoint_idx = 0
         state = {"vel": (1.0, 0.0, 0.0)}
         env._path_errors(slot, pos=(0.0, 0.0, 0.0), state=state)
@@ -218,7 +222,7 @@ class TestPathErrorsAndReward:
 
     def test_default_reward_gives_checkpoint_bonus(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        env.slots[0].waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]  # reward_mode "default"
         slot.checkpoint_hit = True
         slot.waypoint_idx = 1
@@ -231,7 +235,7 @@ class TestPathErrorsAndReward:
 
     def test_default_reward_terminates_on_max_damage(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0)]
+        env.slots[0].waypoints = [(0.0, 0.0, 0.0)]
         slot = env.slots[0]
         obs = np.zeros(slot.n_states, dtype=np.float32)
         obs[0] = 0.5
@@ -241,7 +245,7 @@ class TestPathErrorsAndReward:
 
     def test_ddpg_reward_rewards_progress(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        env.slots[1].waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[1]  # reward_mode "ddpg"
         slot.last_dist = 50.0
         slot.current_dist = 40.0  # got 10 m closer
@@ -265,8 +269,8 @@ class TestObserve:
 
     def test_observe_returns_vector_of_n_states(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         self._wire_slot_sensors(
             slot,
             speed=10.0,
@@ -282,8 +286,8 @@ class TestObserve:
 
     def test_observe_polls_each_slot_sensor(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         self._wire_slot_sensors(
             slot,
             speed=0.0,
@@ -299,8 +303,8 @@ class TestObserve:
 
     def test_observe_appends_extras_when_flags_on(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot.body_orientation = True
         slot.wheel_terrain = True
         slot.n_states = 18
@@ -469,8 +473,8 @@ class TestMarkers:
         env = _env()
         env.bng = MagicMock()
         env.bng.debug.add_spheres.return_value = ["sphere-1"]
-        env.waypoints = [(10.0, 20.0, 1.0), (30.0, 40.0, 1.0)]
         slot = env.slots[0]
+        slot.waypoints = [(10.0, 20.0, 1.0), (30.0, 40.0, 1.0)]
         slot.color = "Red"
         slot.waypoint_idx = 0
         env._update_slot_marker(slot)
@@ -484,8 +488,8 @@ class TestMarkers:
         env = _env()
         env.bng = MagicMock()
         env.bng.debug.add_spheres.return_value = ["new"]
-        env.waypoints = [(0.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0)]
         slot.active_marker_id = "old"
         env._update_slot_marker(slot)
         env.bng.debug.remove_spheres.assert_called_once_with(["old"])
@@ -494,7 +498,7 @@ class TestMarkers:
     def test_update_slot_marker_noop_without_bng(self):
         env = _env()
         env.bng = None
-        env.waypoints = [(0.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0)]
         env._update_slot_marker(slot)
         assert slot.active_marker_id is None

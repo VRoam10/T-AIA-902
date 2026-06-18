@@ -68,6 +68,7 @@ class VehicleSlot:
     # Per-vehicle starting-grid pose (assigned during scenario load)
     spawn_pos: tuple = (0.0, 0.0, 0.0)
     spawn_rot: tuple = (0.0, 0.0, 0.0, 1.0)
+    waypoints: list = field(default_factory=list)
 
     # Episode state
     waypoint_idx: int = 0
@@ -322,11 +323,11 @@ class BeamNGMultiEnv:
 
         Sets slot.current_dist for the DDPG progress reward.
         """
-        if not self.waypoints or not state:
+        if not slot.waypoints or not state:
             slot.current_dist = 0.0
             return 0.0, 0.0, 0.0
 
-        target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+        target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
         dx = target[0] - pos[0]
         dy = target[1] - pos[1]
         dist = float(np.hypot(dx, dy))
@@ -336,8 +337,8 @@ class BeamNGMultiEnv:
             slot.waypoint_idx += 1
             slot.checkpoint_hit = True
             self._update_slot_marker(slot)
-            if slot.waypoint_idx < len(self.waypoints):
-                new_t = self.waypoints[slot.waypoint_idx]
+            if slot.waypoint_idx < len(slot.waypoints):
+                new_t = slot.waypoints[slot.waypoint_idx]
                 slot.current_dist = float(np.hypot(new_t[0] - pos[0], new_t[1] - pos[1]))
 
         vel = state.get("vel", (1.0, 0.0, 0.0))
@@ -375,7 +376,7 @@ class BeamNGMultiEnv:
             reward += 100.0 * slot.waypoint_idx
             slot.checkpoint_hit = False
 
-        if slot.waypoint_idx >= len(self.waypoints):
+        if slot.waypoint_idx >= len(slot.waypoints):
             reward += 200.0
             done = True
 
@@ -433,7 +434,7 @@ class BeamNGMultiEnv:
             reward += 50.0
             slot.checkpoint_hit = False
 
-        if slot.waypoint_idx >= len(self.waypoints):
+        if slot.waypoint_idx >= len(slot.waypoints):
             reward += 200.0
             slot.waypoint_idx = 0
             done = True
@@ -461,8 +462,8 @@ class BeamNGMultiEnv:
         perception = self._perceive(slot, pos, vehicle_heading)
 
         slot.current_pos = pos
-        if self.waypoints:
-            target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+        if slot.waypoints:
+            target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
             slot.checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
         waypoint_hints = self._waypoint_hints(slot, pos, vehicle_heading)
@@ -519,15 +520,15 @@ class BeamNGMultiEnv:
 
     def _waypoint_hints(self, slot, pos, vehicle_heading) -> np.ndarray:
         """Vehicle-local (forward, left) coords for the next trajectory_hints waypoints."""
-        if not slot.trajectory_hints or not self.waypoints:
+        if not slot.trajectory_hints or not slot.waypoints:
             return np.empty(0, dtype=np.float32)
         NORM = 100.0
         cos_h = np.cos(-vehicle_heading)
         sin_h = np.sin(-vehicle_heading)
         hints: list[float] = []
         for i in range(slot.trajectory_hints):
-            idx = (slot.waypoint_idx + i) % len(self.waypoints)
-            wp = self.waypoints[idx]
+            idx = (slot.waypoint_idx + i) % len(slot.waypoints)
+            wp = slot.waypoints[idx]
             rel_x = wp[0] - pos[0]
             rel_y = wp[1] - pos[1]
             local_x = rel_x * cos_h - rel_y * sin_h
@@ -548,6 +549,8 @@ class BeamNGMultiEnv:
         self.bng.open(launch=True)
         self.trajectory = self._resolve_trajectory()
         self.waypoints = list(self.trajectory.sparse_waypoints)
+        for slot in self.slots:
+            slot.waypoints = list(self.waypoints)
         self._load_scenario()
 
     def _resolve_trajectory(self):
@@ -667,7 +670,7 @@ class BeamNGMultiEnv:
         vehicle gets its own sphere coloured to match its car. Silently skipped
         without a live bng / on older beamngpy builds.
         """
-        if self.bng is None or not self.waypoints:
+        if self.bng is None or not slot.waypoints:
             return
         try:
             debug = self.bng.debug
@@ -676,7 +679,7 @@ class BeamNGMultiEnv:
                     debug.remove_spheres([slot.active_marker_id])
                 except Exception:
                     pass
-            target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+            target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
             pos = (target[0], target[1], target[2] + 2.0)
             ids = debug.add_spheres(
                 coordinates=[pos],
