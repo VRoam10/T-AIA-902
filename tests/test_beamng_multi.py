@@ -409,55 +409,43 @@ class TestLifecycle:
         assert env.bng is None
 
 
-class TestStartingGrid:
-    def _env_with_spawn(self, n_slots, spawn_pos, spawn_rot):
-        specs = [
-            {
-                "algo": "dqn",
-                "agent": _FakeAgent(),
-                "vehicle_id": "taxi",
-                "color": "Yellow",
-                "save_path": f"outputs/a{i}.pth",
-            }
-            for i in range(n_slots)
+class TestPathAssignment:
+    def _mt(self, n_paths):
+        from core.trajectory import MapTrajectories, TrajectoryData
+
+        paths = [
+            TrajectoryData(
+                spawn_pos=(float(i) * 100.0, 0.0, 1.0),
+                spawn_rot=(0.0, 0.0, 0.0, 1.0),
+                sparse_waypoints=[(float(i) * 100.0, 10.0, 0.0), (float(i) * 100.0, 20.0, 0.0)],
+                dense_waypoints=[(float(i) * 100.0, 10.0, 0.0)],
+                map_name="italy",
+                generated_at="2026-06-18T12:00:00+00:00",
+                source=f"teleport:r{i}",
+            )
+            for i in range(n_paths)
         ]
-        env = BeamNGMultiEnv(slots=build_slots(specs), beamng_home="unused")
-        env.trajectory = MagicMock()
-        env.trajectory.spawn_pos = spawn_pos
-        env.trajectory.spawn_rot = spawn_rot
-        return env
+        return MapTrajectories(
+            map_name="italy", generated_at="2026-06-18T12:00:00+00:00", paths=paths
+        )
 
-    def test_grid_is_side_by_side_centered_on_spawn(self):
-        # Identity spawn_rot -> forward +Y, right +X, so the line fans along X.
-        env = self._env_with_spawn(4, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-        gap = env.GRID_LANE_OFFSET
-        xs = []
-        for i in range(4):
-            pos, rot = env._grid_pose(i)
-            xs.append(pos[0])
-            assert pos[1] == pytest.approx(0.0, abs=1e-6)  # all on the same line
-            assert pos[2] == pytest.approx(0.0)
-            assert rot == (0.0, 0.0, 0.0, 1.0)  # all face the same way
-        # Centered: 4 cars at -1.5,-0.5,+0.5,+1.5 lane-widths
-        assert xs == pytest.approx([-1.5 * gap, -0.5 * gap, 0.5 * gap, 1.5 * gap])
+    def test_each_slot_gets_its_own_path(self):
+        env = _env()  # 3 slots
+        env.trajectories = self._mt(3)
+        env._assign_paths()
+        assert env.slots[0].spawn_pos == (0.0, 0.0, 1.0)
+        assert env.slots[1].spawn_pos == (100.0, 0.0, 1.0)
+        assert env.slots[2].spawn_pos == (200.0, 0.0, 1.0)
+        assert env.slots[0].waypoints == [(0.0, 10.0, 0.0), (0.0, 20.0, 0.0)]
+        assert env.slots[1].waypoints[0] == (100.0, 10.0, 0.0)
+        # Distinct spawns -> no shared start line.
+        assert len({s.spawn_pos for s in env.slots}) == 3
 
-    def test_grid_poses_are_all_distinct(self):
-        env = self._env_with_spawn(3, (10.0, 5.0, 1.0), (0.0, 0.0, 0.0, 1.0))
-        poses = [env._grid_pose(i)[0] for i in range(3)]
-        assert len({tuple(p) for p in poses}) == 3
-
-    def test_grid_fans_along_right_axis_when_rotated(self):
-        # spawn_rot for yaw=-pi/2 (forward +X) -> right axis is -Y, so the line
-        # fans along Y instead of X.
-        import math
-
-        rot = (0.0, 0.0, math.sin(-math.pi / 4), math.cos(-math.pi / 4))
-        env = self._env_with_spawn(2, (0.0, 0.0, 0.0), rot)
-        p0, _ = env._grid_pose(0)
-        p1, _ = env._grid_pose(1)
-        # Both share X (fanned purely along Y), and differ in Y.
-        assert p0[0] == pytest.approx(p1[0], abs=1e-6)
-        assert p0[1] != pytest.approx(p1[1])
+    def test_more_vehicles_than_paths_raises(self):
+        env = _env()  # 3 slots
+        env.trajectories = self._mt(2)
+        with pytest.raises(ValueError, match="only 2 distinct path"):
+            env._assign_paths()
 
 
 class TestMarkers:
