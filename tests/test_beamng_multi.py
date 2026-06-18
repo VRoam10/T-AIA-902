@@ -305,25 +305,40 @@ class TestObserve:
         slot.wheel_terrain = True
         slot.n_states = 18
         self._wire_slot_sensors(
-            slot, speed=10.0, steering=0.0, damage=0.0,
-            pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), lidar_points=None,
+            slot,
+            speed=10.0,
+            steering=0.0,
+            damage=0.0,
+            pos=(0.0, 0.0, 0.0),
+            vel=(1.0, 0.0, 0.0),
+            lidar_points=None,
         )
-        slot.vehicle.state = {"pos": (0.0, 0.0, 0.0), "vel": (1.0, 0.0, 0.0),
-                              "dir": (1.0, 0.0, 0.0), "up": (0.0, 0.0, 1.0)}
+        slot.vehicle.state = {
+            "pos": (0.0, 0.0, 0.0),
+            "vel": (1.0, 0.0, 0.0),
+            "dir": (1.0, 0.0, 0.0),
+            "up": (0.0, 0.0, 1.0),
+        }
         slot.roads_sensor = MagicMock()
-        slot.roads_sensor.poll.return_value = {"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}
+        slot.roads_sensor.poll.return_value = {
+            "halfWidth": 3.0,
+            "dist2Left": 0.7,
+            "dist2Right": 0.7,
+        }
         obs = env.observe(slot)
         assert obs.shape == (18,)
         expected_body = body_orientation_features((1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
-        expected_wheel = wheel_terrain_features({"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}, 0.7)
+        expected_wheel = wheel_terrain_features(
+            {"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}, 0.7
+        )
         np.testing.assert_allclose(obs[-4:-2], expected_body, atol=1e-6)
         np.testing.assert_allclose(obs[-2:], expected_wheel, atol=1e-6)
 
 
 class TestSlotExtraFeatures:
     def test_slot_n_states_with_flags(self):
-        assert slot_n_states("beamng", body_orientation=True) == 16        # 14 + 2
-        assert slot_n_states("beamng", wheel_terrain=True) == 16           # 14 + 2
+        assert slot_n_states("beamng", body_orientation=True) == 16  # 14 + 2
+        assert slot_n_states("beamng", wheel_terrain=True) == 16  # 14 + 2
         assert slot_n_states("beamng", body_orientation=True, wheel_terrain=True) == 18
         assert (
             slot_n_states("beamng", trajectory_hints=1, body_orientation=True, wheel_terrain=True)

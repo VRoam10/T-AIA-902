@@ -22,6 +22,12 @@ Cause the ia to go in reverse, since beamng Automatic shifting makes it that if 
 
 Fifth issue:
 The lidar is directly attached to the car, with how bad the suspension of it, it will skew the result of the lidar. The fix is to give the pitch and roll of the car to the algo to better understand the position of the car.
+This is now an opt-in observation: `body_orientation` (pitch + roll) and
+`wheel_terrain` (per-wheel road position) can be toggled per environment and
+per vehicle, instead of being hardcoded into a single env.
 
 Sixth issue:
 Last follow-up i was asked how we can see if a new changement actually improved the algorithm. For this, i've added a multi agent and multiple environment as to test different combination at the same time. It's not a perfect solution as the vehicule as collision as well as lidar rays (which doesn't have a fix).
+
+tester de lui donner le prochain checkpoint
+parler des habitudes pour compenser le temps d'entrainement

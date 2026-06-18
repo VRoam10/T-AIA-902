@@ -172,7 +172,9 @@ def _train_menu():
         }
 
     # Adjust n_states for the chosen options before building the agent
-    extra_states = trajectory_hints * 2 + (2 if body_orientation else 0) + (2 if wheel_terrain else 0)
+    extra_states = (
+        trajectory_hints * 2 + (2 if body_orientation else 0) + (2 if wheel_terrain else 0)
+    )
     env_meta = {
         **env_info["metadata"],
         "n_states": env_info["metadata"]["n_states"] + extra_states,
@@ -279,7 +281,9 @@ def _eval_menu():
             "wheel_terrain": wheel_terrain,
         }
 
-    extra_states = trajectory_hints * 2 + (2 if body_orientation else 0) + (2 if wheel_terrain else 0)
+    extra_states = (
+        trajectory_hints * 2 + (2 if body_orientation else 0) + (2 if wheel_terrain else 0)
+    )
     env_meta = {
         **env_info["metadata"],
         "n_states": env_info["metadata"]["n_states"] + extra_states,

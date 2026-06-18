@@ -210,9 +210,7 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
                 trajectory_hints=trajectory_hints,
                 body_orientation=body_orientation,
                 wheel_terrain=wheel_terrain,
-                n_states=slot_n_states(
-                    env_name, trajectory_hints, body_orientation, wheel_terrain
-                ),
+                n_states=slot_n_states(env_name, trajectory_hints, body_orientation, wheel_terrain),
             )
         )
     return slots

@@ -104,6 +104,7 @@ def test_build_multi_session_sizes_agent_with_flags():
 
 def test_ask_bool_parses_yes_no():
     from core.cli import _ask_bool
+
     with patch("builtins.input", return_value="y"):
         assert _ask_bool("?") is True
     with patch("builtins.input", return_value=""):

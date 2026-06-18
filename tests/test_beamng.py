@@ -1,8 +1,9 @@
 """Tests for environments.beamng — refactored LiDAR delegation (no sim)."""
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
-from unittest.mock import MagicMock
 
 from environments.beamng import BeamNGDrivingEnv
 
@@ -64,7 +65,7 @@ class TestExtraFeatures:
         state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, -0.3, 0.95)}
         out = env._extra_features(state)
         assert out.shape == (4,)
-        assert out[0] > 0.0          # pitch (nose up) first
+        assert out[0] > 0.0  # pitch (nose up) first
         assert out[2] == pytest.approx(0.0, abs=1e-6)  # left terrain (neutral) after
 
     def test_wheel_terrain_wrapper_reads_sensor(self):
@@ -94,17 +95,20 @@ class TestRoadsSensorLifecycle:
 class TestContinuousRollDeleted:
     def test_class_is_gone(self):
         import environments.beamng as m
+
         assert not hasattr(m, "BeamNGContinuousRollEnv")
 
 
 class TestRegistry:
     def test_continuous_roll_not_registered(self):
-        from core.registry import registry
         import environments  # noqa: F401  (triggers registration)
+        from core.registry import registry
+
         assert "beamng_continuous_roll" not in registry.list_environments()
 
     def test_beamng_factory_forwards_flags(self):
         from environments import _make_beamng
+
         env = _make_beamng(body_orientation=True, wheel_terrain=True)
         assert env.body_orientation is True
         assert env.wheel_terrain is True

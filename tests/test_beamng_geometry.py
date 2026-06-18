@@ -161,15 +161,13 @@ class TestWheelTerrainFeatures:
         left, right = wheel_terrain_features(
             {"halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7}, 0.7
         )
-        assert left == pytest.approx(1.0, abs=1e-6)   # (3.7-0.7)/3.0 = 1.0
+        assert left == pytest.approx(1.0, abs=1e-6)  # (3.7-0.7)/3.0 = 1.0
         assert right == pytest.approx(0.0, abs=1e-6)  # (0.7-0.7)/3.0 = 0.0
 
     def test_list_payload_uses_first_element(self):
         from environments.beamng_geometry import wheel_terrain_features
 
-        out = wheel_terrain_features(
-            [{"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}], 0.7
-        )
+        out = wheel_terrain_features([{"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}], 0.7)
         np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
 
     def test_empty_list_is_neutral(self):
