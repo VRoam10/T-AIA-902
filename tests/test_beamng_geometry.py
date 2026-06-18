@@ -114,3 +114,65 @@ class TestProcessLidar:
         cloud = np.array([[-25.0, 0.0, 1.0]], dtype=np.float32)
         out, dbg = process_lidar(cloud, (0, 0, 0), 0.0, None, CFG)
         assert np.all(out == 1.0)
+
+
+class TestBodyOrientationFeatures:
+    def test_flat_vehicle_reads_zero(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        out = body_orientation_features((0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        assert out.shape == (2,)
+        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+
+    def test_nose_up_is_positive_pitch_zero_roll(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        # facing +Y, body tilted nose-up: up vector leans backward (-Y)
+        pitch, roll = body_orientation_features((0.0, 1.0, 0.0), (0.0, -0.3, 0.95))
+        assert pitch > 0.0
+        assert abs(roll) < 1e-6
+
+    def test_lean_right_is_positive_roll(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        # facing +Y (lateral axis = +X), up vector leans right (+X) -> roll > 0
+        pitch, roll = body_orientation_features((0.0, 1.0, 0.0), (0.3, 0.0, 0.95))
+        assert roll > 0.0
+        assert abs(pitch) < 1e-6
+
+    def test_saturates_at_one(self):
+        from environments.beamng_geometry import body_orientation_features
+
+        pitch, _ = body_orientation_features((0.0, 1.0, 0.0), (0.0, -5.0, 0.1))
+        assert pitch == pytest.approx(1.0)
+
+
+class TestWheelTerrainFeatures:
+    def test_none_payload_is_neutral(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        out = wheel_terrain_features(None, 0.7)
+        assert out.shape == (2,)
+        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+
+    def test_dict_payload_normalizes_and_clamps(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        left, right = wheel_terrain_features(
+            {"halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7}, 0.7
+        )
+        assert left == pytest.approx(1.0, abs=1e-6)   # (3.7-0.7)/3.0 = 1.0
+        assert right == pytest.approx(0.0, abs=1e-6)  # (0.7-0.7)/3.0 = 0.0
+
+    def test_list_payload_uses_first_element(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        out = wheel_terrain_features(
+            [{"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}], 0.7
+        )
+        np.testing.assert_allclose(out, [0.0, 0.0], atol=1e-6)
+
+    def test_empty_list_is_neutral(self):
+        from environments.beamng_geometry import wheel_terrain_features
+
+        np.testing.assert_allclose(wheel_terrain_features([], 0.7), [0.0, 0.0], atol=1e-6)

@@ -173,3 +173,41 @@ def process_lidar(point_cloud, vehicle_pos, vehicle_heading, ego_extents, cfg):
                 distances[(v * h_bins + h) * ch] = np.clip(sel.min() / cfg.max_dist, 0.0, 1.0)
 
     return distances, debug
+
+
+def body_orientation_features(dir_vec, up_vec) -> np.ndarray:
+    """Return [pitch, roll] in [-1, 1] from a vehicle's forward and up vectors.
+
+    pitch: + = nose up (uphill), - = nose down.
+    roll:  + = leaning right, - = leaning left.
+    A flat vehicle reads (0, 0); a 90 deg tilt saturates at +/-1. Derived by
+    projecting the world-space up vector onto the vehicle's forward and lateral
+    axes (the lateral axis is the forward axis rotated +90 deg in the XY plane).
+    """
+    fwd_len = float(np.hypot(dir_vec[0], dir_vec[1])) or 1.0
+    fwd_x = dir_vec[0] / fwd_len
+    fwd_y = dir_vec[1] / fwd_len
+    pitch = -(float(up_vec[0]) * fwd_x + float(up_vec[1]) * fwd_y)
+    roll = float(up_vec[0]) * fwd_y + float(up_vec[1]) * (-fwd_x)
+    return np.array([np.clip(pitch, -1.0, 1.0), np.clip(roll, -1.0, 1.0)], dtype=np.float32)
+
+
+def wheel_terrain_features(roads_payload, half_track_width) -> np.ndarray:
+    """Return [left, right] road-edge position in [-1, 1] from a RoadsSensor poll.
+
+    +1 = well on road, 0 = at the edge, -1 = off road. Measured at the
+    front-axle midpoint, so this is the honest left/right road position (no
+    per-wheel duplication). Accepts the raw poll payload (dict, list, or None)
+    and falls back to neutral (0, 0) when data is missing.
+    """
+    roads = roads_payload
+    if isinstance(roads, list):
+        roads = roads[0] if roads else {}
+    if not isinstance(roads, dict):
+        roads = {}
+    half_w = max(float(roads.get("halfWidth", 3.0)), 0.5)
+    d_left = float(roads.get("dist2Left", half_track_width))
+    d_right = float(roads.get("dist2Right", half_track_width))
+    left = float(np.clip((d_left - half_track_width) / half_w, -1.0, 1.0))
+    right = float(np.clip((d_right - half_track_width) / half_w, -1.0, 1.0))
+    return np.array([left, right], dtype=np.float32)
