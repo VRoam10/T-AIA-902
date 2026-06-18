@@ -8,6 +8,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 
+from core.benchmark_index import build_index
 from core.run_metadata import collect_metadata
 from core.runner import PipelineRunner
 from core.stats import aggregate, is_scalar, numeric_keys, summary_line
@@ -145,8 +146,14 @@ class BaseBenchmark(ABC):
         self._write_metadata(
             run_dir,
             md_path,
-            {"seeds": multi_results["seeds"], "n_seeds": multi_results["n_seeds"]},
+            {
+                "algo": algo_name,
+                "env": env_name,
+                "seeds": multi_results["seeds"],
+                "n_seeds": multi_results["n_seeds"],
+            },
         )
+        build_index(output_dir)
 
         print(f"\n[Benchmark] Multi-seed reports saved to: {run_dir}/")
         return run_dir
@@ -294,8 +301,16 @@ class BaseBenchmark(ABC):
         self._save_markdown(results, md_path, algo_name, env_name)
 
         self._write_metadata(
-            run_dir, md_path, {"seeds": results.get("seeds"), "seed": results.get("seed")}
+            run_dir,
+            md_path,
+            {
+                "algo": algo_name,
+                "env": env_name,
+                "seeds": results.get("seeds"),
+                "seed": results.get("seed"),
+            },
         )
+        build_index(output_dir)
 
         print(f"\n[Benchmark] Reports saved to: {run_dir}/")
         return run_dir
