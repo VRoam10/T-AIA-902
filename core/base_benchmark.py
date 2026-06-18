@@ -7,6 +7,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 
+from core.runner import PipelineRunner
+
 
 class BaseBenchmark(ABC):
     """Abstract base class for benchmarks that evaluate agent/env combos."""
@@ -18,6 +20,50 @@ class BaseBenchmark(ABC):
     def run(self, agent_cls: type, env_factory: Callable, config: dict) -> dict:
         """Run the benchmark. Returns a results dict."""
         ...
+
+    def evaluate_policy(
+        self,
+        agent,
+        env_factory: Callable,
+        n_episodes: int = 100,
+        seed: int | None = None,
+        success_threshold: float = 0.0,
+    ) -> dict:
+        """Evaluate a trained agent greedily (epsilon=0) on a fresh environment.
+
+        Measures the true performance of the learned policy, as opposed to the
+        noisy training rewards that mix in exploration.
+
+        Args:
+            agent: A trained agent exposing the BaseAgent interface.
+            env_factory: Callable returning a fresh environment instance.
+            n_episodes: Number of evaluation episodes to run.
+            seed: Optional seed for reproducible evaluation.
+            success_threshold: An episode counts as a success when its total
+                reward is greater than or equal to this value.
+
+        Returns:
+            Dict with eval_episodes, eval_mean_reward, eval_std_reward,
+            eval_mean_steps and eval_success_rate.
+        """
+        env = env_factory()
+        runner = PipelineRunner()
+        result = runner.evaluate(agent, env, n_episodes=n_episodes, seed=seed)
+        env.close()
+
+        rewards = np.array(result["rewards"], dtype=float)
+        steps = np.array(result["steps"], dtype=float)
+        has_data = rewards.size > 0
+
+        success_rate = float(np.mean(rewards >= success_threshold)) if has_data else 0.0
+
+        return {
+            "eval_episodes": n_episodes,
+            "eval_mean_reward": round(float(np.mean(rewards)), 4) if has_data else 0.0,
+            "eval_std_reward": round(float(np.std(rewards)), 4) if has_data else 0.0,
+            "eval_mean_steps": round(float(np.mean(steps)), 2) if steps.size else 0.0,
+            "eval_success_rate": round(success_rate, 4),
+        }
 
     def report(self, results: dict) -> str:
         """Format results as a human-readable string."""

@@ -45,6 +45,9 @@ class ComparisonBenchmark(BaseBenchmark):
         threshold = config.get("threshold", 7.0)
         window = config.get("window", 100)
         metadata = config.get("env_metadata", {})
+        seed = config.get("seed")
+        eval_episodes = config.get("eval_episodes", 100)
+        success_threshold = config.get("success_threshold", 0.0)
 
         all_results = {}
 
@@ -61,9 +64,17 @@ class ComparisonBenchmark(BaseBenchmark):
 
             runner = PipelineRunner()
             start = time.time()
-            history = runner.train(agent, env, n_episodes=max_episodes)
+            history = runner.train(agent, env, n_episodes=max_episodes, seed=seed)
             elapsed = time.time() - start
             env.close()
+
+            eval_metrics = self.evaluate_policy(
+                agent,
+                env_factory,
+                n_episodes=eval_episodes,
+                seed=(seed + 10_000) if seed is not None else None,
+                success_threshold=success_threshold,
+            )
 
             rewards = history["rewards"]
             rewards_arr = np.array(rewards)
@@ -87,11 +98,14 @@ class ComparisonBenchmark(BaseBenchmark):
                 "final_std_reward": round(float(np.std(tail)), 4),
                 "mean_reward": round(float(np.mean(rewards_arr)), 4),
                 "best_reward": round(float(np.max(rewards_arr)), 4),
+                **eval_metrics,
             }
 
             status = f"converged at ep {convergence_ep}" if convergence_ep else "did not converge"
             print(
-                f"  → {label}: {status}, final avg = {all_results[label]['final_avg_reward']:.2f}"
+                f"  → {label}: {status}, eval reward = "
+                f"{all_results[label]['eval_mean_reward']:.2f} "
+                f"(success {all_results[label]['eval_success_rate']:.2f})"
             )
 
         return {
@@ -143,7 +157,7 @@ class ComparisonBenchmark(BaseBenchmark):
         conv_eps = [
             variants[lbl]["convergence_episode"] or results["max_episodes"] for lbl in labels
         ]
-        final_avgs = [variants[lbl]["final_avg_reward"] for lbl in labels]
+        eval_rewards = [variants[lbl].get("eval_mean_reward", 0.0) for lbl in labels]
 
         bar_colors = [colors[i % len(colors)] for i in range(len(labels))]
 
@@ -154,11 +168,11 @@ class ComparisonBenchmark(BaseBenchmark):
         for i, v in enumerate(conv_eps):
             axes[0].text(i, v + 5, str(v), ha="center", va="bottom", fontsize=9)
 
-        axes[1].bar(labels, final_avgs, color=bar_colors, alpha=0.8)
-        axes[1].set_ylabel("Avg reward (last 20%)")
-        axes[1].set_title("Final performance (higher = better)")
+        axes[1].bar(labels, eval_rewards, color=bar_colors, alpha=0.8)
+        axes[1].set_ylabel("Greedy eval reward")
+        axes[1].set_title("Policy performance (higher = better)")
         axes[1].grid(True, axis="y", alpha=0.3)
-        for i, v in enumerate(final_avgs):
+        for i, v in enumerate(eval_rewards):
             axes[1].text(i, v + 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=9)
 
         plt.suptitle(f"DQN Variant Comparison — {env_name}", fontsize=13)
@@ -181,15 +195,17 @@ class ComparisonBenchmark(BaseBenchmark):
             "",
             "## Results",
             "",
-            "| Variant | Converged | Conv. episode | Final avg reward | Final std | Time (s) |",
-            "|---------|-----------|--------------|-----------------|-----------|----------|",
+            "| Variant | Converged | Conv. episode | Eval reward | Eval success | Eval steps | Time (s) |",
+            "|---------|-----------|--------------|-------------|--------------|-----------|----------|",
         ]
 
         for label, data in variants.items():
             conv = data.get("convergence_episode", "—")
             lines.append(
                 f"| {label} | {'✓' if data['converged'] else '✗'} | {conv} "
-                f"| {data['final_avg_reward']:.4f} | {data['final_std_reward']:.4f} "
+                f"| {data.get('eval_mean_reward', 0):.4f} "
+                f"| {data.get('eval_success_rate', 0):.2%} "
+                f"| {data.get('eval_mean_steps', 0):.1f} "
                 f"| {data['training_time_s']} |"
             )
 
