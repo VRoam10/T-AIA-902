@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 from abc import ABC, abstractmethod
@@ -9,7 +10,7 @@ import numpy as np
 
 from core.run_metadata import collect_metadata
 from core.runner import PipelineRunner
-from core.stats import aggregate, numeric_keys, summary_line
+from core.stats import aggregate, is_scalar, numeric_keys, summary_line
 
 
 class BaseBenchmark(ABC):
@@ -135,6 +136,7 @@ class BaseBenchmark(ABC):
             os.path.join(run_dir, "summary.json"),
         )
 
+        self._save_multi_csv(multi_results, run_dir)
         self._save_plots(multi_results["representative"], run_dir, algo_name, env_name)
         self._save_seed_band_plot(multi_results, run_dir, algo_name, env_name)
         md_path = os.path.join(run_dir, "report.md")
@@ -162,6 +164,45 @@ class BaseBenchmark(ABC):
         lines.append("")
         with open(md_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines))
+
+    @staticmethod
+    def _write_csv_rows(path: str, rows: list[dict]):
+        """Write a list of dict rows as CSV, using the union of keys as header."""
+        if not rows:
+            return
+        keys: list[str] = []
+        for row in rows:
+            for key in row:
+                if key not in keys:
+                    keys.append(key)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def _save_csv(self, results: dict, run_dir: str):
+        """Write a single-row metrics.csv of scalar metrics.
+
+        Benchmarks that aggregate internally (comparison, gridsearch) override
+        this to emit one row per variant or configuration.
+        """
+        scalars = {key: value for key, value in results.items() if is_scalar(value)}
+        if scalars:
+            self._write_csv_rows(os.path.join(run_dir, "metrics.csv"), [scalars])
+
+    def _save_multi_csv(self, multi_results: dict, run_dir: str):
+        """Write metrics.csv (one row per seed) and summary.csv (aggregated)."""
+        per_seed_rows = []
+        for seed, run in zip(multi_results["seeds"], multi_results["per_seed"], strict=True):
+            row = {"seed": seed}
+            row.update({key: value for key, value in run.items() if is_scalar(value)})
+            per_seed_rows.append(row)
+        self._write_csv_rows(os.path.join(run_dir, "metrics.csv"), per_seed_rows)
+
+        summary_rows = [
+            {"metric": metric, **stat} for metric, stat in multi_results["aggregate"].items()
+        ]
+        self._write_csv_rows(os.path.join(run_dir, "summary.csv"), summary_rows)
 
     def _save_seed_band_plot(
         self, multi_results: dict, run_dir: str, algo_name: str, env_name: str
@@ -241,6 +282,9 @@ class BaseBenchmark(ABC):
         # JSON
         json_path = os.path.join(run_dir, "results.json")
         self._save_json(results, json_path)
+
+        # CSV
+        self._save_csv(results, run_dir)
 
         # Plots
         self._save_plots(results, run_dir, algo_name, env_name)

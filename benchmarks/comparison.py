@@ -193,6 +193,17 @@ class ComparisonBenchmark(BaseBenchmark):
         matrix = np.array([c[:length] for c in curves], dtype=float)
         return matrix.mean(axis=0).tolist(), matrix.std(axis=0).tolist()
 
+    def _save_csv(self, results: dict, run_dir: str):
+        """Write summary.csv with one aggregated row per variant."""
+        rows = []
+        for label, data in results.get("variants", {}).items():
+            row = {"variant": label, "converged_rate": data.get("converged_rate", 0.0)}
+            for metric, stat in data["aggregate"].items():
+                row[f"{metric}_mean"] = stat["mean"]
+                row[f"{metric}_std"] = stat["std"]
+            rows.append(row)
+        self._write_csv_rows(os.path.join(run_dir, "summary.csv"), rows)
+
     def _save_plots(self, results: dict, run_dir: str, algo_name: str, env_name: str):
         variants = results.get("variants", {})
         if not variants:

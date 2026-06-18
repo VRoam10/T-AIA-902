@@ -147,6 +147,17 @@ class GridSearchBenchmark(BaseBenchmark):
             lines.append(f"  best eval reward: {best['eval_mean_reward']}")
         return "\n".join(lines)
 
+    def _save_csv(self, results: dict, run_dir: str):
+        """Write leaderboard.csv with one ranked row per configuration."""
+        rows = []
+        for rank, entry in enumerate(results.get("entries", []), start=1):
+            row = {"rank": rank, **entry["params"]}
+            for metric, stat in entry["aggregate"].items():
+                row[f"{metric}_mean"] = stat["mean"]
+                row[f"{metric}_std"] = stat["std"]
+            rows.append(row)
+        self._write_csv_rows(os.path.join(run_dir, "leaderboard.csv"), rows)
+
     def _save_plots(self, results: dict, run_dir: str, algo_name: str, env_name: str):
         entries = results.get("entries", [])
         param_names = results.get("param_names", [])
