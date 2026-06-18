@@ -55,6 +55,24 @@ The dashboard discriminates four shapes from the result JSON:
   and `mean_rolling`/`std_rolling` curves.
 - **grid-search** — `entries` (ranked) + `param_names` + `best`.
 
+## Continuous agents & BeamNG
+
+The suite is algorithm-agnostic: DDPG and TD3 (continuous control) go through the
+exact same path as the tabular/deep discrete agents. Greedy evaluation sets the
+agent's `epsilon` to 0, which disables exploration noise (OU noise for DDPG,
+Gaussian for TD3), so the policy is evaluated deterministically.
+
+This continuous path is covered by `tests/test_benchmarks_continuous.py`, which
+runs DDPG and TD3 through `convergence`, multi-seed aggregation and `comparison`
+on a stub environment with the same contract as BeamNG (N-dim continuous
+observation, 2-dim continuous action in [-1, 1]) — the simulator itself cannot
+run in CI.
+
+**Cost note (BeamNG):** each seed launches the environment twice (once for
+training, once for the greedy evaluation), so an N-seed run starts the simulator
+2·N times. On BeamNG, prefer a small number of seeds (e.g. `seeds=[0,1,2]`) and a
+modest `eval_episodes`.
+
 ## Running
 
 From the menu (`python main.py` → *Run a benchmark*) or programmatically:
