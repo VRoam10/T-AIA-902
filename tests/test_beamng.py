@@ -112,3 +112,24 @@ class TestRegistry:
         env = _make_beamng(body_orientation=True, wheel_terrain=True)
         assert env.body_orientation is True
         assert env.wheel_terrain is True
+
+    def test_all_beamng_factories_forward_flags(self):
+        # Every registered beamng factory must accept and forward both flags —
+        # the subclasses override __init__, so a base-only change misses them.
+        from environments import (
+            _make_beamng,
+            _make_beamng_camera,
+            _make_beamng_continuous,
+            _make_beamng_lidar,
+        )
+
+        for factory in (
+            _make_beamng,
+            _make_beamng_lidar,
+            _make_beamng_continuous,
+            _make_beamng_camera,
+        ):
+            env = factory(body_orientation=True, wheel_terrain=True)
+            assert env.body_orientation is True, factory.__name__
+            assert env.wheel_terrain is True, factory.__name__
+            assert env.n_states == env.N_STATES + 4, factory.__name__
