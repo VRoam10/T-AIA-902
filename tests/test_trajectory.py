@@ -323,8 +323,8 @@ def test_generate_builds_one_path_per_teleport():
     bng = MagicMock()
     bng.scenario.get_road_network.return_value = _two_road_network()
     bng.scenario.find_waypoints.return_value = [
-        _spawn_obj((0.0, 0.0, 0.0)),     # snaps to "north"
-        _spawn_obj((201.0, 0.0, 0.0)),   # snaps to "east"
+        _spawn_obj((0.0, 0.0, 0.0)),  # snaps to "north"
+        _spawn_obj((201.0, 0.0, 0.0)),  # snaps to "east"
     ]
     mt = generate(bng, map_name="italy")
     assert isinstance(mt, MapTrajectories)
@@ -573,7 +573,5 @@ def test_single_env_random_reset_teleports_to_chosen_spawn_without_restart(monke
 
     env.reset()
 
-    env.vehicle.teleport.assert_called_once_with(
-        p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True
-    )
+    env.vehicle.teleport.assert_called_once_with(p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True)
     env.bng.scenario.restart.assert_not_called()

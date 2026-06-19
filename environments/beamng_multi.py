@@ -601,8 +601,6 @@ class BeamNGMultiEnv:
         time.sleep(0.5)
         return load_or_generate(self.map_name, self.bng)
 
-
-
     def _load_scenario(self):
         import time
 

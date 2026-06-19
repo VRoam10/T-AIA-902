@@ -349,7 +349,9 @@ def _teleport_points(bng) -> list[tuple[Vec3, Quat, str]]:
 
 
 def _path_length(centerline: list[Vec3]) -> float:
-    return sum(_segment_length(centerline[i], centerline[i + 1]) for i in range(len(centerline) - 1))
+    return sum(
+        _segment_length(centerline[i], centerline[i + 1]) for i in range(len(centerline) - 1)
+    )
 
 
 def _drop_waypoints_near_spawn(
@@ -396,8 +398,12 @@ def _path_from_teleport(
     if len(path) < 2:
         return None
     spawn_pos = (tele_pos[0], tele_pos[1], tele_pos[2] + SPAWN_Z_OFFSET_M)
-    sparse = _drop_waypoints_near_spawn(spawn_pos, resample(path, SPARSE_SPACING_M), SPAWN_CLEARANCE_M)
-    dense = _drop_waypoints_near_spawn(spawn_pos, resample(path, DENSE_SPACING_M), SPAWN_CLEARANCE_M)
+    sparse = _drop_waypoints_near_spawn(
+        spawn_pos, resample(path, SPARSE_SPACING_M), SPAWN_CLEARANCE_M
+    )
+    dense = _drop_waypoints_near_spawn(
+        spawn_pos, resample(path, DENSE_SPACING_M), SPAWN_CLEARANCE_M
+    )
     traj = TrajectoryData(
         spawn_pos=spawn_pos,
         spawn_rot=_spawn_rot_towards(spawn_pos, sparse, tele_rot),
@@ -436,8 +442,7 @@ def generate(bng, map_name: str) -> MapTrajectories:
                 continue
             traj, length = built
             if any(
-                _segment_length(traj.spawn_pos, s) < MIN_PATH_SEPARATION_M
-                for s in accepted_spawns
+                _segment_length(traj.spawn_pos, s) < MIN_PATH_SEPARATION_M for s in accepted_spawns
             ):
                 continue
             accepted_spawns.append(traj.spawn_pos)
