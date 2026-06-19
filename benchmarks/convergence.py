@@ -28,11 +28,11 @@ class ConvergenceBenchmark(BaseBenchmark):
         max_episodes = config.get("max_episodes", 2000)
         threshold = config.get("threshold", 7.0)
         window = config.get("window", 100)
+        seed = config.get("seed")
 
-        # --- Training with detailed tracking ---
         runner = PipelineRunner()
         start_time = time.time()
-        history = runner.train(agent, env, n_episodes=max_episodes)
+        history = runner.train(agent, env, n_episodes=max_episodes, seed=seed)
         training_time = time.time() - start_time
 
         rewards = history["rewards"]
@@ -75,7 +75,15 @@ class ConvergenceBenchmark(BaseBenchmark):
 
         env.close()
 
-        return {
+        eval_metrics = self.evaluate_policy(
+            agent,
+            env_factory,
+            n_episodes=config.get("eval_episodes", 100),
+            seed=(seed + 10_000) if seed is not None else None,
+            success_threshold=config.get("success_threshold", 0.0),
+        )
+
+        result = {
             # Summary
             "converged": convergence_ep is not None,
             "convergence_episode": convergence_ep,
@@ -106,6 +114,8 @@ class ConvergenceBenchmark(BaseBenchmark):
             "steps": steps,
             "rolling_avgs": rolling_avgs,
         }
+        result.update(eval_metrics)
+        return result
 
     def _save_plots(self, results: dict, run_dir: str, algo_name: str, env_name: str):
         """Generate comprehensive plot suite."""
@@ -273,6 +283,16 @@ class ConvergenceBenchmark(BaseBenchmark):
             f"| Worst | {results.get('worst_reward')} (ep {results.get('worst_episode')}) |",
             f"| Final avg (last 20%) | {results.get('final_avg_reward')} |",
             f"| Final std (last 20%) | {results.get('final_std_reward')} |",
+            "",
+            "## Greedy Evaluation (epsilon=0)",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Eval episodes | {results.get('eval_episodes')} |",
+            f"| Eval mean reward | {results.get('eval_mean_reward')} |",
+            f"| Eval std reward | {results.get('eval_std_reward')} |",
+            f"| Eval success rate | {results.get('eval_success_rate')} |",
+            f"| Eval mean steps | {results.get('eval_mean_steps')} |",
             "",
             "## Steps Statistics",
             "",

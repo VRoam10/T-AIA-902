@@ -1,0 +1,54 @@
+{
+  "runs": [
+    {
+      "id": "gridsearch_q_learning_taxi_20260618_190454",
+      "benchmark": "gridsearch",
+      "algo": "q_learning",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1
+      ],
+      "n_seeds": null,
+      "git_commit": "975d7f3",
+      "device": "cuda",
+      "multiseed": false,
+      "headline_eval_reward": 0.78,
+      "path": "gridsearch_q_learning_taxi_20260618_190454"
+    },
+    {
+      "id": "convergence_q_learning_taxi_multiseed_20260618_190435",
+      "benchmark": "convergence",
+      "algo": "q_learning",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_seeds": 3,
+      "git_commit": "975d7f3",
+      "device": "cuda",
+      "multiseed": true,
+      "headline_eval_reward": 7.3867,
+      "path": "convergence_q_learning_taxi_multiseed_20260618_190435"
+    },
+    {
+      "id": "comparison_q_learning-variants_taxi_20260618_190441",
+      "benchmark": "comparison",
+      "algo": "q_learning-variants",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_seeds": null,
+      "git_commit": "975d7f3",
+      "device": "cuda",
+      "multiseed": false,
+      "headline_eval_reward": 8.1133,
+      "path": "comparison_q_learning-variants_taxi_20260618_190441"
+    }
+  ]
+}

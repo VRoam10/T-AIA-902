@@ -99,8 +99,11 @@ Le menu interactif s'affiche :
 
 ### 3. Run a benchmark
 
-- Lancer un benchmark (ex: `convergence`) sur une combinaison algo + env
-- Les resultats sont affiches a la fin
+- Choisir un benchmark (`convergence`, `comparison`, `gridsearch`)
+- Saisir les **seeds** (defaut `0,1,2,3,4`), le nombre d'**episodes d'evaluation** et le **seuil de succes**
+- Les resultats sont affiches a la fin et exportes dans `outputs/benchmarks/`
+
+Voir la section [Benchmarks](#benchmarks) pour le detail des metriques et des fichiers produits.
 
 ### 4. Human play (BeamNG)
 
@@ -225,6 +228,58 @@ Creer `benchmarks/mon_benchmark.py` en heritant de `BaseBenchmark`, puis enregis
 
 ---
 
+## Benchmarks
+
+La suite de benchmarks est **agnostique** : chaque benchmark tourne sur
+n'importe quel couple algorithme + environnement enregistre. Trois principes
+la rendent fiable et reproductible :
+
+- **Seeds** : chaque run est seede (RNG globaux + environnement). Une meme seed
+  redonne exactement le meme resultat.
+- **Multi-seed** : chaque configuration est rejouee sur plusieurs seeds et les
+  metriques sont agregees en `mean ± std`, intervalle de confiance a 95 % (CI95),
+  min et max. Un seul run ne prouve rien ; la moyenne inter-seeds, si.
+- **Evaluation gloutonne** : apres l'entrainement, la politique est evaluee a
+  `epsilon=0` sur N episodes pour mesurer sa **vraie** performance (taux de
+  succes, recompense, pas/episode), pas seulement la recompense d'entrainement.
+
+### Benchmarks disponibles
+
+| Benchmark     | Role                                                                 |
+| ------------- | -------------------------------------------------------------------- |
+| `convergence` | Analyse complete d'un algo : vitesse de convergence, stabilite, distribution |
+| `comparison`  | Compare plusieurs algos sur un meme environnement (multi-seed)       |
+| `gridsearch`  | Balaye une grille d'hyperparametres et classe les configurations     |
+
+### Metriques rapportees
+
+| Categorie            | Metriques                                                        |
+| -------------------- | ---------------------------------------------------------------- |
+| Vitesse              | `convergence_episode`, `improvement_rate`                        |
+| Perf entrainement    | `final_avg_reward` (20 % derniers ep.), `best/worst`             |
+| Perf reelle (eval)   | `eval_mean_reward`, `eval_std_reward`, `eval_success_rate`, `eval_mean_steps` |
+| Robustesse           | ecart-type inter-seeds, `ci95`                                   |
+| Cout                 | `training_time_s`                                                |
+| Reproductibilite     | seeds, commit git, versions (python/numpy/torch), device         |
+
+### Fichiers de sortie
+
+Chaque execution cree un dossier horodate dans `outputs/benchmarks/` :
+
+```
+outputs/benchmarks/<benchmark>_<algo>_<env>_<timestamp>/
+├── report.md           # rapport lisible (tables + images + reproductibilite)
+├── metadata.json       # commit git, seeds, versions, device
+├── summary.json        # metriques agregees (multi-seed)
+├── results_full.json   # tout, courbes brutes par seed incluses
+├── metrics.csv         # 1 ligne par seed (ou par run) — exploitable Excel/pandas
+├── summary.csv         # 1 ligne par metrique/variante agregee
+└── *.png               # courbes (mean ± std), barres, heatmap (gridsearch)
+```
+
+`gridsearch` produit en plus un `leaderboard.csv` (configurations classees) et
+une `heatmap.png` lorsque deux hyperparametres sont balayes.
+
 ## Linting (Ruff)
 
 Le projet utilise [Ruff](https://docs.astral.sh/ruff/) pour le linting et le formatage. La config est dans `ruff.toml`.
@@ -292,10 +347,13 @@ le JSON a la main ou utilisez la procedure decrite dans `scenario_creator.md`.
 
 ## Algorithmes disponibles
 
-| Algorithme   | Description                | Environnements compatibles |
-| ------------ | -------------------------- | -------------------------- |
-| `q_learning` | Q-Learning tabulaire       | Taxi-v3                    |
-| `dqn`        | Double DQN (PyTorch, CUDA) | Taxi-v3, BeamNG            |
+| Algorithme   | Description                              | Environnements compatibles |
+| ------------ | ---------------------------------------- | -------------------------- |
+| `q_learning` | Q-Learning tabulaire                     | Taxi-v3                    |
+| `dqn`        | Double DQN + Dueling (PyTorch, CUDA)     | Taxi-v3, BeamNG            |
+| `dqn_per`    | DQN avec Prioritized Experience Replay   | Taxi-v3, BeamNG            |
+| `ddpg`       | DDPG (actions continues)                 | BeamNG                     |
+| `td3`        | TD3 (actions continues)                  | BeamNG                     |
 
 ## Environnements disponibles
 
