@@ -41,6 +41,10 @@ class TestVehicleSlot:
         assert s.episode == 0
         assert s.reward_history == []
 
+    def test_vehicle_slot_has_waypoints_field(self):
+        s = _slot()
+        assert s.waypoints == []
+
     def test_reset_episode_zeros_running_state_but_keeps_episode_count(self):
         s = _slot()
         s.waypoint_idx = 4
@@ -208,8 +212,8 @@ class TestApplyAction:
 class TestPathErrorsAndReward:
     def test_path_errors_advance_waypoint_when_close(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot.waypoint_idx = 0
         state = {"vel": (1.0, 0.0, 0.0)}
         env._path_errors(slot, pos=(0.0, 0.0, 0.0), state=state)
@@ -218,7 +222,7 @@ class TestPathErrorsAndReward:
 
     def test_default_reward_gives_checkpoint_bonus(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        env.slots[0].waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]  # reward_mode "default"
         slot.checkpoint_hit = True
         slot.waypoint_idx = 1
@@ -231,7 +235,7 @@ class TestPathErrorsAndReward:
 
     def test_default_reward_terminates_on_max_damage(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0)]
+        env.slots[0].waypoints = [(0.0, 0.0, 0.0)]
         slot = env.slots[0]
         obs = np.zeros(slot.n_states, dtype=np.float32)
         obs[0] = 0.5
@@ -241,7 +245,7 @@ class TestPathErrorsAndReward:
 
     def test_ddpg_reward_rewards_progress(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        env.slots[1].waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[1]  # reward_mode "ddpg"
         slot.last_dist = 50.0
         slot.current_dist = 40.0  # got 10 m closer
@@ -265,8 +269,8 @@ class TestObserve:
 
     def test_observe_returns_vector_of_n_states(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         self._wire_slot_sensors(
             slot,
             speed=10.0,
@@ -282,8 +286,8 @@ class TestObserve:
 
     def test_observe_polls_each_slot_sensor(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         self._wire_slot_sensors(
             slot,
             speed=0.0,
@@ -299,8 +303,8 @@ class TestObserve:
 
     def test_observe_appends_extras_when_flags_on(self):
         env = _env()
-        env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot.body_orientation = True
         slot.wheel_terrain = True
         slot.n_states = 18
@@ -431,55 +435,72 @@ class TestLifecycle:
         assert env.bng is None
 
 
-class TestStartingGrid:
-    def _env_with_spawn(self, n_slots, spawn_pos, spawn_rot):
-        specs = [
-            {
-                "algo": "dqn",
-                "agent": _FakeAgent(),
-                "vehicle_id": "taxi",
-                "color": "Yellow",
-                "save_path": f"outputs/a{i}.pth",
-            }
-            for i in range(n_slots)
+class TestPathAssignment:
+    def _mt(self, n_paths):
+        from core.trajectory import MapTrajectories, TrajectoryData
+
+        paths = [
+            TrajectoryData(
+                spawn_pos=(float(i) * 100.0, 0.0, 1.0),
+                spawn_rot=(0.0, 0.0, 0.0, 1.0),
+                sparse_waypoints=[(float(i) * 100.0, 10.0, 0.0), (float(i) * 100.0, 20.0, 0.0)],
+                dense_waypoints=[(float(i) * 100.0, 10.0, 0.0)],
+                map_name="italy",
+                generated_at="2026-06-18T12:00:00+00:00",
+                source=f"teleport:r{i}",
+            )
+            for i in range(n_paths)
         ]
-        env = BeamNGMultiEnv(slots=build_slots(specs), beamng_home="unused")
-        env.trajectory = MagicMock()
-        env.trajectory.spawn_pos = spawn_pos
-        env.trajectory.spawn_rot = spawn_rot
-        return env
+        return MapTrajectories(
+            map_name="italy", generated_at="2026-06-18T12:00:00+00:00", paths=paths
+        )
 
-    def test_grid_is_side_by_side_centered_on_spawn(self):
-        # Identity spawn_rot -> forward +Y, right +X, so the line fans along X.
-        env = self._env_with_spawn(4, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-        gap = env.GRID_LANE_OFFSET
-        xs = []
-        for i in range(4):
-            pos, rot = env._grid_pose(i)
-            xs.append(pos[0])
-            assert pos[1] == pytest.approx(0.0, abs=1e-6)  # all on the same line
-            assert pos[2] == pytest.approx(0.0)
-            assert rot == (0.0, 0.0, 0.0, 1.0)  # all face the same way
-        # Centered: 4 cars at -1.5,-0.5,+0.5,+1.5 lane-widths
-        assert xs == pytest.approx([-1.5 * gap, -0.5 * gap, 0.5 * gap, 1.5 * gap])
+    def test_each_slot_gets_its_own_path(self):
+        env = _env()  # 3 slots
+        env.trajectories = self._mt(3)
+        env._assign_paths()
+        assert env.slots[0].spawn_pos == (0.0, 0.0, 1.0)
+        assert env.slots[1].spawn_pos == (100.0, 0.0, 1.0)
+        assert env.slots[2].spawn_pos == (200.0, 0.0, 1.0)
+        assert env.slots[0].waypoints == [(0.0, 10.0, 0.0), (0.0, 20.0, 0.0)]
+        assert env.slots[1].waypoints[0] == (100.0, 10.0, 0.0)
+        # Distinct spawns -> no shared start line.
+        assert len({s.spawn_pos for s in env.slots}) == 3
 
-    def test_grid_poses_are_all_distinct(self):
-        env = self._env_with_spawn(3, (10.0, 5.0, 1.0), (0.0, 0.0, 0.0, 1.0))
-        poses = [env._grid_pose(i)[0] for i in range(3)]
-        assert len({tuple(p) for p in poses}) == 3
+    def test_more_vehicles_than_paths_raises(self):
+        env = _env()  # 3 slots
+        env.trajectories = self._mt(2)
+        with pytest.raises(ValueError, match="only 2 distinct path"):
+            env._assign_paths()
 
-    def test_grid_fans_along_right_axis_when_rotated(self):
-        # spawn_rot for yaw=-pi/2 (forward +X) -> right axis is -Y, so the line
-        # fans along Y instead of X.
-        import math
+    def test_random_assign_gives_distinct_paths(self, monkeypatch):
+        env = _env()  # 3 slots
+        env.random_path = True
+        env.trajectories = self._mt(5)
+        monkeypatch.setattr(
+            "environments.beamng_multi.random.shuffle",
+            lambda seq: seq.reverse(),
+        )
+        env._assign_paths()
+        idxs = [s.path_idx for s in env.slots]
+        assert len(set(idxs)) == 3  # distinct
+        # reversed [0,1,2,3,4] -> [4,3,2,1,0]; first 3 dealt
+        assert idxs == [4, 3, 2]
 
-        rot = (0.0, 0.0, math.sin(-math.pi / 4), math.cos(-math.pi / 4))
-        env = self._env_with_spawn(2, (0.0, 0.0, 0.0), rot)
-        p0, _ = env._grid_pose(0)
-        p1, _ = env._grid_pose(1)
-        # Both share X (fanned purely along Y), and differ in Y.
-        assert p0[0] == pytest.approx(p1[0], abs=1e-6)
-        assert p0[1] != pytest.approx(p1[1])
+    def test_pick_distinct_path_idx_avoids_other_slots(self):
+        env = _env()  # 3 slots
+        env.random_path = True
+        env.trajectories = self._mt(3)
+        env.slots[1].path_idx = 1
+        env.slots[2].path_idx = 2
+        # only index 0 is free for slot 0
+        assert env._pick_distinct_path_idx(env.slots[0]) == 0
+
+    def test_assign_paths_not_random_is_sequential(self):
+        env = _env()
+        env.trajectories = self._mt(3)
+        env._assign_paths()
+        assert [s.path_idx for s in env.slots] == [0, 1, 2]
 
 
 class TestMarkers:
@@ -495,8 +516,8 @@ class TestMarkers:
         env = _env()
         env.bng = MagicMock()
         env.bng.debug.add_spheres.return_value = ["sphere-1"]
-        env.waypoints = [(10.0, 20.0, 1.0), (30.0, 40.0, 1.0)]
         slot = env.slots[0]
+        slot.waypoints = [(10.0, 20.0, 1.0), (30.0, 40.0, 1.0)]
         slot.color = "Red"
         slot.waypoint_idx = 0
         env._update_slot_marker(slot)
@@ -510,8 +531,8 @@ class TestMarkers:
         env = _env()
         env.bng = MagicMock()
         env.bng.debug.add_spheres.return_value = ["new"]
-        env.waypoints = [(0.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0)]
         slot.active_marker_id = "old"
         env._update_slot_marker(slot)
         env.bng.debug.remove_spheres.assert_called_once_with(["old"])
@@ -520,7 +541,7 @@ class TestMarkers:
     def test_update_slot_marker_noop_without_bng(self):
         env = _env()
         env.bng = None
-        env.waypoints = [(0.0, 0.0, 0.0)]
         slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0)]
         env._update_slot_marker(slot)
         assert slot.active_marker_id is None

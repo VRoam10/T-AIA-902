@@ -5,6 +5,7 @@ advances every vehicle; each vehicle keeps its own episode state in a
 VehicleSlot so several algorithms train in parallel on one trajectory.
 """
 
+import random
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,7 +21,7 @@ from config import (  # noqa: F401  (LOG_LIDAR reserved for future logging parit
     LIDAR_VISUALISE,
     LOG_LIDAR,
 )
-from core.trajectory import TrajectoryData, load_or_generate
+from core.trajectory import MapTrajectories, load_or_generate
 from environments.beamng import BeamNGDrivingEnv
 from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import (
@@ -68,6 +69,8 @@ class VehicleSlot:
     # Per-vehicle starting-grid pose (assigned during scenario load)
     spawn_pos: tuple = (0.0, 0.0, 0.0)
     spawn_rot: tuple = (0.0, 0.0, 0.0, 1.0)
+    path_idx: int = 0
+    waypoints: list = field(default_factory=list)
 
     # Episode state
     waypoint_idx: int = 0
@@ -251,10 +254,6 @@ class BeamNGMultiEnv:
 
     VEHICLES = BeamNGDrivingEnv.VEHICLES
 
-    # Starting-grid layout: all vehicles abreast on the spawn line, each in its
-    # own lane spaced laterally so none starts behind another (safe with
-    # collisions enabled).
-    GRID_LANE_OFFSET = 4.0  # metres between adjacent vehicles
     HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
 
     # Dashcam config for camera-perception vehicles (mirrors BeamNGCameraEnv).
@@ -273,6 +272,7 @@ class BeamNGMultiEnv:
         port: int = 25252,
         headless: bool = False,
         map_name: str = "gridmap_v2",
+        random_path: bool = False,
     ):
         self.slots = slots
         self.beamng_home = beamng_home
@@ -281,11 +281,11 @@ class BeamNGMultiEnv:
         self.port = port
         self.headless = headless
         self.map_name = map_name
+        self.random_path = random_path
 
         self.bng: BeamNGpy = None
         self.scenario: Scenario = None
-        self.trajectory: TrajectoryData | None = None
-        self.waypoints: list[tuple[float, float, float]] = []
+        self.trajectories: MapTrajectories | None = None
 
     def _lidar_config_for(self, slot: VehicleSlot) -> LidarConfig:
         """LiDAR binning config for a slot's perception (single-row or 2D grid)."""
@@ -324,11 +324,11 @@ class BeamNGMultiEnv:
 
         Sets slot.current_dist for the DDPG progress reward.
         """
-        if not self.waypoints or not state:
+        if not slot.waypoints or not state:
             slot.current_dist = 0.0
             return 0.0, 0.0, 0.0
 
-        target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+        target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
         dx = target[0] - pos[0]
         dy = target[1] - pos[1]
         dist = float(np.hypot(dx, dy))
@@ -338,8 +338,8 @@ class BeamNGMultiEnv:
             slot.waypoint_idx += 1
             slot.checkpoint_hit = True
             self._update_slot_marker(slot)
-            if slot.waypoint_idx < len(self.waypoints):
-                new_t = self.waypoints[slot.waypoint_idx]
+            if slot.waypoint_idx < len(slot.waypoints):
+                new_t = slot.waypoints[slot.waypoint_idx]
                 slot.current_dist = float(np.hypot(new_t[0] - pos[0], new_t[1] - pos[1]))
 
         vel = state.get("vel", (1.0, 0.0, 0.0))
@@ -377,7 +377,7 @@ class BeamNGMultiEnv:
             reward += 100.0 * slot.waypoint_idx
             slot.checkpoint_hit = False
 
-        if slot.waypoint_idx >= len(self.waypoints):
+        if slot.waypoint_idx >= len(slot.waypoints):
             reward += 200.0
             done = True
 
@@ -435,7 +435,7 @@ class BeamNGMultiEnv:
             reward += 50.0
             slot.checkpoint_hit = False
 
-        if slot.waypoint_idx >= len(self.waypoints):
+        if slot.waypoint_idx >= len(slot.waypoints):
             reward += 200.0
             slot.waypoint_idx = 0
             done = True
@@ -463,8 +463,8 @@ class BeamNGMultiEnv:
         perception = self._perceive(slot, pos, vehicle_heading)
 
         slot.current_pos = pos
-        if self.waypoints:
-            target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+        if slot.waypoints:
+            target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
             slot.checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
         waypoint_hints = self._waypoint_hints(slot, pos, vehicle_heading)
@@ -521,15 +521,15 @@ class BeamNGMultiEnv:
 
     def _waypoint_hints(self, slot, pos, vehicle_heading) -> np.ndarray:
         """Vehicle-local (forward, left) coords for the next trajectory_hints waypoints."""
-        if not slot.trajectory_hints or not self.waypoints:
+        if not slot.trajectory_hints or not slot.waypoints:
             return np.empty(0, dtype=np.float32)
         NORM = 100.0
         cos_h = np.cos(-vehicle_heading)
         sin_h = np.sin(-vehicle_heading)
         hints: list[float] = []
         for i in range(slot.trajectory_hints):
-            idx = (slot.waypoint_idx + i) % len(self.waypoints)
-            wp = self.waypoints[idx]
+            idx = (slot.waypoint_idx + i) % len(slot.waypoints)
+            wp = slot.waypoints[idx]
             rel_x = wp[0] - pos[0]
             rel_y = wp[1] - pos[1]
             local_x = rel_x * cos_h - rel_y * sin_h
@@ -539,7 +539,7 @@ class BeamNGMultiEnv:
         return np.array(hints, dtype=np.float32)
 
     def launch(self):
-        """Start BeamNG and load the shared multi-vehicle scenario."""
+        """Start BeamNG, resolve all map paths, and load the multi-vehicle scenario."""
         self.bng = BeamNGpy(
             self.host,
             self.port,
@@ -548,9 +548,40 @@ class BeamNGMultiEnv:
             headless=self.headless,
         )
         self.bng.open(launch=True)
-        self.trajectory = self._resolve_trajectory()
-        self.waypoints = list(self.trajectory.sparse_waypoints)
+        self.trajectories = self._resolve_trajectory()
+        self._assign_paths()
         self._load_scenario()
+
+    def _assign_paths(self):
+        """Give each vehicle its own path; error if vehicles outnumber paths."""
+        paths = self.trajectories.paths
+        if len(self.slots) > len(paths):
+            raise ValueError(
+                f"{len(self.slots)} vehicles requested but map '{self.map_name}' has "
+                f"only {len(paths)} distinct path(s). Reduce the vehicle count to "
+                f"<= {len(paths)} or pick a map with more quick-travel points."
+            )
+        if self.random_path:
+            order = list(range(len(paths)))
+            random.shuffle(order)
+            for slot, idx in zip(self.slots, order, strict=False):
+                slot.path_idx = idx
+                self._apply_path(slot, paths[idx])
+        else:
+            for i, slot in enumerate(self.slots):
+                slot.path_idx = i
+                self._apply_path(slot, paths[i])
+
+    def _apply_path(self, slot, path):
+        slot.waypoints = list(path.sparse_waypoints)
+        slot.spawn_pos = path.spawn_pos
+        slot.spawn_rot = path.spawn_rot
+
+    def _pick_distinct_path_idx(self, slot) -> int:
+        """A random path index not currently held by any other slot."""
+        taken = {s.path_idx for s in self.slots if s is not slot}
+        free = [i for i in range(len(self.trajectories.paths)) if i not in taken]
+        return random.choice(free)
 
     def _resolve_trajectory(self):
         import time
@@ -575,8 +606,7 @@ class BeamNGMultiEnv:
 
         self.scenario = Scenario(self.map_name, "rl_multi_driving", description="RL Multi-Agent")
 
-        for i, slot in enumerate(self.slots):
-            slot.spawn_pos, slot.spawn_rot = self._grid_pose(i)
+        for slot in self.slots:
             vcfg = self.VEHICLES.get(slot.vehicle_id, self.VEHICLES["taxi"])
             vcfg = {**vcfg, "color": slot.color}
             slot.vehicle = Vehicle(slot.name, **vcfg)
@@ -591,8 +621,12 @@ class BeamNGMultiEnv:
                 cling=True,
             )
 
-        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-        self.scenario.add_checkpoints(self.waypoints, scales)
+        if self.random_path:
+            all_waypoints = [wp for p in self.trajectories.paths for wp in p.sparse_waypoints]
+        else:
+            all_waypoints = [wp for slot in self.slots for wp in slot.waypoints]
+        scales = [(5.0, 5.0, 1.0)] * len(all_waypoints)
+        self.scenario.add_checkpoints(all_waypoints, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)
@@ -680,7 +714,7 @@ class BeamNGMultiEnv:
         vehicle gets its own sphere coloured to match its car. Silently skipped
         without a live bng / on older beamngpy builds.
         """
-        if self.bng is None or not self.waypoints:
+        if self.bng is None or not slot.waypoints:
             return
         try:
             debug = self.bng.debug
@@ -689,7 +723,7 @@ class BeamNGMultiEnv:
                     debug.remove_spheres([slot.active_marker_id])
                 except Exception:
                     pass
-            target = self.waypoints[slot.waypoint_idx % len(self.waypoints)]
+            target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
             pos = (target[0], target[1], target[2] + 2.0)
             ids = debug.add_spheres(
                 coordinates=[pos],
@@ -699,37 +733,6 @@ class BeamNGMultiEnv:
             slot.active_marker_id = ids[0]
         except AttributeError:
             pass
-
-    def _spawn_axes(self):
-        """Return (forward, right) XY unit vectors of the spawn heading.
-
-        Derived from the spawn quaternion (pure-Z yaw). Identity (facing +Y)
-        gives forward=(0,1), right=(1,0).
-        """
-        rot = self.trajectory.spawn_rot
-        yaw = 2.0 * float(np.arctan2(rot[2], rot[3]))
-        fwd = (-float(np.sin(yaw)), float(np.cos(yaw)))
-        right = (float(np.cos(yaw)), float(np.sin(yaw)))
-        return fwd, right
-
-    def _grid_pose(self, index: int):
-        """Starting-grid pose for vehicle ``index``: abreast on the spawn line.
-
-        Vehicles are fanned out along the spawn's right axis, centred on the
-        spawn point, each in its own lane GRID_LANE_OFFSET apart. All share the
-        spawn heading, so none starts behind another.
-        """
-        spawn = self.trajectory.spawn_pos
-        rot = self.trajectory.spawn_rot
-        _fwd, right = self._spawn_axes()
-        n = len(self.slots)
-        lateral = (index - (n - 1) / 2.0) * self.GRID_LANE_OFFSET
-        pos = (
-            spawn[0] + right[0] * lateral,
-            spawn[1] + right[1] * lateral,
-            spawn[2],
-        )
-        return pos, rot
 
     def reset_all(self):
         """Teleport every vehicle to spawn, zero episode state, prime last_obs."""
@@ -746,7 +749,10 @@ class BeamNGMultiEnv:
             self._update_slot_marker(slot)
 
     def reset_vehicle(self, slot: VehicleSlot):
-        """Teleport one finished vehicle back to its grid slot for the next episode."""
+        """Teleport one finished vehicle to its (possibly new) path for the next episode."""
+        if self.random_path and self.trajectories is not None:
+            slot.path_idx = self._pick_distinct_path_idx(slot)
+            self._apply_path(slot, self.trajectories.paths[slot.path_idx])
         slot.vehicle.teleport(slot.spawn_pos, rot_quat=slot.spawn_rot, reset=True)
         slot.reset_episode()
         if slot.lidar is not None or slot.electrics is not None:

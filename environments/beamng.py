@@ -145,6 +145,7 @@ class BeamNGDrivingEnv:
         trajectory_hints: int = 0,
         body_orientation: bool = False,
         wheel_terrain: bool = False,
+        random_path: bool = False,
     ):
         """
         Args:
@@ -181,6 +182,7 @@ class BeamNGDrivingEnv:
         self.trajectory_hints = trajectory_hints
         self.body_orientation = body_orientation
         self.wheel_terrain = wheel_terrain
+        self.random_path = random_path
         self.n_states = (
             self.N_STATES
             + trajectory_hints * 2
@@ -190,6 +192,7 @@ class BeamNGDrivingEnv:
 
         # Filled on first _launch() — either read from cache or generated then.
         self.trajectory: TrajectoryData | None = None
+        self._paths: list[TrajectoryData] = []
         self.waypoints: list[tuple[float, float, float]] = []
         self._current_pos = (0.0, 0.0, 0.0)
 
@@ -213,8 +216,20 @@ class BeamNGDrivingEnv:
         if self.bng is None:
             self._launch()
         else:
-            # self._randomize_waypoints()
-            self.bng.scenario.restart()
+            if self.random_path:
+                # Teleport (reset=True) repositions AND resets the vehicle to the
+                # newly chosen path's spawn. Do NOT call scenario.restart() here:
+                # restart() snaps the car back to the baked path[0] spawn and
+                # fights the teleport, so the path never actually changes. This
+                # mirrors the multi-agent env's reset_vehicle (teleport, no restart).
+                self._pick_episode_path()
+                self.vehicle.teleport(
+                    self.trajectory.spawn_pos,
+                    rot_quat=self.trajectory.spawn_rot,
+                    reset=True,
+                )
+            else:
+                self.bng.scenario.restart()
             self._update_active_marker(0)
             # Test LiDAR après restart
             try:
@@ -390,7 +405,7 @@ class BeamNGDrivingEnv:
         self.roads_sensor = RoadsSensor("roads", self.bng, self.vehicle)
 
     def _remove_roads_sensor(self):
-        if self.roads_sensor is None:
+        if getattr(self, "roads_sensor", None) is None:
             return
         t = threading.Thread(target=self.roads_sensor.remove, daemon=True)
         t.start()
@@ -417,25 +432,34 @@ class BeamNGDrivingEnv:
         self._load_scenario(human_control=human_control)
 
     def _resolve_trajectory(self) -> TrajectoryData:
-        """Return cached trajectory or probe the map to generate one."""
+        """Load cached trajectories (all paths); default to the longest road."""
         from core.trajectory import CACHE_DIR
 
         cache_path = CACHE_DIR / f"{self.map_name}.json"
         if cache_path.exists():
-            return load_or_generate(self.map_name, bng=None)
-
-        # No cache → run a probe scenario so we can call get_road_network
-        probe = Scenario(self.map_name, "trajectory_probe", description="Road probe")
-        probe_vehicle = Vehicle("probe_vehicle", model="etk800")
-        probe.add_vehicle(probe_vehicle, pos=(0.0, 0.0, 100.0), rot_quat=(0.0, 0.0, 0.0, 1.0))
-        probe.make(self.bng)
-        self.bng.load_scenario(probe)
-        self.bng.start_scenario()
-        time.sleep(0.5)
-        return load_or_generate(self.map_name, self.bng)
+            self._paths = load_or_generate(self.map_name, bng=None).paths
+        else:
+            # No cache → run a probe scenario so we can call get_road_network
+            probe = Scenario(self.map_name, "trajectory_probe", description="Road probe")
+            probe_vehicle = Vehicle("probe_vehicle", model="etk800")
+            probe.add_vehicle(probe_vehicle, pos=(0.0, 0.0, 100.0), rot_quat=(0.0, 0.0, 0.0, 1.0))
+            probe.make(self.bng)
+            self.bng.load_scenario(probe)
+            self.bng.start_scenario()
+            time.sleep(0.5)
+            self._paths = load_or_generate(self.map_name, self.bng).paths
+        self.trajectory = self._paths[0]
+        return self.trajectory
 
     def _randomize_waypoints(self):
         self.waypoints = random.sample(self.waypoints, len(self.waypoints))
+
+    def _pick_episode_path(self) -> None:
+        """When random_path is on, choose a random path for the next episode."""
+        if not self.random_path or not self._paths:
+            return
+        self.trajectory = random.choice(self._paths)
+        self.waypoints = self._select_waypoints()
 
     def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
@@ -466,8 +490,13 @@ class BeamNGDrivingEnv:
         )
 
         # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
-        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-        self.scenario.add_checkpoints(self.waypoints, scales)
+        checkpoint_wps = (
+            [wp for p in self._paths for wp in p.sparse_waypoints]
+            if self.random_path
+            else self.waypoints
+        )
+        scales = [(5.0, 5.0, 1.0)] * len(checkpoint_wps)
+        self.scenario.add_checkpoints(checkpoint_wps, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
@@ -1032,6 +1061,7 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
         trajectory_hints: int = 0,
         body_orientation: bool = False,
         wheel_terrain: bool = False,
+        random_path: bool = False,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -1045,6 +1075,7 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
             trajectory_hints=trajectory_hints,
             body_orientation=body_orientation,
             wheel_terrain=wheel_terrain,
+            random_path=random_path,
         )
 
     def step(self, action):
@@ -1109,6 +1140,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         trajectory_hints: int = 0,
         body_orientation: bool = False,
         wheel_terrain: bool = False,
+        random_path: bool = False,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -1121,6 +1153,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             trajectory_hints=trajectory_hints,
             body_orientation=body_orientation,
             wheel_terrain=wheel_terrain,
+            random_path=random_path,
         )
         self.camera: Camera = None
         self.last_frame: np.ndarray | None = None  # 2-D grayscale (CAM_OUT_SIZE), updated each step
@@ -1149,8 +1182,13 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         )
 
         # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
-        scales = [(5.0, 5.0, 1.0)] * len(self.waypoints)
-        self.scenario.add_checkpoints(self.waypoints, scales)
+        checkpoint_wps = (
+            [wp for p in self._paths for wp in p.sparse_waypoints]
+            if self.random_path
+            else self.waypoints
+        )
+        scales = [(5.0, 5.0, 1.0)] * len(checkpoint_wps)
+        self.scenario.add_checkpoints(checkpoint_wps, scales)
 
         self.scenario.make(self.bng)
         self.bng.set_deterministic(30)
