@@ -114,21 +114,21 @@ The agent spawns at `(61, −788, 101)` facing north.
 |---|---|
 | Rays (angular bins) | 8 |
 | Channels per ray | 1 (distance). Extensible via `LIDAR_CHANNELS_PER_RAY`. |
-| Field of view | 120° (forward-facing, ±60°) |
+| Field of view | 360° full ring (8 azimuth bins around the vehicle) |
 | Max range | 50 m |
-| Mount position | Seeded just above the bbox roof from `vehicle.get_bbox()`, then BeamNG LiDAR `is_snapping_desired=True` + `is_force_inside_triangle=True` snaps it onto the nearest vehicle surface. Falls back to `(0, −1.8, 1.15)` if bbox sampling fails. |
+| Mount position | Centered above the bbox roof from `vehicle.get_bbox()`; BeamNG snapping disabled with `is_snapping_desired=False` and `is_force_inside_triangle=False`; falls back to `(0.0, 0.0, 2.4)` if bbox sampling fails. |
 | Direction | forward (0, −1, 0) in BeamNG coords |
-| Vertical angle | 6° |
-| Vertical resolution | 16 layers |
+| Vertical angle | 26.9° (BeamNG default; wide enough to catch near/low obstacles) |
+| Vertical resolution | 32 layers |
 | Self-filter | ego OBB (from `vehicle.get_bbox()`) + `LIDAR_SELF_MARGIN` (0.3 m) |
 | Ground filter | `local_z > bbox_floor + LIDAR_GROUND_CLEARANCE` (0.3 m) |
 
 Each bin returns the **nearest** point distance in that angular slice, normalized to `[0, 1]`.
-Bins are ordered **right-to-left** across the FOV: bin 0 is the rightmost slice
-(`−half_fov`) and bin 7 is the leftmost (`+half_fov`), since binning is done on
-`arctan2(local_y, local_x)` where `+local_y` is the vehicle's left. Points inside the
-ego OBB and below ground clearance are filtered out before binning, so self-hits and
-asphalt returns do not pollute the observation.
+Binning spans `[-π, π]` from `arctan2(local_y, local_x)`, where `+local_y` is the
+vehicle's left. Rear points lie at the wrap boundary (`±π`) and are assigned to the
+first or last bin by `np.digitize`/clipping. Points inside the ego OBB and below
+ground clearance are filtered out before binning, so self-hits and asphalt returns
+do not pollute the observation.
 
 ---
 

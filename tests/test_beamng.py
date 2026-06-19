@@ -31,6 +31,14 @@ class TestProcessLidarDelegation:
         # debug populated as a side effect, as before
         assert env._lidar_debug["fov"] == 1
 
+    def test_rear_obstacle_visible_with_default_360_fov(self):
+        env = _bare_env()
+        env._ego_local_extents = None
+        cloud = np.array([[-25.0, 0.0, 1.0]], dtype=np.float32)
+        out = env._process_lidar(cloud, (0.0, 0.0, 0.0), 0.0)
+        assert out.min() == pytest.approx(0.5, abs=1e-3)
+        assert (out == 1.0).sum() == BeamNGDrivingEnv.LIDAR_RAYS - 1
+
 
 class TestNoNpcApi:
     def test_npc_helpers_removed(self):

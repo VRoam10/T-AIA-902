@@ -22,6 +22,17 @@ CFG = LidarConfig(
     ground_clearance=0.30,
 )
 
+CFG_360 = LidarConfig(
+    rays=8,
+    v_bins=1,
+    channels=1,
+    fov_deg=360.0,
+    vert_angle=6.0,
+    max_dist=50.0,
+    self_margin=0.30,
+    ground_clearance=0.30,
+)
+
 
 class TestEgoLocalExtents:
     def test_returns_none_without_bbox(self):
@@ -47,6 +58,19 @@ class TestEgoLocalExtents:
         assert y_max == pytest.approx(0.8)
         assert z_min == pytest.approx(-0.3)
         assert z_max == pytest.approx(1.8)
+
+    def test_rejects_world_scale_garbage_box(self):
+        # A bad pose leaves corners at world scale; the de-rotated box exceeds the
+        # plausible half-extent and must be discarded (None) rather than disabling
+        # the LiDAR with a giant self-filter box.
+        bbox = {"c0": (-500.0, -500.0, 0.0), "c1": (500.0, 500.0, 2.0)}
+        state = {"pos": (0.0, 0.0, 0.0), "dir": (1.0, 0.0, 0.0)}
+        assert ego_local_extents_from_bbox(bbox, state, 0.3, max_half_extent=10.0) is None
+
+    def test_keeps_plausible_box_within_bound(self):
+        bbox = {"c0": (-2.0, -1.0, 0.0), "c1": (2.0, 1.0, 1.5)}
+        state = {"pos": (0.0, 0.0, 0.0), "dir": (1.0, 0.0, 0.0)}
+        assert ego_local_extents_from_bbox(bbox, state, 0.3, max_half_extent=10.0) is not None
 
 
 class TestWorldToLocal:
@@ -114,6 +138,23 @@ class TestProcessLidar:
         cloud = np.array([[-25.0, 0.0, 1.0]], dtype=np.float32)
         out, dbg = process_lidar(cloud, (0, 0, 0), 0.0, None, CFG)
         assert np.all(out == 1.0)
+
+    def test_full_360_keeps_rear_obstacle(self):
+        # Point directly behind (local -X) is kept in full 360 mode.
+        cloud = np.array([[-25.0, 0.0, 1.0]], dtype=np.float32)
+        out, dbg = process_lidar(cloud, (0, 0, 0), 0.0, None, CFG_360)
+        assert out.min() == pytest.approx(0.5, abs=1e-3)
+        assert (out == 1.0).sum() == 7
+        assert dbg["fov"] == 1
+
+    def test_full_360_rejects_ego_body_before_binning(self):
+        # Near point inside the ego OBB is rejected; rear obstacle still binned.
+        cloud = np.array([[-1.0, 0.0, 1.0], [-25.0, 0.0, 1.0]], dtype=np.float32)
+        ego_extents = (-2.0, 2.0, -1.0, 1.0, 0.0, 2.0)
+        out, dbg = process_lidar(cloud, (0, 0, 0), 0.0, ego_extents, CFG_360)
+        assert dbg["self"] == 1
+        assert dbg["kept"] == 1
+        assert out.min() == pytest.approx(0.5, abs=1e-3)
 
 
 class TestBodyOrientationFeatures:
