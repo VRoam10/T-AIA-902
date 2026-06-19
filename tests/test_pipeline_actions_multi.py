@@ -1,8 +1,8 @@
-"""Tests for the multi-agent CLI builder helper."""
+"""Tests for the multi-agent action builder helper."""
 
 from unittest.mock import MagicMock, patch
 
-from core.cli import build_multi_session
+from core.pipeline_actions import build_multi_session
 
 
 def test_build_multi_session_builds_one_agent_per_spec():
@@ -23,7 +23,7 @@ def test_build_multi_session_builds_one_agent_per_spec():
         },
     ]
     # Patch the env so no BeamNG launch happens.
-    with patch("core.cli.BeamNGMultiEnv") as EnvCls:
+    with patch("core.pipeline_actions.BeamNGMultiEnv") as EnvCls:
         EnvCls.return_value = MagicMock()
         env, slots = build_multi_session(specs, map_name="gridmap_v2")
 
@@ -44,7 +44,7 @@ def test_build_multi_session_passes_map_to_env():
             "save_path": "outputs/multi-agents/dqn.pth",
         },
     ]
-    with patch("core.cli.BeamNGMultiEnv") as EnvCls:
+    with patch("core.pipeline_actions.BeamNGMultiEnv") as EnvCls:
         EnvCls.return_value = MagicMock()
         build_multi_session(specs, map_name="italy")
         _, kwargs = EnvCls.call_args
@@ -70,7 +70,7 @@ def test_build_multi_session_sizes_agent_to_each_env():
             "save_path": "outputs/multi-agents/ddpg.pth",
         },
     ]
-    with patch("core.cli.BeamNGMultiEnv") as EnvCls:
+    with patch("core.pipeline_actions.BeamNGMultiEnv") as EnvCls:
         EnvCls.return_value = MagicMock()
         _, slots = build_multi_session(specs, map_name="gridmap_v2")
 
@@ -92,7 +92,7 @@ def test_build_multi_session_sizes_agent_with_flags():
             "wheel_terrain": True,
         },
     ]
-    with patch("core.cli.BeamNGMultiEnv") as EnvCls:
+    with patch("core.pipeline_actions.BeamNGMultiEnv") as EnvCls:
         EnvCls.return_value = MagicMock()
         _, slots = build_multi_session(specs, map_name="gridmap_v2")
     assert slots[0].n_states == 18
@@ -100,30 +100,3 @@ def test_build_multi_session_sizes_agent_with_flags():
     assert slots[0].wheel_terrain is True
     # The built DQN agent's network must also be sized to 18 inputs.
     assert slots[0].agent.q_net.feature[0].in_features == 18
-
-
-def test_ask_bool_parses_yes_no():
-    from core.cli import _ask_bool
-
-    with patch("builtins.input", return_value="y"):
-        assert _ask_bool("?") is True
-    with patch("builtins.input", return_value=""):
-        assert _ask_bool("?", default=False) is False
-    with patch("builtins.input", return_value="yes"):
-        assert _ask_bool("?") is True
-    with patch("builtins.input", return_value="n"):
-        assert _ask_bool("?", default=True) is False
-
-
-def test_obs_suffix_encodes_predicted_checkpoint_count_and_body_orientation():
-    from core.cli import _obs_suffix
-
-    # No hints and no body orientation -> no suffix, so existing filenames are unchanged.
-    assert _obs_suffix(0, False) == ""
-    # Predicted-checkpoint hints -> a "_{n}hints" fragment that distinguishes the model.
-    assert _obs_suffix(1, False) == "_1hints"
-    assert _obs_suffix(3, False) == "_3hints"
-    # Body orientation (pitch + roll) in obs -> a "_body" fragment.
-    assert _obs_suffix(0, True) == "_body"
-    # Both options -> hints first, then body, so the name is stable.
-    assert _obs_suffix(2, True) == "_2hints_body"

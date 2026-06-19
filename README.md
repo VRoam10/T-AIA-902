@@ -72,18 +72,32 @@ BEAMNG_USER=C:\chemin\vers\BeamNG\user\folder
 python main.py
 ```
 
-Le menu interactif s'affiche :
+`python main.py` lance l'application OpenTUI via Bun (installer Bun au prealable : https://bun.sh).
+L'interface terminal moderne (« command center ») se navigue au clavier :
 
 ```
-==================================================
-   RL Pipeline
-==================================================
-1. Train an agent
-2. Evaluate an agent
-3. Run a benchmark
-4. Human play (BeamNG)
-5. Quit
+ ╔════════════════════════════════════════════════════════════╗
+ ║ ◢◤ RL PIPELINE   Train › dqn › beamng_lidar       ⠹ running ║
+ ╚════════════════════════════════════════════════════════════╝
+ ┌ Workflows ───────┐┌ Train an agent ─────────────────────────┐
+ │ ●  Train         ││ Algorithm    ‹ dqn ›                     │
+ │ ○  Evaluate      ││ Environment  ‹ beamng_lidar ›            │
+ │ ○  Benchmark     ││ ── hyperparameters ──────────────────────│
+ │ ○  Human play    ││ lr 0.001   gamma 0.99   batch 64         │
+ │ ○  Trajectories  ││          ▸ ▶ Start training              │
+ │ ○  Multi-agent   │└──────────────────────────────────────────┘
+ ├ Status ──────────┤┌ Output · l for full logs ──────────────┐
+ │ ⠹ Train ▓▓▓░ 42% ││ ep 210/500  reward 6.4  ε 0.18          │
+ └──────────────────┘└──────────────────────────────────────────┘
+  ? help · l logs · ⇥ field · ⏎ run · ← → choice · esc back · ^C quit
 ```
+
+Touches : `↑ ↓` naviguer dans le menu, `Enter` ouvrir un workflow / lancer le bouton
+focalisé, `Tab` champ suivant, `← →` changer un choix, `l` ouvrir la fenêtre des logs
+complets, `?` aide clavier, `Esc` revenir au menu / fermer une fenêtre, `Ctrl+C` annuler
+un run en cours ou quitter. Le panneau Output est un aperçu compact ; `l` ouvre les logs
+complets (défilables). L'UI intègre une barre de progression live (lue depuis la sortie
+d'entrainement), la validation des champs numeriques et un overlay d'aide clavier.
 
 ### 1. Train an agent
 
@@ -115,7 +129,7 @@ Voir la section [Benchmarks](#benchmarks) pour le detail des metriques et des fi
 
 ```
 testRomain/
-├── main.py                  # Point d'entree -> menu interactif
+├── main.py                  # Point d'entree -> launcher OpenTUI
 ├── config.py                # Charge les variables depuis .env
 ├── .env                     # Variables d'environnement (non versionne)
 ├── .env.template            # Template a copier
@@ -125,7 +139,7 @@ testRomain/
 │   ├── base_benchmark.py    # Classe abstraite BaseBenchmark
 │   ├── registry.py          # Registre central (algos, envs, benchmarks)
 │   ├── runner.py            # Boucle train/eval generique
-│   └── cli.py               # Menu interactif
+│   └── pipeline_actions.py  # Couche d'actions pilotee par l'UI
 │
 ├── algorithms/
 │   ├── __init__.py           # Registration des algorithmes
@@ -140,6 +154,8 @@ testRomain/
 ├── benchmarks/
 │   ├── __init__.py           # Registration des benchmarks
 │   └── convergence.py        # Benchmark de convergence
+│
+├── tui/                     # Application terminal OpenTUI (Bun + TypeScript)
 │
 └── outputs/                  # Modeles et plots (non versionne)
 ```
@@ -321,9 +337,9 @@ Les waypoints, spawn position et spawn rotation sont desormais generes
 automatiquement pour chaque map a partir du reseau routier (DecalRoads)
 de BeamNG.
 
-- Pre-calcul depuis le menu principal : option `5. Generate trajectories (BeamNG)`
+- Pre-calcul depuis l'app OpenTUI : `Generate trajectories (BeamNG)`
 - Cache sur disque : `outputs/trajectories/<map>.json`
-- Pour regenerer : supprimer le fichier JSON ou reactiver l'option 5
+- Pour regenerer : supprimer le fichier JSON ou relancer l'option avec `Overwrite`
 - Pour les maps sans routes (`smallgrid`), une boucle carree de 80 m sert de fallback
 
 Le format du cache JSON :
