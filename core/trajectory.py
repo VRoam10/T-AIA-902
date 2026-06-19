@@ -151,6 +151,7 @@ SPAWN_Z_OFFSET_M = 1.0
 FALLBACK_SIDE_M = 80.0
 FALLBACK_GROUND_Z = 1.0
 MIN_PATH_SEPARATION_M = 30.0
+SPAWN_CLEARANCE_M = 2.0  # keep the first checkpoint at least this far from the spawn
 
 CACHE_DIR = Path("outputs/trajectories")
 
@@ -319,27 +320,29 @@ def _road_path_from_teleport(
     return centerline if aligned else list(reversed(centerline))
 
 
-def _teleport_points(bng) -> list[tuple[Vec3, Quat]]:
-    """Map teleport/spawn points as (pos, rot_quat).
+def _teleport_points(bng) -> list[tuple[Vec3, Quat, str]]:
+    """Map quick-travel points as (pos, rot_quat, name).
 
-    Reads BeamNG `SpawnSphere` objects; falls back to named waypoints. Returns
-    an empty list if neither is available (older beamngpy or map without them).
+    Prefers named quick-travel waypoints (`find_waypoints`); falls back to
+    `SpawnSphere` spawn points. Returns [] if neither is available (older
+    beamngpy or a map without them).
     """
-    for getter in (
-        lambda: bng.scenario.find_objects_class("SpawnSphere"),
-        lambda: bng.scenario.find_waypoints(),
+    for getter, _label in (
+        (lambda: bng.scenario.find_waypoints(), "waypoints"),
+        (lambda: bng.scenario.find_objects_class("SpawnSphere"), "spawnspheres"),
     ):
         try:
             objs = getter()
         except Exception:
             continue
-        pts: list[tuple[Vec3, Quat]] = []
-        for o in objs or []:
+        pts: list[tuple[Vec3, Quat, str]] = []
+        for i, o in enumerate(objs or []):
             pos = tuple(getattr(o, "pos", None)) if getattr(o, "pos", None) else None
             if pos is None:
                 continue
             rot = getattr(o, "rot_quat", None) or (0.0, 0.0, 0.0, 1.0)
-            pts.append((pos, tuple(rot)))
+            name = getattr(o, "name", None) or getattr(o, "oid", None) or f"point_{i}"
+            pts.append((pos, tuple(rot), str(name)))
         if pts:
             return pts
     return []
@@ -347,6 +350,33 @@ def _teleport_points(bng) -> list[tuple[Vec3, Quat]]:
 
 def _path_length(centerline: list[Vec3]) -> float:
     return sum(_segment_length(centerline[i], centerline[i + 1]) for i in range(len(centerline) - 1))
+
+
+def _drop_waypoints_near_spawn(
+    spawn_pos: Vec3, waypoints: list[Vec3], clearance: float
+) -> list[Vec3]:
+    """Drop leading waypoints within `clearance` metres (XY) of the spawn.
+
+    Keeps the first checkpoint off the spawn so it isn't auto-registered at
+    episode start. Always keeps at least the final waypoint.
+    """
+    for i, wp in enumerate(waypoints):
+        if math.hypot(wp[0] - spawn_pos[0], wp[1] - spawn_pos[1]) >= clearance:
+            return waypoints[i:]
+    return waypoints[-1:]
+
+
+def _spawn_rot_towards(spawn_pos: Vec3, waypoints: list[Vec3], fallback: Quat) -> Quat:
+    """Quaternion facing the first waypoint that differs from spawn in the XY plane.
+
+    Used so a spawned vehicle looks toward its next checkpoint rather than at a
+    teleport marker's own (often identity) heading. Falls back to `fallback`
+    when no waypoint is distinct from the spawn position.
+    """
+    for wp in waypoints:
+        if abs(wp[0] - spawn_pos[0]) > 1e-6 or abs(wp[1] - spawn_pos[1]) > 1e-6:
+            return heading_to_quat(spawn_pos, wp)
+    return fallback
 
 
 def _path_from_teleport(
@@ -365,12 +395,12 @@ def _path_from_teleport(
     path = _road_path_from_teleport(centerline, tele_pos, forward)
     if len(path) < 2:
         return None
-    sparse = resample(path, SPARSE_SPACING_M)
-    dense = resample(path, DENSE_SPACING_M)
     spawn_pos = (tele_pos[0], tele_pos[1], tele_pos[2] + SPAWN_Z_OFFSET_M)
+    sparse = _drop_waypoints_near_spawn(spawn_pos, resample(path, SPARSE_SPACING_M), SPAWN_CLEARANCE_M)
+    dense = _drop_waypoints_near_spawn(spawn_pos, resample(path, DENSE_SPACING_M), SPAWN_CLEARANCE_M)
     traj = TrajectoryData(
         spawn_pos=spawn_pos,
-        spawn_rot=tele_rot,
+        spawn_rot=_spawn_rot_towards(spawn_pos, sparse, tele_rot),
         sparse_waypoints=sparse,
         dense_waypoints=dense,
         map_name=map_name,
@@ -391,11 +421,16 @@ def generate(bng, map_name: str) -> MapTrajectories:
     network = bng.scenario.get_road_network(include_edges=True, drivable_only=True)
     roads = _road_centerlines(network)
     teleports = _teleport_points(bng)
+    if teleports:
+        print(
+            f"[trajectory] {map_name}: {len(teleports)} quick-travel points: "
+            + ", ".join(t[2] for t in teleports)
+        )
 
     if roads and teleports:
         scored: list[tuple[TrajectoryData, float]] = []
         accepted_spawns: list[Vec3] = []
-        for pos, rot in teleports:
+        for pos, rot, _name in teleports:
             built = _path_from_teleport(pos, rot, roads, map_name)
             if built is None:
                 continue

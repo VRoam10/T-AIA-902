@@ -17,6 +17,7 @@ def _make_beamng(
     trajectory_hints=0,
     body_orientation=False,
     wheel_terrain=False,
+    random_path=False,
 ):
     from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
     from environments.beamng import BeamNGDrivingEnv
@@ -31,6 +32,7 @@ def _make_beamng(
         trajectory_hints=trajectory_hints,
         body_orientation=body_orientation,
         wheel_terrain=wheel_terrain,
+        random_path=random_path,
     )
 
 
@@ -47,6 +49,7 @@ def _make_beamng_lidar(
     trajectory_hints=0,
     body_orientation=False,
     wheel_terrain=False,
+    random_path=False,
     **_kwargs,
 ):
     from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
@@ -61,6 +64,7 @@ def _make_beamng_lidar(
         trajectory_hints=trajectory_hints,
         body_orientation=body_orientation,
         wheel_terrain=wheel_terrain,
+        random_path=random_path,
     )
 
 
@@ -77,6 +81,7 @@ def _make_beamng_continuous(
     trajectory_hints=0,
     body_orientation=False,
     wheel_terrain=False,
+    random_path=False,
     **_kwargs,
 ):
     from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
@@ -91,6 +96,7 @@ def _make_beamng_continuous(
         trajectory_hints=trajectory_hints,
         body_orientation=body_orientation,
         wheel_terrain=wheel_terrain,
+        random_path=random_path,
     )
 
 
@@ -107,6 +113,7 @@ def _make_beamng_camera(
     trajectory_hints=0,
     body_orientation=False,
     wheel_terrain=False,
+    random_path=False,
     **_kwargs,
 ):
     from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
@@ -121,6 +128,7 @@ def _make_beamng_camera(
         trajectory_hints=trajectory_hints,
         body_orientation=body_orientation,
         wheel_terrain=wheel_terrain,
+        random_path=random_path,
     )
 
 

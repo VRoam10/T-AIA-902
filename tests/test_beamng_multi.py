@@ -447,6 +447,35 @@ class TestPathAssignment:
         with pytest.raises(ValueError, match="only 2 distinct path"):
             env._assign_paths()
 
+    def test_random_assign_gives_distinct_paths(self, monkeypatch):
+        env = _env()  # 3 slots
+        env.random_path = True
+        env.trajectories = self._mt(5)
+        monkeypatch.setattr(
+            "environments.beamng_multi.random.shuffle",
+            lambda seq: seq.reverse(),
+        )
+        env._assign_paths()
+        idxs = [s.path_idx for s in env.slots]
+        assert len(set(idxs)) == 3  # distinct
+        # reversed [0,1,2,3,4] -> [4,3,2,1,0]; first 3 dealt
+        assert idxs == [4, 3, 2]
+
+    def test_pick_distinct_path_idx_avoids_other_slots(self):
+        env = _env()  # 3 slots
+        env.random_path = True
+        env.trajectories = self._mt(3)
+        env.slots[1].path_idx = 1
+        env.slots[2].path_idx = 2
+        # only index 0 is free for slot 0
+        assert env._pick_distinct_path_idx(env.slots[0]) == 0
+
+    def test_assign_paths_not_random_is_sequential(self):
+        env = _env()
+        env.trajectories = self._mt(3)
+        env._assign_paths()
+        assert [s.path_idx for s in env.slots] == [0, 1, 2]
+
 
 class TestMarkers:
     def test_color_rgba_known_case_insensitive(self):

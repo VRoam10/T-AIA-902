@@ -13,6 +13,7 @@ from core.trajectory import (
     _edge_center,
     _extract_longest_road,
     _nearest_road,
+    _path_from_teleport,
     _quat_to_forward,
     _road_centerlines,
     _road_path_from_teleport,
@@ -226,10 +227,11 @@ def test_extract_longest_road_skips_single_edge_roads():
     assert _extract_longest_road(network) == (None, None)
 
 
-def _spawn_obj(pos, rot=(0.0, 0.0, 0.0, 1.0)):
+def _spawn_obj(pos, rot=(0.0, 0.0, 0.0, 1.0), name="wp"):
     obj = MagicMock()
     obj.pos = pos
     obj.rot_quat = rot
+    obj.name = name
     return obj
 
 
@@ -251,29 +253,76 @@ def _two_road_network():
     }
 
 
-def test_teleport_points_reads_spawnspheres():
+def test_teleport_points_prefers_waypoints():
     bng = MagicMock()
-    bng.scenario.find_objects_class.return_value = [
-        _spawn_obj((1.0, 2.0, 3.0)),
-        _spawn_obj((4.0, 5.0, 6.0)),
+    bng.scenario.find_waypoints.return_value = [
+        _spawn_obj((1.0, 2.0, 3.0), name="garage"),
+        _spawn_obj((4.0, 5.0, 6.0), name="quarry"),
     ]
     pts = _teleport_points(bng)
-    bng.scenario.find_objects_class.assert_called_once_with("SpawnSphere")
+    bng.scenario.find_waypoints.assert_called_once_with()
+    bng.scenario.find_objects_class.assert_not_called()
     assert pts[0][0] == (1.0, 2.0, 3.0)
+    assert pts[0][2] == "garage"
     assert len(pts) == 2
+
+
+def test_teleport_points_falls_back_to_spawnspheres():
+    bng = MagicMock()
+    bng.scenario.find_waypoints.return_value = []
+    bng.scenario.find_objects_class.return_value = [_spawn_obj((7.0, 8.0, 9.0), name="ss0")]
+    pts = _teleport_points(bng)
+    bng.scenario.find_objects_class.assert_called_once_with("SpawnSphere")
+    assert pts[0][0] == (7.0, 8.0, 9.0)
 
 
 def test_teleport_points_empty_on_error():
     bng = MagicMock()
-    bng.scenario.find_objects_class.side_effect = RuntimeError("boom")
     bng.scenario.find_waypoints.side_effect = RuntimeError("boom")
+    bng.scenario.find_objects_class.side_effect = RuntimeError("boom")
     assert _teleport_points(bng) == []
+
+
+def test_generate_logs_quicktravel_names(capsys):
+    bng = MagicMock()
+    bng.scenario.get_road_network.return_value = _two_road_network()
+    bng.scenario.find_waypoints.return_value = [
+        _spawn_obj((0.0, 0.0, 0.0), name="north_wp"),
+        _spawn_obj((201.0, 0.0, 0.0), name="east_wp"),
+    ]
+    generate(bng, map_name="italy")
+    out = capsys.readouterr().out
+    assert "north_wp" in out and "east_wp" in out
+
+
+def test_path_from_teleport_spawn_faces_first_checkpoint():
+    # Road heads +X (east); teleport at origin with identity rotation (faces +Y/north).
+    roads = [("r", [(0.0, 0.0, 0.0), (50.0, 0.0, 0.0), (100.0, 0.0, 0.0)])]
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is not None
+    traj, _ = built
+    # Spawn faces the first checkpoint (east), NOT the identity rotation it was given.
+    east = heading_to_quat((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
+    assert traj.spawn_rot == pytest.approx(east, abs=1e-6)
+    assert traj.spawn_rot != (0.0, 0.0, 0.0, 1.0)
+
+
+def test_path_from_teleport_first_checkpoint_clear_of_spawn():
+    # The snap vertex coincides with the spawn; the first checkpoint must be
+    # moved off the spawn so it isn't auto-hit at episode start.
+    roads = [("r", [(0.0, 0.0, 0.0), (50.0, 0.0, 0.0), (100.0, 0.0, 0.0)])]
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    traj, _ = built
+    spawn = traj.spawn_pos
+    for wps in (traj.sparse_waypoints, traj.dense_waypoints):
+        first = wps[0]
+        assert math.hypot(first[0] - spawn[0], first[1] - spawn[1]) >= 2.0
 
 
 def test_generate_builds_one_path_per_teleport():
     bng = MagicMock()
     bng.scenario.get_road_network.return_value = _two_road_network()
-    bng.scenario.find_objects_class.return_value = [
+    bng.scenario.find_waypoints.return_value = [
         _spawn_obj((0.0, 0.0, 0.0)),     # snaps to "north"
         _spawn_obj((201.0, 0.0, 0.0)),   # snaps to "east"
     ]
@@ -292,7 +341,7 @@ def test_generate_dedupes_nearby_teleports():
     bng.scenario.get_road_network.return_value = _two_road_network()
     # Second spawn is 1 m away — well within MIN_PATH_SEPARATION_M (30 m).
     assert MIN_PATH_SEPARATION_M > 1.0
-    bng.scenario.find_objects_class.return_value = [
+    bng.scenario.find_waypoints.return_value = [
         _spawn_obj((0.0, 0.0, 0.0)),
         _spawn_obj((1.0, 0.0, 0.0)),  # within MIN_PATH_SEPARATION_M of the first
     ]
@@ -438,3 +487,93 @@ def test_single_env_resolve_trajectory_takes_first_path(tmp_path, monkeypatch):
     env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")
     traj = env._resolve_trajectory()
     assert traj.source == "teleport:first"
+
+
+def test_single_env_random_path_picks_from_all_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.trajectory.CACHE_DIR", tmp_path)
+    p0 = _sample_traj(source="teleport:first")
+    p1 = TrajectoryData(
+        spawn_pos=(99.0, 99.0, 1.0),
+        spawn_rot=(0.0, 0.0, 0.0, 1.0),
+        sparse_waypoints=[(99.0, 100.0, 0.0), (99.0, 110.0, 0.0)],
+        dense_waypoints=[(99.0, 100.0, 0.0)],
+        map_name="italy",
+        generated_at="2026-06-18T12:00:00+00:00",
+        source="teleport:second",
+    )
+    MapTrajectories(
+        map_name="italy", generated_at="2026-06-18T12:00:00+00:00", paths=[p0, p1]
+    )  # construct to validate shape
+    (tmp_path / "italy.json").write_text(
+        MapTrajectories(
+            map_name="italy", generated_at="2026-06-18T12:00:00+00:00", paths=[p0, p1]
+        ).to_json()
+    )
+
+    from environments.beamng import BeamNGDrivingEnv
+
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._resolve_trajectory()  # populates env._paths and default env.trajectory
+    env._paths = [p0, p1]
+
+    monkeypatch.setattr("environments.beamng.random.choice", lambda seq: seq[1])
+    env._pick_episode_path()
+    assert env.trajectory.source == "teleport:second"
+    assert env.waypoints == list(p1.sparse_waypoints)
+
+
+def test_single_env_resolve_trajectory_default_first_path_when_not_random(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.trajectory.CACHE_DIR", tmp_path)
+    p0 = _sample_traj(source="teleport:first")
+    (tmp_path / "italy.json").write_text(
+        MapTrajectories(
+            map_name="italy", generated_at="2026-06-18T12:00:00+00:00", paths=[p0]
+        ).to_json()
+    )
+    from environments.beamng import BeamNGDrivingEnv
+
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")  # random_path defaults False
+    traj = env._resolve_trajectory()
+    assert traj.source == "teleport:first"
+    assert env._paths[0].source == "teleport:first"
+
+
+def test_single_env_random_reset_teleports_to_chosen_spawn_without_restart(monkeypatch):
+    # Regression: scenario.restart() repositions the car to the baked (path[0])
+    # spawn; the random branch must teleport to the CHOSEN path's spawn and must
+    # NOT call restart() (which would override the teleport, as the working
+    # multi-agent reset_vehicle demonstrates by teleporting with no restart).
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0 = _sample_traj(source="teleport:a")
+    p1 = TrajectoryData(
+        spawn_pos=(99.0, 99.0, 1.0),
+        spawn_rot=(0.0, 0.0, 0.0, 1.0),
+        sparse_waypoints=[(99.0, 100.0, 0.0), (99.0, 110.0, 0.0)],
+        dense_waypoints=[(99.0, 100.0, 0.0)],
+        map_name="italy",
+        generated_at="2026-06-18T12:00:00+00:00",
+        source="teleport:b",
+    )
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._paths = [p0, p1]
+    env.trajectory = p0
+    env.bng = MagicMock()
+    env.vehicle = MagicMock()
+    env.lidar = MagicMock()
+
+    monkeypatch.setattr("environments.beamng.random.choice", lambda seq: p1)
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+
+    def fake_observe():
+        env._current_dist = 0.0
+        return [0.0]
+
+    monkeypatch.setattr(env, "_observe", fake_observe)
+
+    env.reset()
+
+    env.vehicle.teleport.assert_called_once_with(
+        p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True
+    )
+    env.bng.scenario.restart.assert_not_called()

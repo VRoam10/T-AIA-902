@@ -5,6 +5,7 @@ advances every vehicle; each vehicle keeps its own episode state in a
 VehicleSlot so several algorithms train in parallel on one trajectory.
 """
 
+import random
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -68,6 +69,7 @@ class VehicleSlot:
     # Per-vehicle starting-grid pose (assigned during scenario load)
     spawn_pos: tuple = (0.0, 0.0, 0.0)
     spawn_rot: tuple = (0.0, 0.0, 0.0, 1.0)
+    path_idx: int = 0
     waypoints: list = field(default_factory=list)
 
     # Episode state
@@ -268,6 +270,7 @@ class BeamNGMultiEnv:
         port: int = 25252,
         headless: bool = False,
         map_name: str = "gridmap_v2",
+        random_path: bool = False,
     ):
         self.slots = slots
         self.beamng_home = beamng_home
@@ -276,6 +279,7 @@ class BeamNGMultiEnv:
         self.port = port
         self.headless = headless
         self.map_name = map_name
+        self.random_path = random_path
 
         self.bng: BeamNGpy = None
         self.scenario: Scenario = None
@@ -553,12 +557,29 @@ class BeamNGMultiEnv:
             raise ValueError(
                 f"{len(self.slots)} vehicles requested but map '{self.map_name}' has "
                 f"only {len(paths)} distinct path(s). Reduce the vehicle count to "
-                f"<= {len(paths)} or pick a map with more teleport points."
+                f"<= {len(paths)} or pick a map with more quick-travel points."
             )
-        for slot, path in zip(self.slots, paths, strict=False):
-            slot.waypoints = list(path.sparse_waypoints)
-            slot.spawn_pos = path.spawn_pos
-            slot.spawn_rot = path.spawn_rot
+        if self.random_path:
+            order = list(range(len(paths)))
+            random.shuffle(order)
+            for slot, idx in zip(self.slots, order, strict=False):
+                slot.path_idx = idx
+                self._apply_path(slot, paths[idx])
+        else:
+            for i, slot in enumerate(self.slots):
+                slot.path_idx = i
+                self._apply_path(slot, paths[i])
+
+    def _apply_path(self, slot, path):
+        slot.waypoints = list(path.sparse_waypoints)
+        slot.spawn_pos = path.spawn_pos
+        slot.spawn_rot = path.spawn_rot
+
+    def _pick_distinct_path_idx(self, slot) -> int:
+        """A random path index not currently held by any other slot."""
+        taken = {s.path_idx for s in self.slots if s is not slot}
+        free = [i for i in range(len(self.trajectories.paths)) if i not in taken]
+        return random.choice(free)
 
     def _resolve_trajectory(self):
         import time
@@ -600,7 +621,10 @@ class BeamNGMultiEnv:
                 cling=True,
             )
 
-        all_waypoints = [wp for slot in self.slots for wp in slot.waypoints]
+        if self.random_path:
+            all_waypoints = [wp for p in self.trajectories.paths for wp in p.sparse_waypoints]
+        else:
+            all_waypoints = [wp for slot in self.slots for wp in slot.waypoints]
         scales = [(5.0, 5.0, 1.0)] * len(all_waypoints)
         self.scenario.add_checkpoints(all_waypoints, scales)
 
@@ -714,7 +738,10 @@ class BeamNGMultiEnv:
             self._update_slot_marker(slot)
 
     def reset_vehicle(self, slot: VehicleSlot):
-        """Teleport one finished vehicle back to its grid slot for the next episode."""
+        """Teleport one finished vehicle to its (possibly new) path for the next episode."""
+        if self.random_path and self.trajectories is not None:
+            slot.path_idx = self._pick_distinct_path_idx(slot)
+            self._apply_path(slot, self.trajectories.paths[slot.path_idx])
         slot.vehicle.teleport(slot.spawn_pos, rot_quat=slot.spawn_rot, reset=True)
         slot.reset_episode()
         if slot.lidar is not None or slot.electrics is not None:

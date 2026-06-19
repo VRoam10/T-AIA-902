@@ -170,12 +170,14 @@ def _train_menu():
         )
         body_orientation = _ask_bool("Include body orientation (pitch + roll) in obs?")
         wheel_terrain = _ask_bool("Include per-wheel road position in obs?")
+        random_path = _ask_bool("Randomize path each episode?")
         beamng_kwargs = {
             "map_name": map_name,
             "vehicle_id": vehicle_id,
             "trajectory_hints": trajectory_hints,
             "body_orientation": body_orientation,
             "wheel_terrain": wheel_terrain,
+            "random_path": random_path,
         }
 
     # Adjust n_states for the chosen options before building the agent
@@ -429,7 +431,7 @@ def _trajectory_menu():
             env.close()
 
 
-def build_multi_session(specs: list[dict], map_name: str):
+def build_multi_session(specs: list[dict], map_name: str, random_path: bool = False):
     """Create the BeamNGMultiEnv and an agent per spec.
 
     Each spec carries its own ``env`` name; the agent is sized to that env's
@@ -442,6 +444,7 @@ def build_multi_session(specs: list[dict], map_name: str):
         beamng_user=BEAMNG_USER,
         headless=HEADLESS,
         map_name=map_name,
+        random_path=random_path,
     )
 
     enriched = []
@@ -474,6 +477,7 @@ def _multi_train_menu():
     print("\n--- Multi-Agent Training (BeamNG) ---")
     print("\nAvailable maps:")
     map_name = _pick(_BEAMNG_MAPS, "Map")
+    random_path = _ask_bool("Randomize path each episode (deals distinct paths per vehicle)?")
 
     vehicle_keys = list(_BEAMNG_VEHICLES.keys())
     vehicle_labels = list(_BEAMNG_VEHICLES.values())
@@ -521,7 +525,7 @@ def _multi_train_menu():
     minutes = _ask_float("Time limit (minutes, 0 = none)", 0.0)
     time_limit = minutes * 60.0 if minutes > 0 else None
 
-    env, slots = build_multi_session(specs, map_name)
+    env, slots = build_multi_session(specs, map_name, random_path)
     for slot in slots:
         if os.path.exists(slot.save_path):
             choice = (
