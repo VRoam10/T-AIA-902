@@ -21,19 +21,21 @@ class LidarConfig:
     rays: int  # horizontal azimuth bins
     v_bins: int  # vertical elevation bins (1 = legacy single row)
     channels: int  # values stored per cell (currently 1: distance)
-    fov_deg: float  # total forward azimuth field of view
+    fov_deg: float  # total azimuth span used for binning; 360.0 means full ring
     vert_angle: float  # total vertical field of view (used when v_bins > 1)
     max_dist: float  # metres — normalization range
     self_margin: float  # metres — ego OBB expansion for self-hit rejection
     ground_clearance: float  # metres above floor before a point counts as obstacle
 
 
-def ego_local_extents_from_bbox(bbox, state, margin):
+def ego_local_extents_from_bbox(bbox, state, margin, max_half_extent=10.0):
     """Return ego OBB extents in vehicle-local frame, or None.
 
     Tuple layout: (x_min, x_max, y_min, y_max, z_min, z_max), each already
-    expanded by ``margin``. Returns None when bbox or pos is missing — callers
-    fall back to a flat ground threshold.
+    expanded by ``margin``. Returns None when bbox or pos is missing, or when the
+    de-rotated box is implausibly large (``max_half_extent``) — a bad pose or a
+    pre-settle capture yields world-scale garbage, and a wrong box is worse than
+    none. Callers fall back to a flat ground threshold when None.
     """
     if not bbox or "pos" not in state:
         return None
@@ -48,6 +50,18 @@ def ego_local_extents_from_bbox(bbox, state, margin):
     lx = rel[:, 0] * c - rel[:, 1] * s
     ly = rel[:, 0] * s + rel[:, 1] * c
     lz = rel[:, 2]
+    if (
+        max(
+            abs(float(lx.min())),
+            abs(float(lx.max())),
+            abs(float(ly.min())),
+            abs(float(ly.max())),
+            abs(float(lz.min())),
+            abs(float(lz.max())),
+        )
+        > max_half_extent
+    ):
+        return None
     return (
         float(lx.min() - margin),
         float(lx.max() + margin),
