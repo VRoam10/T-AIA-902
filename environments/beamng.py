@@ -24,6 +24,7 @@ from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import (
     LidarConfig,
     body_orientation_features,
+    ego_local_extents_from_bbox,
     wheel_terrain_features,
 )
 
@@ -66,23 +67,36 @@ class BeamNGDrivingEnv:
     LIDAR_RAYS = 8  # number of horizontal angular bins (azimuth)
     LIDAR_V_BINS = 1  # number of vertical bins (elevation). 1 = single row (legacy).
     LIDAR_CHANNELS_PER_RAY = 1  # currently: (distance,). Future: (distance, v_rel, ttc, ...)
-    LIDAR_FOV_DEG = 120.0  # total forward-facing field of view in degrees (azimuth)
+    LIDAR_FOV_DEG = 360.0  # total azimuth span used for observation binning; 360.0 = full ring
     LIDAR_MAX_DIST = 50.0  # metres — normalization range
     LIDAR_GROUND_CLEARANCE = 0.30  # metres above ego bbox floor before a point counts as obstacle
     LIDAR_SELF_MARGIN = 0.30  # metres expansion of ego OBB when rejecting self-hits
+    LIDAR_ROOF_CLEARANCE = LIDAR_SELF_MARGIN  # metres above cached bbox roof for mount placement
 
     # Physical sensor mount/params — overridable per subclass.
-    LIDAR_MOUNT_POS = (0, -2.2, 1.15)  # vehicle-local: forward of bumper, hood-line height
+    LIDAR_MOUNT_POS = (
+        0.0,
+        0.0,
+        2.4,
+    )  # vehicle-local center-roof fallback; only used when bbox sampling fails
     LIDAR_MOUNT_DIR = (0, -1, 0)  # forward in vehicle space
     LIDAR_MOUNT_UP = (0, 0, 1)
-    LIDAR_VERT_RES = 8  # vertical layers emitted by the sensor
-    LIDAR_VERT_ANGLE = 6.0  # total vertical FOV in degrees; also the elevation-binning range
+    LIDAR_VERT_RES = (
+        32  # vertical layers emitted by the sensor (denser cloud, near-obstacle coverage)
+    )
+    LIDAR_VERT_ANGLE = (
+        26.9  # total vertical FOV in degrees (BeamNG default); also elevation-binning range
+    )
 
     # 5 kinematic + (vertical × horizontal × channels) lidar features.
     N_STATES = 6 + LIDAR_RAYS * LIDAR_V_BINS * LIDAR_CHANNELS_PER_RAY  # 14 by default
 
     CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
     CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
+
+    # Plausible ego bbox half-extent (metres) for sanity-checking a captured box;
+    # anything beyond this is world-scale garbage from a bad pose -> discard.
+    BBOX_MAX_HALF_EXTENT = 10.0
 
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 500
@@ -349,7 +363,8 @@ class BeamNGDrivingEnv:
                         f"fov={d.get('fov', 0)} extents_none={d.get('extents_none')} "
                         f"nearest={d.get('min_dist_m', float('nan')):.1f}m "
                         f"z={d.get('min_dist_z', float('nan')):+.2f} "
-                        f"ground_z={d.get('ground_z', float('nan')):+.2f}"
+                        f"ground_z={d.get('ground_z', float('nan')):+.2f} "
+                        f"z_max_seen={d.get('z_max_seen', float('nan')):+.2f}"
                     )
 
                 time.sleep(0.1)
@@ -588,31 +603,8 @@ class BeamNGDrivingEnv:
             return
 
         state = self.vehicle.state or {}
-        # Bail rather than guess: a missing pos here means we cannot align the
-        # world-space bbox to the local frame, and a wrong box is worse than none
-        # (the ground/self filters fall back to safe defaults when extents is None).
-        if not bbox or "pos" not in state:
-            self._ego_local_extents = None
-            return
-
-        corners = np.asarray(list(bbox.values()), dtype=np.float32)
-        pos = np.asarray(state.get("pos", (0.0, 0.0, 0.0)), dtype=np.float32)
-        dir_vec = np.asarray(state.get("dir", (1.0, 0.0, 0.0)), dtype=np.float32)
-        heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
-
-        rel = corners - pos
-        c, s = np.cos(-heading), np.sin(-heading)
-        lx = rel[:, 0] * c - rel[:, 1] * s
-        ly = rel[:, 0] * s + rel[:, 1] * c
-        lz = rel[:, 2]
-        m = self.LIDAR_SELF_MARGIN
-        self._ego_local_extents = (
-            float(lx.min() - m),
-            float(lx.max() + m),
-            float(ly.min() - m),
-            float(ly.max() + m),
-            float(lz.min() - m),
-            float(lz.max() + m),
+        self._ego_local_extents = ego_local_extents_from_bbox(
+            bbox, state, self.LIDAR_SELF_MARGIN, self.BBOX_MAX_HALF_EXTENT
         )
 
     def _lidar_keep_mask(self, local_x, local_y, local_z) -> np.ndarray:
@@ -655,22 +647,21 @@ class BeamNGDrivingEnv:
             "kept": int(keep.sum()),
             "extents_none": self._ego_local_extents is None,
             "ground_z": float(ground_z),
+            "z_max_seen": float(local_z.max()) if n_total else float("nan"),
         }
         return keep
 
     def _resolve_lidar_mount_pos(self) -> tuple[float, float, float]:
-        """Return a vehicle-local LiDAR seed near the roof for BeamNG snapping.
+        """Return a vehicle-local LiDAR mount centered above the cached ego roof.
 
-        BeamNG's LiDAR supports `is_snapping_desired`: the simulator moves the
-        requested vehicle-space `pos` to the nearest vehicle triangle. The seed
-        should be close to the desired surface. A point just above the bbox roof
-        lets BeamNG pick the actual roof triangle. Falls back to the configured
-        constant if bbox sampling failed.
+        Returns a position centered above the cached ego bbox roof (the bbox
+        z_max is already margin-expanded; one more LIDAR_ROOF_CLEARANCE is added
+        above it). Falls back to LIDAR_MOUNT_POS when bbox sampling failed.
         """
         if self._ego_local_extents is None:
             return self.LIDAR_MOUNT_POS
         _, _, _, _, _, z_max = self._ego_local_extents
-        return (0.0, 0.0, float(z_max + self.LIDAR_SELF_MARGIN))
+        return (0.0, 0.0, float(z_max + self.LIDAR_ROOF_CLEARANCE))
 
     def _lidar_creation_kwargs(self) -> dict:
         """Return BeamNGpy LiDAR kwargs shared by scenario creation and tests."""
@@ -684,12 +675,12 @@ class BeamNGDrivingEnv:
             "vertical_angle": self.LIDAR_VERT_ANGLE,
             "horizontal_angle": self.LIDAR_FOV_DEG,
             "max_distance": self.LIDAR_MAX_DIST,
-            "is_360_mode": False,
+            "is_360_mode": True,
             "is_rotate_mode": False,
             "is_using_shared_memory": False,
             "is_visualised": LIDAR_VISUALISE,
-            "is_snapping_desired": True,
-            "is_force_inside_triangle": True,
+            "is_snapping_desired": False,
+            "is_force_inside_triangle": False,
         }
 
     def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:

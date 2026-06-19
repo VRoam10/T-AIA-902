@@ -1,0 +1,72 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+	--font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+	--font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+:root {
+	--bg-base: #ffffff;
+	--bg-card: rgba(0, 0, 0, 0.025);
+	--bg-muted: rgba(0, 0, 0, 0.05);
+	--bg-code: #f5f5f5;
+	--border: rgba(0, 0, 0, 0.09);
+	--border-subtle: rgba(0, 0, 0, 0.05);
+	--header-bg: rgba(255, 255, 255, 0.95);
+	--text-primary: #0a0a0a;
+	--text-secondary: #525252;
+	--text-muted: #737373;
+	--accent: #2563eb;
+	--positive: #16a34a;
+	--negative: #dc2626;
+	--grid-line: rgba(0, 0, 0, 0.08);
+}
+
+.dark {
+	--bg-base: #0a0a0a;
+	--bg-card: rgba(255, 255, 255, 0.02);
+	--bg-muted: rgba(255, 255, 255, 0.05);
+	--bg-code: #0d0d0d;
+	--border: rgba(255, 255, 255, 0.1);
+	--border-subtle: rgba(255, 255, 255, 0.05);
+	--header-bg: rgba(10, 10, 10, 0.95);
+	--text-primary: #ffffff;
+	--text-secondary: #a3a3a3;
+	--text-muted: #525252;
+	--accent: #60a5fa;
+	--positive: #4ade80;
+	--negative: #f87171;
+	--grid-line: rgba(255, 255, 255, 0.08);
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html {
+	scroll-behavior: smooth;
+}
+
+body {
+	background-color: var(--bg-base);
+	color: var(--text-primary);
+	transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+@keyframes fade-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.animate-fade-in {
+	animation: fade-in 0.4s ease-out forwards;
+}

@@ -1,6 +1,6 @@
 """Tests for environments.beamng_multi."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -337,6 +337,32 @@ class TestObserve:
         )
         np.testing.assert_allclose(obs[-4:-2], expected_body, atol=1e-6)
         np.testing.assert_allclose(obs[-2:], expected_wheel, atol=1e-6)
+
+
+class TestCreateSlotSensor:
+    def test_lidar_slot_uses_full_360_and_caches_ego_box_first(self):
+        env = _env()
+        env.bng = MagicMock()
+        slot = env.slots[0]  # perception "lidar"
+        slot.wheel_terrain = False
+        slot.vehicle = MagicMock()
+        slot.vehicle.state = {"pos": (0.0, 0.0, 0.0), "dir": (1.0, 0.0, 0.0)}
+        slot.vehicle.get_bbox.return_value = {
+            "near_bottom_left": (-2.0, -1.0, 0.0),
+            "far_top_right": (2.0, 1.0, 1.6),
+        }
+
+        with patch("environments.beamng_multi.Lidar") as MockLidar:
+            env._create_slot_sensor(slot)
+
+        assert MockLidar.called
+        kwargs = MockLidar.call_args.kwargs
+        assert kwargs["is_360_mode"] is True
+        assert kwargs["is_rotate_mode"] is False
+        assert kwargs["is_snapping_desired"] is False
+        assert kwargs["is_force_inside_triangle"] is False
+        assert kwargs["horizontal_angle"] == 360.0
+        assert slot.ego_local_extents is not None
 
 
 class TestSlotExtraFeatures:

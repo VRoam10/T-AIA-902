@@ -61,14 +61,17 @@ def test_lidar_mount_keeps_configured_fallback_without_cached_bbox():
     assert env._resolve_lidar_mount_pos() == BeamNGDrivingEnv.LIDAR_MOUNT_POS
 
 
-def test_lidar_creation_uses_beamng_surface_snapping():
+def test_lidar_creation_uses_full_360_without_surface_snapping():
     env = _env_with_extents((-4.0, 6.0, -1.4, 1.4, 0.2, 3.8))
 
     kwargs = env._lidar_creation_kwargs()
 
     assert kwargs["pos"] == env._resolve_lidar_mount_pos()
-    assert kwargs["is_snapping_desired"] is True
-    assert kwargs["is_force_inside_triangle"] is True
+    assert kwargs["is_360_mode"] is True
+    assert kwargs["is_rotate_mode"] is False
+    assert kwargs["horizontal_angle"] == 360.0
+    assert kwargs["is_snapping_desired"] is False
+    assert kwargs["is_force_inside_triangle"] is False
 
 
 def test_remove_lidar_detaches_current_sensor_before_vehicle_replacement():

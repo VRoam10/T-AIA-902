@@ -131,7 +131,7 @@ _PERCEPTION_FEATURES = {"lidar": 8, "lidar_grid": 32, "camera": 256}
 # Perception type -> LiDAR sensor params (vertical bins/resolution/FOV). Camera
 # perception has no entry (it uses a Camera sensor instead).
 _LIDAR_PERCEPTION = {
-    "lidar": {"v_bins": 1, "vert_res": 8, "vert_angle": 6.0},
+    "lidar": {"v_bins": 1, "vert_res": 32, "vert_angle": 26.9},
     "lidar_grid": {"v_bins": 4, "vert_res": 16, "vert_angle": 20.0},
 }
 
@@ -249,6 +249,8 @@ class BeamNGMultiEnv:
     LIDAR_MOUNT_DIR = BeamNGDrivingEnv.LIDAR_MOUNT_DIR
     LIDAR_MOUNT_UP = BeamNGDrivingEnv.LIDAR_MOUNT_UP
     LIDAR_VERT_RES = BeamNGDrivingEnv.LIDAR_VERT_RES
+    LIDAR_ROOF_CLEARANCE = BeamNGDrivingEnv.LIDAR_ROOF_CLEARANCE
+    BBOX_MAX_HALF_EXTENT = BeamNGDrivingEnv.BBOX_MAX_HALF_EXTENT
 
     VEHICLES = BeamNGDrivingEnv.VEHICLES
 
@@ -665,12 +667,13 @@ class BeamNGMultiEnv:
             )
             return
 
+        self._cache_ego_local_bbox(slot)
         p = _LIDAR_PERCEPTION[slot.perception]
         slot.lidar = Lidar(
             f"lidar_{slot.name}",
             self.bng,
             slot.vehicle,
-            pos=self.LIDAR_MOUNT_POS,
+            pos=self._resolve_slot_lidar_mount_pos(slot),
             dir=self.LIDAR_MOUNT_DIR,
             up=self.LIDAR_MOUNT_UP,
             requested_update_time=0.05,
@@ -679,12 +682,20 @@ class BeamNGMultiEnv:
             vertical_angle=p["vert_angle"],
             horizontal_angle=self.LIDAR_FOV_DEG,
             max_distance=self.LIDAR_MAX_DIST,
-            is_360_mode=False,
+            is_360_mode=True,
             is_rotate_mode=False,
             is_using_shared_memory=False,
             is_visualised=LIDAR_VISUALISE,
+            is_snapping_desired=False,
+            is_force_inside_triangle=False,
         )
-        self._cache_ego_local_bbox(slot)
+
+    def _resolve_slot_lidar_mount_pos(self, slot: VehicleSlot) -> tuple[float, float, float]:
+        """Mirror BeamNGDrivingEnv._resolve_lidar_mount_pos using the slot's cached ego box."""
+        if slot.ego_local_extents is None:
+            return self.LIDAR_MOUNT_POS
+        _, _, _, _, _, z_max = slot.ego_local_extents
+        return (0.0, 0.0, float(z_max + self.LIDAR_ROOF_CLEARANCE))
 
     def _cache_ego_local_bbox(self, slot: VehicleSlot):
         try:
@@ -694,7 +705,9 @@ class BeamNGMultiEnv:
             slot.ego_local_extents = None
             return
         state = slot.vehicle.state or {}
-        slot.ego_local_extents = ego_local_extents_from_bbox(bbox, state, self.LIDAR_SELF_MARGIN)
+        slot.ego_local_extents = ego_local_extents_from_bbox(
+            bbox, state, self.LIDAR_SELF_MARGIN, self.BBOX_MAX_HALF_EXTENT
+        )
 
     def _update_slot_marker(self, slot: VehicleSlot):
         """Draw/refresh slot's target-waypoint sphere in its vehicle colour.

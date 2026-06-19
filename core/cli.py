@@ -312,6 +312,84 @@ def _eval_menu():
         env.close()
 
 
+def _ask_seeds(prompt: str = "Seeds (comma-separated)", default=(0, 1, 2, 3, 4)) -> list[int]:
+    """Ask for a list of integer seeds, falling back to the default."""
+    default_str = ",".join(str(s) for s in default)
+    raw = input(f"{prompt} [{default_str}]: ").strip()
+    if raw == "":
+        return list(default)
+    try:
+        seeds = [int(token) for token in raw.split(",") if token.strip() != ""]
+        return seeds or list(default)
+    except ValueError:
+        print("  Invalid seeds, using default.")
+        return list(default)
+
+
+def _pick_multi(options: list[str], prompt: str = "Select (comma-separated)") -> list[str]:
+    """Display numbered options and return all chosen ones."""
+    for i, name in enumerate(options, 1):
+        print(f"  {i}. {name}")
+    while True:
+        raw = input(f"\n{prompt}: ").strip()
+        try:
+            idxs = [int(token) - 1 for token in raw.split(",") if token.strip() != ""]
+            chosen = [options[i] for i in idxs if 0 <= i < len(options)]
+            if chosen:
+                return chosen
+        except ValueError:
+            pass
+        print("  Invalid choice, try again.")
+
+
+def _parse_values(raw: str) -> list:
+    """Parse a comma-separated string into ints/floats/strings."""
+    values = []
+    for token in raw.split(","):
+        token = token.strip()
+        if token == "":
+            continue
+        try:
+            values.append(float(token) if ("." in token or "e" in token.lower()) else int(token))
+        except ValueError:
+            values.append(token)
+    return values
+
+
+def _ask_param_grid(algo_name: str) -> dict:
+    """Offer a preset hyperparameter grid for the algorithm or build a custom one."""
+    presets = {
+        "q_learning": {"learning_rate": [0.1, 0.5, 0.85], "discount_factor": [0.9, 0.95, 0.99]},
+        "dqn": {"lr": [1e-3, 5e-4], "gamma": [0.95, 0.99]},
+        "dqn_per": {"lr": [1e-3, 5e-4], "gamma": [0.95, 0.99]},
+    }
+    preset = presets.get(algo_name, {"gamma": [0.95, 0.99]})
+    print(f"\nPreset grid for '{algo_name}': {preset}")
+    if not _ask_bool("Define a custom grid instead?", default=False):
+        return preset
+
+    grid: dict = {}
+    while True:
+        name = input("  Param name (blank to finish): ").strip()
+        if name == "":
+            break
+        values = _parse_values(input(f"  Values for '{name}' (comma-separated): "))
+        if values:
+            grid[name] = values
+    return grid or preset
+
+
+def _format_aggregate(multi_results: dict) -> str:
+    """Format the headline aggregated metrics of a multi-seed run."""
+    agg = multi_results["aggregate"]
+    lines = [f"=== multi-seed ({multi_results['n_seeds']} seeds) ==="]
+    for key in ("eval_mean_reward", "eval_success_rate", "convergence_episode", "training_time_s"):
+        if key in agg:
+            stat = agg[key]
+            lines.append(f"  {key}: {stat['mean']} +/- {stat['std']} (ci95 {stat['ci95']})")
+    return "\n".join(lines)
+
+
 def _benchmark_menu():
     print("\n--- Run a Benchmark ---")
 
@@ -321,29 +399,104 @@ def _benchmark_menu():
         return
     print("\nAvailable benchmarks:")
     bench_name = _pick(bench_names, "Benchmark")
+    bench = registry.get_benchmark(bench_name)["class"]()
 
-    algos = registry.list_algorithms()
+    seeds = _ask_seeds()
+    eval_episodes = _ask_int("Eval episodes", 100)
+    success_threshold = _ask_float("Success threshold (reward >=)", 0.0)
+    max_episodes = _ask_int("Max episodes", 2000)
+    common = {
+        "seeds": seeds,
+        "eval_episodes": eval_episodes,
+        "success_threshold": success_threshold,
+        "max_episodes": max_episodes,
+    }
+
+    if bench_name == "comparison":
+        _run_comparison_benchmark(bench, common)
+    elif bench_name == "gridsearch":
+        _run_gridsearch_benchmark(bench, common)
+    else:
+        _run_single_benchmark(bench, bench_name, common)
+
+
+def _run_single_benchmark(bench, bench_name: str, common: dict):
+    """Run a per-(algo, env) benchmark, aggregating over seeds when >1."""
     print("\nAvailable algorithms:")
-    algo_name = _pick(algos, "Algorithm")
-
-    envs = registry.compatible_environments(algo_name)
+    algo_name = _pick(registry.list_algorithms(), "Algorithm")
     print("\nAvailable environments:")
-    env_name = _pick(envs, "Environment")
+    env_name = _pick(registry.compatible_environments(algo_name), "Environment")
 
     algo_info = registry.get_algorithm(algo_name)
     env_info = registry.get_environment(env_name)
-    bench_info = registry.get_benchmark(bench_name)
-
-    bench = bench_info["class"]()
-
     config = {
         "agent_params": algo_info["default_config"],
         "env_metadata": env_info["metadata"],
-        "max_episodes": _ask_int("Max episodes", 2000),
         "threshold": _ask_float("Reward threshold", 7.0),
+        **common,
     }
 
     print(f"\n--- Running {bench_name}: {algo_name} + {env_name} ---\n")
+    seeds = common["seeds"]
+    if len(seeds) > 1:
+        results = bench.run_multi(algo_info["class"], env_info["factory"], config)
+        print("\n" + _format_aggregate(results))
+        bench.export_multi(results, algo_name, env_name)
+    else:
+        config["seed"] = seeds[0]
+        results = bench.run(algo_info["class"], env_info["factory"], config)
+        print("\n" + bench.report(results))
+        bench.export(results, algo_name, env_name)
+
+
+def _run_comparison_benchmark(bench, common: dict):
+    """Compare several registered algorithms on a shared environment."""
+    print("\nAlgorithms to compare:")
+    algos = _pick_multi(registry.list_algorithms(), "Algorithms (comma-separated)")
+
+    common_envs = None
+    for algo in algos:
+        envs = set(registry.compatible_environments(algo))
+        common_envs = envs if common_envs is None else (common_envs & envs)
+    options = sorted(common_envs) if common_envs else registry.list_environments()
+
+    print("\nAvailable environments:")
+    env_name = _pick(options, "Environment")
+    env_info = registry.get_environment(env_name)
+
+    config = {
+        "env_metadata": env_info["metadata"],
+        "threshold": _ask_float("Reward threshold", 7.0),
+        "window": 100,
+        "variants": [{"name": algo, "algo": algo} for algo in algos],
+        **common,
+    }
+
+    print(f"\n--- Comparing {', '.join(algos)} on {env_name} ---\n")
+    results = bench.run(None, env_info["factory"], config)
+    for label, data in results["variants"].items():
+        stat = data["aggregate"].get("eval_mean_reward", {})
+        print(f"  {label}: eval reward {stat.get('mean', 0)} +/- {stat.get('std', 0)}")
+    bench.export(results, "+".join(algos), env_name)
+
+
+def _run_gridsearch_benchmark(bench, common: dict):
+    """Run a hyperparameter grid-search for one algorithm/environment."""
+    print("\nAvailable algorithms:")
+    algo_name = _pick(registry.list_algorithms(), "Algorithm")
+    print("\nAvailable environments:")
+    env_name = _pick(registry.compatible_environments(algo_name), "Environment")
+
+    algo_info = registry.get_algorithm(algo_name)
+    env_info = registry.get_environment(env_name)
+    config = {
+        "agent_params": algo_info["default_config"],
+        "env_metadata": env_info["metadata"],
+        "param_grid": _ask_param_grid(algo_name),
+        **common,
+    }
+
+    print(f"\n--- Grid-search {algo_name} on {env_name} ---\n")
     results = bench.run(algo_info["class"], env_info["factory"], config)
     print("\n" + bench.report(results))
     bench.export(results, algo_name, env_name)

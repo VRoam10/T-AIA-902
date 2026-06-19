@@ -1,0 +1,424 @@
+{
+  "param_names": [
+    "learning_rate",
+    "discount_factor"
+  ],
+  "param_grid": {
+    "learning_rate": [
+      0.1,
+      0.5,
+      0.85
+    ],
+    "discount_factor": [
+      0.9,
+      0.99
+    ]
+  },
+  "seeds": [
+    0,
+    1
+  ],
+  "n_seeds": 2,
+  "n_combinations": 6,
+  "entries": [
+    {
+      "params": {
+        "learning_rate": 0.85,
+        "discount_factor": 0.99
+      },
+      "aggregate": {
+        "training_time_s": {
+          "mean": 0.625,
+          "std": 0.005,
+          "ci95": 0.0069,
+          "min": 0.62,
+          "max": 0.63,
+          "n": 2
+        },
+        "eval_episodes": {
+          "mean": 100.0,
+          "std": 0.0,
+          "ci95": 0.0,
+          "min": 100.0,
+          "max": 100.0,
+          "n": 2
+        },
+        "eval_mean_reward": {
+          "mean": 0.78,
+          "std": 0.68,
+          "ci95": 0.9424,
+          "min": 0.1,
+          "max": 1.46,
+          "n": 2
+        },
+        "eval_std_reward": {
+          "mean": 38.2323,
+          "std": 2.6991,
+          "ci95": 3.7408,
+          "min": 35.5332,
+          "max": 40.9315,
+          "n": 2
+        },
+        "eval_mean_steps": {
+          "mean": 19.485,
+          "std": 0.575,
+          "ci95": 0.7969,
+          "min": 18.91,
+          "max": 20.06,
+          "n": 2
+        },
+        "eval_success_rate": {
+          "mean": 0.965,
+          "std": 0.005,
+          "ci95": 0.0069,
+          "min": 0.96,
+          "max": 0.97,
+          "n": 2
+        }
+      },
+      "eval_mean_reward": 0.78
+    },
+    {
+      "params": {
+        "learning_rate": 0.5,
+        "discount_factor": 0.99
+      },
+      "aggregate": {
+        "training_time_s": {
+          "mean": 0.685,
+          "std": 0.025,
+          "ci95": 0.0346,
+          "min": 0.66,
+          "max": 0.71,
+          "n": 2
+        },
+        "eval_episodes": {
+          "mean": 100.0,
+          "std": 0.0,
+          "ci95": 0.0,
+          "min": 100.0,
+          "max": 100.0,
+          "n": 2
+        },
+        "eval_mean_reward": {
+          "mean": -0.34,
+          "std": 0.18,
+          "ci95": 0.2495,
+          "min": -0.52,
+          "max": -0.16,
+          "n": 2
+        },
+        "eval_std_reward": {
+          "mean": 40.8376,
+          "std": 0.0331,
+          "ci95": 0.0459,
+          "min": 40.8045,
+          "max": 40.8707,
+          "n": 2
+        },
+        "eval_mean_steps": {
+          "mean": 20.5,
+          "std": 0.18,
+          "ci95": 0.2495,
+          "min": 20.32,
+          "max": 20.68,
+          "n": 2
+        },
+        "eval_success_rate": {
+          "mean": 0.96,
+          "std": 0.0,
+          "ci95": 0.0,
+          "min": 0.96,
+          "max": 0.96,
+          "n": 2
+        }
+      },
+      "eval_mean_reward": -0.34
+    },
+    {
+      "params": {
+        "learning_rate": 0.85,
+        "discount_factor": 0.9
+      },
+      "aggregate": {
+        "training_time_s": {
+          "mean": 0.695,
+          "std": 0.045,
+          "ci95": 0.0624,
+          "min": 0.65,
+          "max": 0.74,
+          "n": 2
+        },
+        "eval_episodes": {
+          "mean": 100.0,
+          "std": 0.0,
+          "ci95": 0.0,
+          "min": 100.0,
+          "max": 100.0,
+          "n": 2
+        },
+        "eval_mean_reward": {
+          "mean": -2.64,
+          "std": 2.2,
+          "ci95": 3.049,
+          "min": -4.84,
+          "max": -0.44,
+          "n": 2
+        },
+        "eval_std_reward": {
+          "mean": 45.108,
+          "std": 4.2756,
+          "ci95": 5.9257,
+          "min": 40.8324,
+          "max": 49.3837,
+          "n": 2
+        },
+        "eval_mean_steps": {
+          "mean": 22.59,
+          "std": 1.99,
+          "ci95": 2.758,
+          "min": 20.6,
+          "max": 24.58,
+          "n": 2
+        },
+        "eval_success_rate": {
+          "mean": 0.95,
+          "std": 0.01,
+          "ci95": 0.0139,
+          "min": 0.94,
+          "max": 0.96,
+          "n": 2
+        }
+      },
+      "eval_mean_reward": -2.64
+    },
+    {
+      "params": {
+        "learning_rate": 0.5,
+        "discount_factor": 0.9
+      },
+      "aggregate": {
+        "training_time_s": {
+          "mean": 0.835,
+          "std": 0.035,
+          "ci95": 0.0485,
+          "min": 0.8,
+          "max": 0.87,
+          "n": 2
+        },
+        "eval_episodes": {
+          "mean": 100.0,
+          "std": 0.0,
+          "ci95": 0.0,
+          "min": 100.0,
+          "max": 100.0,
+          "n": 2
+        },
+        "eval_mean_reward": {
+          "mean": -3.27,
+          "std": 1.13,
+          "ci95": 1.5661,
+          "min": -4.4,
+          "max": -2.14,
+          "n": 2
+        },
+        "eval_std_reward": {
+          "mean": 47.4614,
+          "std": 2.0138,
+          "ci95": 2.791,
+          "min": 45.4476,
+          "max": 49.4752,
+          "n": 2
+        },
+        "eval_mean_steps": {
+          "mean": 23.115,
+          "std": 1.025,
+          "ci95": 1.4206,
+          "min": 22.09,
+          "max": 24.14,
+          "n": 2
+        },
+        "eval_success_rate": {
+          "mean": 0.945,
+          "std": 0.005,
+          "ci95": 0.0069,
+          "min": 0.94,
+          "max": 0.95,
+          "n": 2
+        }
+      },
+      "eval_mean_reward": -3.27
+    },
+    {
+      "params": {
+        "learning_rate": 0.1,
+        "discount_factor": 0.9
+      },
+      "aggregate": {
+        "training_time_s": {
+          "mean": 1.25,
+          "std": 0.18,
+          "ci95": 0.2495,
+          "min": 1.07,
+          "max": 1.43,
+          "n": 2
+        },
+        "eval_episodes": {
+          "mean": 100.0,
+          "std": 0.0,
+          "ci95": 0.0,
+          "min": 100.0,
+          "max": 100.0,
+          "n": 2
+        },
+        "eval_mean_reward": {
+          "mean": -137.79,
+          "std": 3.2,
+          "ci95": 4.435,
+          "min": -140.99,
+          "max": -134.59,
+          "n": 2
+        },
+        "eval_std_reward": {
+          "mean": 96.1114,
+          "std": 1.4791,
+          "ci95": 2.0499,
+          "min": 94.6323,
+          "max": 97.5905,
+          "n": 2
+        },
+        "eval_mean_steps": {
+          "mean": 143.985,
+          "std": 2.885,
+          "ci95": 3.9984,
+          "min": 141.1,
+          "max": 146.87,
+          "n": 2
+        },
+        "eval_success_rate": {
+          "mean": 0.295,
+          "std": 0.015,
+          "ci95": 0.0208,
+          "min": 0.28,
+          "max": 0.31,
+          "n": 2
+        }
+      },
+      "eval_mean_reward": -137.79
+    },
+    {
+      "params": {
+        "learning_rate": 0.1,
+        "discount_factor": 0.99
+      },
+      "aggregate": {
+        "training_time_s": {
+          "mean": 1.375,
+          "std": 0.115,
+          "ci95": 0.1594,
+          "min": 1.26,
+          "max": 1.49,
+          "n": 2
+        },
+        "eval_episodes": {
+          "mean": 100.0,
+          "std": 0.0,
+          "ci95": 0.0,
+          "min": 100.0,
+          "max": 100.0,
+          "n": 2
+        },
+        "eval_mean_reward": {
+          "mean": -153.735,
+          "std": 12.595,
+          "ci95": 17.4558,
+          "min": -166.33,
+          "max": -141.14,
+          "n": 2
+        },
+        "eval_std_reward": {
+          "mean": 85.7697,
+          "std": 8.6202,
+          "ci95": 11.947,
+          "min": 77.1495,
+          "max": 94.3899,
+          "n": 2
+        },
+        "eval_mean_steps": {
+          "mean": 158.355,
+          "std": 11.335,
+          "ci95": 15.7095,
+          "min": 147.02,
+          "max": 169.69,
+          "n": 2
+        },
+        "eval_success_rate": {
+          "mean": 0.22,
+          "std": 0.06,
+          "ci95": 0.0832,
+          "min": 0.16,
+          "max": 0.28,
+          "n": 2
+        }
+      },
+      "eval_mean_reward": -153.735
+    }
+  ],
+  "best": {
+    "params": {
+      "learning_rate": 0.85,
+      "discount_factor": 0.99
+    },
+    "aggregate": {
+      "training_time_s": {
+        "mean": 0.625,
+        "std": 0.005,
+        "ci95": 0.0069,
+        "min": 0.62,
+        "max": 0.63,
+        "n": 2
+      },
+      "eval_episodes": {
+        "mean": 100.0,
+        "std": 0.0,
+        "ci95": 0.0,
+        "min": 100.0,
+        "max": 100.0,
+        "n": 2
+      },
+      "eval_mean_reward": {
+        "mean": 0.78,
+        "std": 0.68,
+        "ci95": 0.9424,
+        "min": 0.1,
+        "max": 1.46,
+        "n": 2
+      },
+      "eval_std_reward": {
+        "mean": 38.2323,
+        "std": 2.6991,
+        "ci95": 3.7408,
+        "min": 35.5332,
+        "max": 40.9315,
+        "n": 2
+      },
+      "eval_mean_steps": {
+        "mean": 19.485,
+        "std": 0.575,
+        "ci95": 0.7969,
+        "min": 18.91,
+        "max": 20.06,
+        "n": 2
+      },
+      "eval_success_rate": {
+        "mean": 0.965,
+        "std": 0.005,
+        "ci95": 0.0069,
+        "min": 0.96,
+        "max": 0.97,
+        "n": 2
+      }
+    },
+    "eval_mean_reward": 0.78
+  }
+}
