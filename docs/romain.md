@@ -35,5 +35,27 @@ path per vehicle in a different part of the map, so vehicles no longer share a
 start line or collide. If more vehicles than paths are requested, the session
 errors out rather than doubling up.
 
-tester de lui donner le prochain checkpoint
-parler des habitudes pour compenser le temps d'entrainement
+Seventh issue:
+The `wheel_terrain` option (per-wheel road position, fed by a beamngpy
+`RoadsSensor`) hard-freezes BeamNG during training on large maps (e.g.
+`west_coast_usa`), while `gridmap` is fine. Symptom: the whole sim hangs on an
+episode reset, BeamNG keeps eating CPU + memory while Python sits idle, and
+nothing is written to `beamng.log`.
+
+Root cause, pinned down with a `faulthandler` stack dump (`Timeout (0:00:30)!`):
+the main thread is blocked in `roads_sensor.poll()`, called from `observe()`
+inside `reset_vehicle()` right after the vehicle teleports to a new random path.
+`reset_vehicle` polls the sensor with **no physics step** after the teleport
+(unlike `reset_all`, which steps first). On a road-dense map the RoadsSensor's
+game-engine side grinds trying to map the road network at a freshly-teleported,
+not-yet-settled position and never answers, so Python blocks forever in the
+socket `recv`. The LiDAR poll in the same `observe()` runs first and completes —
+it is specifically the RoadsSensor. gridmap has a trivial road network, so it
+answers instantly and never hangs.
+
+It is NOT the teleport itself (human quick-travel play works), NOT a GPU TDR (no
+D3D11 error in the log), and NOT CUDA (reproduced with the agents on CPU).
+
+Fix for now: removed the "per-wheel road position" (`wheel_terrain`) option from
+the training menus so it can't be enabled and trigger the freeze. The feature
+code is still present (eval/human-play and tests), just not offered for training.

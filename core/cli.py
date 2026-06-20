@@ -169,7 +169,9 @@ def _train_menu():
             "\nCheckpoint hints (waypoints ahead in obs, 0 = none)", 0, min_val=0
         )
         body_orientation = _ask_bool("Include body orientation (pitch + roll) in obs?")
-        wheel_terrain = _ask_bool("Include per-wheel road position in obs?")
+        # wheel_terrain (per-wheel road position) is disabled for training: its
+        # RoadsSensor hard-freezes BeamNG on episode reset on large maps. See
+        # docs/romain.md (Seventh issue).
         random_path = _ask_bool("Randomize path each episode?")
         beamng_kwargs = {
             "map_name": map_name,
@@ -518,17 +520,27 @@ def _human_play_menu():
     print("\nShow sensor during play?")
     sensor = _pick(sensor_options, "Sensor")
 
+    # Same obs feature toggles as training, so human play can mirror a model's layout.
+    trajectory_hints = _ask_int(
+        "\nCheckpoint hints (waypoints ahead in obs, 0 = none)", 0, min_val=0
+    )
+    body_orientation = _ask_bool("Include body orientation (pitch + roll) in obs?")
+    wheel_terrain = _ask_bool("Include per-wheel road position in obs?")
+    feature_kwargs = {
+        "map_name": map_name,
+        "vehicle_id": vehicle_id,
+        "trajectory_hints": trajectory_hints,
+        "body_orientation": body_orientation,
+        "wheel_terrain": wheel_terrain,
+    }
+
     env = None
     print("Launching BeamNG for human play...")
     try:
         if sensor == "Camera":
-            env = registry.get_environment("beamng_camera")["factory"](
-                map_name=map_name, vehicle_id=vehicle_id
-            )
+            env = registry.get_environment("beamng_camera")["factory"](**feature_kwargs)
         else:
-            env = registry.get_environment("beamng")["factory"](
-                map_name=map_name, vehicle_id=vehicle_id
-            )
+            env = registry.get_environment("beamng")["factory"](**feature_kwargs)
 
         if sensor == "LiDAR":
             env.human_play_lidar()
@@ -651,7 +663,10 @@ def _multi_train_menu():
         color = colors[len(specs) % len(colors)]
         hints = _ask_int("Checkpoint hints (waypoints ahead in obs, 0 = none)", 0, min_val=0)
         body_orientation = _ask_bool("Include body orientation (pitch + roll) in obs?")
-        wheel_terrain = _ask_bool("Include per-wheel road position in obs?")
+        # wheel_terrain (per-wheel road position) is disabled for training: its
+        # RoadsSensor hard-freezes BeamNG on episode reset on large maps. See
+        # docs/romain.md (Seventh issue).
+        wheel_terrain = False
         default_path = os.path.join(_MULTI_OUTPUT_DIR, f"{algo}_{env_name}_{len(specs)}.pth")
         save_path = input(f"  Model save path [{default_path}]: ").strip() or default_path
         specs.append(

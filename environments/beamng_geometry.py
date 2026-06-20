@@ -206,19 +206,43 @@ def body_orientation_features(dir_vec, up_vec) -> np.ndarray:
     return np.array([np.clip(pitch, -1.0, 1.0), np.clip(roll, -1.0, 1.0)], dtype=np.float32)
 
 
+def _latest_road_reading(roads_payload) -> dict:
+    """Normalize any RoadsSensor poll shape to a single, most-recent reading dict.
+
+    The default (GE bulk) poll returns an index->reading map keyed by reading
+    index — ``{0.0: {...}, 1.0: {...}}`` — with the fields (dist2Left, halfWidth,
+    ...) nested one level down. The send-immediately / ad-hoc paths return either
+    a flat reading dict or a list of them. This collapses all three to one
+    reading, picking the latest by ``time``, and returns ``{}`` when there is no
+    usable reading. (Reading the index-map's top level finds none of the expected
+    keys, which is why the feature was stuck at neutral (0, 0).)
+    """
+    roads = roads_payload
+    if roads is None:
+        return {}
+    if isinstance(roads, dict):
+        # A flat single reading already carries the fields at the top level.
+        if any(k in roads for k in ("dist2Left", "dist2Right", "halfWidth")):
+            return roads
+        readings = [v for v in roads.values() if isinstance(v, dict)]
+    elif isinstance(roads, list):
+        readings = [v for v in roads if isinstance(v, dict)]
+    else:
+        return {}
+    if not readings:
+        return {}
+    return max(readings, key=lambda r: r.get("time", 0.0))
+
+
 def wheel_terrain_features(roads_payload, half_track_width) -> np.ndarray:
     """Return [left, right] road-edge position in [-1, 1] from a RoadsSensor poll.
 
     +1 = well on road, 0 = at the edge, -1 = off road. Measured at the
     front-axle midpoint, so this is the honest left/right road position (no
-    per-wheel duplication). Accepts the raw poll payload (dict, list, or None)
-    and falls back to neutral (0, 0) when data is missing.
+    per-wheel duplication). Accepts the raw poll payload (index-map dict, flat
+    dict, list, or None) and falls back to neutral (0, 0) when data is missing.
     """
-    roads = roads_payload
-    if isinstance(roads, list):
-        roads = roads[0] if roads else {}
-    if not isinstance(roads, dict):
-        roads = {}
+    roads = _latest_road_reading(roads_payload)
     half_w = max(float(roads.get("halfWidth", 3.0)), 0.5)
     d_left = float(roads.get("dist2Left", half_track_width))
     d_right = float(roads.get("dist2Right", half_track_width))

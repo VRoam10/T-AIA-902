@@ -215,3 +215,18 @@ class TestWheelTerrainFeatures:
         from environments.beamng_geometry import wheel_terrain_features
 
         np.testing.assert_allclose(wheel_terrain_features([], 0.7), [0.0, 0.0], atol=1e-6)
+
+    def test_indexed_bulk_poll_uses_latest_reading(self):
+        """Real GE bulk poll shape: an index->reading map (float keys, as seen in
+        the sim) with the fields nested one level down. Must extract the most
+        recent reading by 'time'; reading the absent top-level keys would wrongly
+        neutralize the feature to (0, 0)."""
+        from environments.beamng_geometry import wheel_terrain_features
+
+        payload = {
+            0.0: {"time": 1.0, "halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 3.7},
+            1.0: {"time": 2.0, "halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7},
+        }
+        left, right = wheel_terrain_features(payload, 0.7)
+        assert left == pytest.approx(1.0, abs=1e-6)  # latest: (3.7-0.7)/3.0 = 1.0
+        assert right == pytest.approx(0.0, abs=1e-6)  # latest: (0.7-0.7)/3.0 = 0.0
