@@ -178,6 +178,9 @@ class BeamNGDrivingEnv:
         self._steps = 0
         self._active_marker_id: str | None = None
         self._checkpoint_dist = 0.0
+        self._log_obs = False  # human play enables obs logging; training leaves it off
+        self._obs_log_stdout = False  # human play also echoes the obs to the terminal
+        self._last_obs_lines: list[str] = []  # most recent formatted obs lines (camera redraw)
         self.headless = headless
         self.trajectory_hints = trajectory_hints
         self.body_orientation = body_orientation
@@ -303,7 +306,8 @@ class BeamNGDrivingEnv:
         return obs, reward, done, info
 
     def human_play(self):
-        """Load the scenario and give control back to the human player (no sensor output)."""
+        """Load the scenario and give control to the human, logging the full
+        observation each tick (Lua console + terminal)."""
         if self.bng is None:
             self._launch(human_control=True)
         else:
@@ -311,19 +315,24 @@ class BeamNGDrivingEnv:
 
         self._waypoint_idx = 0
         self._update_active_marker(0)
+        self._log_obs = True
+        self._obs_log_stdout = True
 
         self.bng.resume()
         print("[BeamNGDrivingEnv] Human control active — drive in-game. Press Ctrl+C to stop.")
 
         try:
             while True:
-                self.vehicle.poll_sensors()  # keeps vehicle state cache fresh
+                # _observe polls sensors, logs the full labeled obs to Lua + stdout,
+                # and advances waypoints/markers as the player drives.
+                self._observe()
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("[BeamNGDrivingEnv] Human play stopped.")
 
     def human_play_lidar(self):
-        """Human play with LiDAR bins printed to stdout each tick."""
+        """Human play logging the full observation each tick (Lua console +
+        terminal), plus the extra LiDAR filtering diagnostics on stdout."""
         if self.bng is None:
             self._launch(human_control=True)
         else:
@@ -331,6 +340,8 @@ class BeamNGDrivingEnv:
 
         self._waypoint_idx = 0
         self._update_active_marker(0)
+        self._log_obs = True
+        self._obs_log_stdout = True
 
         self.bng.resume()
         print(
@@ -343,18 +354,9 @@ class BeamNGDrivingEnv:
 
         try:
             while True:
-                self.vehicle.poll_sensors()
-                state = self.vehicle.state or {}
-                pos = state.get("pos", (0.0, 0.0, 0.0))
-                vel = state.get("vel", (1.0, 0.0, 0.0))
-                dir_vec = state.get("dir", vel)
-                vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
-
-                lidar_data = (
-                    self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None
-                )
-                lidar_bins = self._process_lidar(lidar_data, pos, vehicle_heading)
-                print(f"[LiDAR bins] {' '.join(f'{v:.2f}' for v in lidar_bins)}")
+                # Logs the full labeled obs (incl. the lidar bins) to Lua + stdout.
+                self._observe()
+                # Extra filtering diagnostics not present in the obs vector itself.
                 d = self._lidar_debug
                 if d:
                     print(
@@ -550,26 +552,100 @@ class BeamNGDrivingEnv:
 
         waypoint_hints = self._get_waypoint_hints(pos, vehicle_heading)
 
-        obs = np.concatenate(
+        kin = np.array(
             [
-                np.array(
-                    [
-                        np.clip(speed / 50.0, -1.0, 1.0),
-                        np.clip(steering, -1.0, 1.0),
-                        np.clip(heading_err / np.pi, -1.0, 1.0),
-                        np.clip(lateral_err / 5.0, -1.0, 1.0),
-                        np.clip(damage / 1000.0, 0.0, 1.0),
-                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
-                    ],
-                    dtype=np.float32,
-                ),
-                lidar_bins,
-                waypoint_hints,
-                self._extra_features(state),
-            ]
+                np.clip(speed / 50.0, -1.0, 1.0),
+                np.clip(steering, -1.0, 1.0),
+                np.clip(heading_err / np.pi, -1.0, 1.0),
+                np.clip(lateral_err / 5.0, -1.0, 1.0),
+                np.clip(damage / 1000.0, 0.0, 1.0),
+                np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
+            ],
+            dtype=np.float32,
         )
+        extra = self._extra_features(state)
+        obs = np.concatenate([kin, lidar_bins, waypoint_hints, extra])
+
+        self._log_observation(kin, lidar_bins, waypoint_hints, extra)
 
         return obs
+
+    def _log_observation(self, kin, perception, waypoint_hints, extra) -> None:
+        """Emit the full normalized observation, one labeled line per block.
+
+        Only active during human play (``_log_obs``); training never logs the
+        observation. When active it logs to BeamNG's Lua console and, if
+        ``_obs_log_stdout`` is set, also prints to the terminal. No-op when the
+        simulator is absent (e.g. unit tests).
+        """
+        if self.bng is None or not self._log_obs:
+            return
+        lines = self._format_observation_lines(kin, perception, waypoint_hints, extra)
+        self._last_obs_lines = lines
+        for line in lines:
+            self.bng.queue_lua_command(f"log('I', 'RL', '{line}')")
+        if self._obs_log_stdout:
+            print("\n".join(f"[obs] {line}" for line in lines))
+
+    def _format_observation_lines(self, kin, perception, waypoint_hints, extra) -> list[str]:
+        """Build the labeled per-block log lines for the current observation.
+
+        Returns the message strings (without the Lua ``log()`` wrapper) so callers
+        can route them to the Lua console, stdout, or both. The arrays are the same
+        slices concatenated into the observation, so the printed numbers can never
+        drift from what the policy actually sees.
+        """
+        lines = []
+
+        # --- kinematics (fixed 6, layout matches the concatenation in _observe) ---
+        kin = np.asarray(kin).ravel()
+        lines.append(
+            f"obs kin   | speed={kin[0]:+.2f} steer={kin[1]:+.2f} head={kin[2]:+.2f} "
+            f"lat={kin[3]:+.2f} dmg={kin[4]:+.2f} cpdist={kin[5]:+.2f}"
+        )
+
+        # --- perception block (lidar bins here; camera env overrides) ---
+        lines.append(self._perception_line(perception))
+
+        # --- waypoint hints (paired forward,left per upcoming waypoint) ---
+        hints = np.asarray(waypoint_hints).ravel()
+        if hints.size:
+            pairs = [
+                f"wp{j}=({hints[2 * j]:+.2f},{hints[2 * j + 1]:+.2f})"
+                for j in range(hints.size // 2)
+            ]
+            lines.append(f"obs hints | {' '.join(pairs)}")
+
+        # --- extras (labels derived from the enabled flags, in append order) ---
+        extra = np.asarray(extra).ravel()
+        if extra.size:
+            labels = []
+            if self.body_orientation:
+                labels += ["pitch", "roll"]
+            if self.wheel_terrain:
+                labels += ["edgeL", "edgeR"]
+            while len(labels) < extra.size:
+                labels.append(f"x{len(labels)}")
+            body = " ".join(f"{labels[k]}={extra[k]:+.2f}" for k in range(extra.size))
+            lines.append(f"obs extra | {body}")
+
+        return lines
+
+    def _perception_line(self, lidar_bins) -> str:
+        """One labeled line for the lidar block (v_bins x rays x channels;
+        index = (v*rays + h)*channels + c)."""
+        lidar = np.asarray(lidar_bins).ravel()
+        h_bins = self.LIDAR_RAYS
+        ch = self.LIDAR_CHANNELS_PER_RAY
+        parts = []
+        for i in range(lidar.size):
+            cell = i // ch
+            v, h, c = cell // h_bins, cell % h_bins, i % ch
+            label = f"h{h}" if self.LIDAR_V_BINS == 1 else f"v{v}_h{h}"
+            if ch > 1:
+                label += f"c{c}"
+            parts.append(f"{label}={lidar[i]:+.2f}")
+        return f"obs lidar | {' '.join(parts)}"
 
     def _lidar_config(self) -> LidarConfig:
         return LidarConfig(
@@ -1239,23 +1315,33 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
             self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
-        return np.concatenate(
+        kin = np.array(
             [
-                np.array(
-                    [
-                        np.clip(speed / 50.0, -1.0, 1.0),
-                        np.clip(steering, -1.0, 1.0),
-                        np.clip(heading_err / np.pi, -1.0, 1.0),
-                        np.clip(lateral_err / 5.0, -1.0, 1.0),
-                        np.clip(damage / 1000.0, 0.0, 1.0),
-                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
-                    ],
-                    dtype=np.float32,
-                ),
-                cam_pixels,
-                waypoint_hints,
-                self._extra_features(state),
-            ]
+                np.clip(speed / 50.0, -1.0, 1.0),
+                np.clip(steering, -1.0, 1.0),
+                np.clip(heading_err / np.pi, -1.0, 1.0),
+                np.clip(lateral_err / 5.0, -1.0, 1.0),
+                np.clip(damage / 1000.0, 0.0, 1.0),
+                np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
+            ],
+            dtype=np.float32,
+        )
+        extra = self._extra_features(state)
+        obs = np.concatenate([kin, cam_pixels, waypoint_hints, extra])
+
+        self._log_observation(kin, cam_pixels, waypoint_hints, extra)
+
+        return obs
+
+    def _perception_line(self, cam_pixels) -> str:
+        """Summarize the camera block instead of dumping every pixel."""
+        px = np.asarray(cam_pixels).ravel()
+        if px.size == 0:
+            return "obs cam   | (empty)"
+        h, w = self.CAM_OUT_SIZE
+        return (
+            f"obs cam   | min={px.min():+.2f} max={px.max():+.2f} "
+            f"mean={px.mean():+.2f} px={px.size} ({h}x{w})"
         )
 
     def close(self):
@@ -1275,6 +1361,9 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
 
         self._waypoint_idx = 0
         self._update_active_marker(0)
+        # Enable obs logging (Lua + line cache for the redraw); the ASCII block below
+        # renders the obs lines to stdout itself, so leave _obs_log_stdout off.
+        self._log_obs = True
 
         self.bng.resume()
         print(
@@ -1282,17 +1371,26 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         )
 
         ramp = " ░▒▓█"
-        h = self.CAM_OUT_SIZE[0]
+        prev_total = 0
         first = True
 
         try:
             while True:
-                pixels = self._process_camera().reshape(self.CAM_OUT_SIZE)
-                rows = ["".join(ramp[min(int(v * 4), 4)] for v in row) for row in pixels]
+                # _observe polls the camera (caches last_frame), logs the full obs to
+                # the Lua console, and advances waypoints. We render the same frame as
+                # ASCII art plus the numeric obs lines, redrawn in place each tick.
+                self._observe()
+                frame = self.last_frame
+                if frame is None:
+                    frame = np.zeros(self.CAM_OUT_SIZE, dtype=np.float32)
+                rows = ["".join(ramp[min(int(v * 4), 4)] for v in row) for row in frame]
+                block = rows + self._last_obs_lines
                 if not first:
-                    sys.stdout.write(f"\033[{h}A")
-                sys.stdout.write("\n".join(rows) + "\n")
+                    sys.stdout.write(f"\033[{prev_total}A")
+                # \033[K clears each line to its end so a shorter frame leaves no residue.
+                sys.stdout.write("".join(f"{line}\033[K\n" for line in block))
                 sys.stdout.flush()
+                prev_total = len(block)
                 first = False
                 time.sleep(0.1)
         except KeyboardInterrupt:
