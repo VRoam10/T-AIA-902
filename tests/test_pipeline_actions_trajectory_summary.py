@@ -1,4 +1,4 @@
-from core.cli import format_trajectory_summary
+from core.pipeline_actions import format_trajectory_summary
 from core.trajectory import MapTrajectories, TrajectoryData
 
 

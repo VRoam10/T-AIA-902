@@ -75,7 +75,7 @@ modest `eval_episodes`.
 
 ## Running
 
-From the menu (`python main.py` → *Run a benchmark*) or programmatically:
+From the app (`python main.py` → OpenTUI → *Run a benchmark*) or programmatically:
 
 ```python
 import benchmarks
