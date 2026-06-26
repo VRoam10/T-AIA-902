@@ -113,3 +113,17 @@ def test_ask_bool_parses_yes_no():
         assert _ask_bool("?") is True
     with patch("builtins.input", return_value="n"):
         assert _ask_bool("?", default=True) is False
+
+
+def test_obs_suffix_encodes_predicted_checkpoint_count_and_body_orientation():
+    from core.cli import _obs_suffix
+
+    # No hints and no body orientation -> no suffix, so existing filenames are unchanged.
+    assert _obs_suffix(0, False) == ""
+    # Predicted-checkpoint hints -> a "_{n}hints" fragment that distinguishes the model.
+    assert _obs_suffix(1, False) == "_1hints"
+    assert _obs_suffix(3, False) == "_3hints"
+    # Body orientation (pitch + roll) in obs -> a "_body" fragment.
+    assert _obs_suffix(0, True) == "_body"
+    # Both options -> hints first, then body, so the name is stable.
+    assert _obs_suffix(2, True) == "_2hints_body"
