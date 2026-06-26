@@ -103,6 +103,24 @@ def _ask_float(prompt: str, default: float) -> float:
             print("  Invalid input.")
 
 
+def _obs_suffix(trajectory_hints: int, body_orientation: bool) -> str:
+    """Filename fragment encoding the obs options that change a model's input layout.
+
+    Models trained with different look-ahead checkpoint hints or with body
+    orientation (pitch + roll) added to the observation have incompatible input
+    sizes; without this they would share a default filename and overwrite each
+    other. Hints come first, then body, so the name is stable. All options off
+    yields an empty string so existing checkpoints (and the README examples) keep
+    their names.
+    """
+    suffix = ""
+    if trajectory_hints > 0:
+        suffix += f"_{trajectory_hints}hints"
+    if body_orientation:
+        suffix += "_body"
+    return suffix
+
+
 def _build_agent(algo_info: dict, env_info: dict, prompt_params: bool = True):
     """Instantiate an agent from registry info.
 
@@ -197,10 +215,12 @@ def _train_menu():
     env = env_info["factory"](reward_mode=reward_mode, **beamng_kwargs)
 
     n_episodes = _ask_int("\nNumber of episodes", 500)
-    save_path = input(f"Save model path [outputs/{algo_name}_{env_name}.pth]: ").strip()
+    suffix = _obs_suffix(trajectory_hints, body_orientation)
+    default_save = f"outputs/{algo_name}_{env_name}{suffix}.pth"
+    save_path = input(f"Save model path [{default_save}]: ").strip()
     if not save_path:
-        save_path = f"outputs/{algo_name}_{env_name}.pth"
-    plot_path = f"outputs/{algo_name}_{env_name}_training.png"
+        save_path = default_save
+    plot_path = f"outputs/{algo_name}_{env_name}{suffix}_training.png"
 
     start_episode = 0
 
@@ -265,14 +285,8 @@ def _eval_menu():
     algo_info = registry.get_algorithm(algo_name)
     env_info = registry.get_environment(env_name)
 
-    model_path = input(f"\nModel path [outputs/{algo_name}_{env_name}.pth]: ").strip()
-    if not model_path:
-        model_path = f"outputs/{algo_name}_{env_name}.pth"
-
-    if not os.path.exists(model_path):
-        print(f"Model not found at '{model_path}'.")
-        return
-
+    # Gather the BeamNG obs options first: the checkpoint-hints count feeds the
+    # default model filename below (it must match what training wrote out).
     beamng_kwargs = {}
     trajectory_hints = 0
     body_orientation = False
@@ -291,6 +305,17 @@ def _eval_menu():
             "body_orientation": body_orientation,
             "wheel_terrain": wheel_terrain,
         }
+
+    default_model = (
+        f"outputs/{algo_name}_{env_name}{_obs_suffix(trajectory_hints, body_orientation)}.pth"
+    )
+    model_path = input(f"\nModel path [{default_model}]: ").strip()
+    if not model_path:
+        model_path = default_model
+
+    if not os.path.exists(model_path):
+        print(f"Model not found at '{model_path}'.")
+        return
 
     extra_states = (
         trajectory_hints * 2 + (2 if body_orientation else 0) + (2 if wheel_terrain else 0)
@@ -667,7 +692,10 @@ def _multi_train_menu():
         # RoadsSensor hard-freezes BeamNG on episode reset on large maps. See
         # docs/romain.md (Seventh issue).
         wheel_terrain = False
-        default_path = os.path.join(_MULTI_OUTPUT_DIR, f"{algo}_{env_name}_{len(specs)}.pth")
+        default_path = os.path.join(
+            _MULTI_OUTPUT_DIR,
+            f"{algo}_{env_name}_{len(specs)}{_obs_suffix(hints, body_orientation)}.pth",
+        )
         save_path = input(f"  Model save path [{default_path}]: ").strip() or default_path
         specs.append(
             {
