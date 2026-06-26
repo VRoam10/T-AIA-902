@@ -7,7 +7,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.trajectory import (
+    MIN_CHECKPOINTS,
     MIN_PATH_SEPARATION_M,
+    SPARSE_SPACING_M,
     MapTrajectories,
     TrajectoryData,
     _edge_center,
@@ -319,6 +321,58 @@ def test_path_from_teleport_first_checkpoint_clear_of_spawn():
         assert math.hypot(first[0] - spawn[0], first[1] - spawn[1]) >= 2.0
 
 
+def test_path_from_teleport_short_road_meets_min_checkpoints():
+    # A 30 m road at the default 25 m spacing yields only ~2 sparse checkpoints
+    # after the spawn-clearance drop. The generator must densify short paths so
+    # every path has at least MIN_CHECKPOINTS checkpoints.
+    roads = [("short", [(0.0, 0.0, 0.0), (30.0, 0.0, 0.0)])]
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is not None
+    traj, _ = built
+    assert len(traj.sparse_waypoints) >= MIN_CHECKPOINTS
+
+
+def test_path_from_teleport_long_road_keeps_default_spacing():
+    # A road long enough to already exceed MIN_CHECKPOINTS at the default 25 m
+    # spacing; densification must NOT kick in and over-subdivide it.
+    length = SPARSE_SPACING_M * (MIN_CHECKPOINTS + 3)
+    centerline = [(0.0, 0.0, 0.0), (length, 0.0, 0.0)]
+    roads = [("long", centerline)]
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is not None
+    traj, _ = built
+    # Spacing between consecutive checkpoints should stay near the default.
+    wps = traj.sparse_waypoints
+    assert len(wps) >= MIN_CHECKPOINTS
+    gaps = [
+        math.hypot(wps[i + 1][0] - wps[i][0], wps[i + 1][1] - wps[i][1])
+        for i in range(len(wps) - 1)
+    ]
+    assert max(gaps) == pytest.approx(SPARSE_SPACING_M, abs=1.0)
+
+
+def test_generate_every_path_meets_min_checkpoints():
+    # A network mixing a long road and a short road, one teleport on each.
+    # Both produced paths must carry at least MIN_CHECKPOINTS checkpoints.
+    bng = MagicMock()
+    bng.scenario.get_road_network.return_value = {
+        "long": {
+            "edges": [{"middle": (0.0, float(y), 0.0)} for y in range(0, 121, 10)],
+        },
+        "short": {
+            "edges": [{"middle": (200.0, 0.0, 0.0)}, {"middle": (228.0, 0.0, 0.0)}],
+        },
+    }
+    bng.scenario.find_waypoints.return_value = [
+        _spawn_obj((0.0, 0.0, 0.0)),  # snaps to "long"
+        _spawn_obj((201.0, 0.0, 0.0)),  # snaps to the 28 m "short" road
+    ]
+    mt = generate(bng, map_name="italy")
+    assert len(mt.paths) == 2
+    for path in mt.paths:
+        assert len(path.sparse_waypoints) >= MIN_CHECKPOINTS, path.source
+
+
 def test_generate_builds_one_path_per_teleport():
     bng = MagicMock()
     bng.scenario.get_road_network.return_value = _two_road_network()
@@ -575,3 +629,71 @@ def test_single_env_random_reset_teleports_to_chosen_spawn_without_restart(monke
 
     env.vehicle.teleport.assert_called_once_with(p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True)
     env.bng.scenario.restart.assert_not_called()
+
+
+def _two_path_pair():
+    p0 = _sample_traj(source="teleport:a")
+    p1 = TrajectoryData(
+        spawn_pos=(99.0, 99.0, 1.0),
+        spawn_rot=(0.0, 0.0, 0.0, 1.0),
+        sparse_waypoints=[(99.0, 100.0, 0.0), (99.0, 110.0, 0.0)],
+        dense_waypoints=[(99.0, 100.0, 0.0)],
+        map_name="italy",
+        generated_at="2026-06-18T12:00:00+00:00",
+        source="teleport:b",
+    )
+    return p0, p1
+
+
+def test_launch_with_random_path_spawns_on_random_path(monkeypatch):
+    # Human play launches via _launch (it never calls reset()), so the random-path
+    # choice must happen during launch — otherwise human play always uses path[0].
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+
+    monkeypatch.setattr("environments.beamng.BeamNGpy", lambda *a, **k: MagicMock())
+
+    def fake_resolve():
+        env._paths = [p0, p1]
+        env.trajectory = p0
+        return p0
+
+    monkeypatch.setattr(env, "_resolve_trajectory", fake_resolve)
+    monkeypatch.setattr(env, "_load_scenario", lambda human_control=False: None)
+    monkeypatch.setattr("environments.beamng.random.choice", lambda seq: p1)
+
+    env._launch(human_control=True)
+
+    assert env.trajectory.source == "teleport:b"
+    assert env._current_pos == p1.spawn_pos
+    assert env.waypoints == list(p1.sparse_waypoints)
+
+
+def test_launch_without_random_path_keeps_first_path(monkeypatch):
+    # With random_path off, launch must keep the default first path unchanged.
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")  # random_path defaults False
+
+    monkeypatch.setattr("environments.beamng.BeamNGpy", lambda *a, **k: MagicMock())
+
+    def fake_resolve():
+        env._paths = [p0, p1]
+        env.trajectory = p0
+        return p0
+
+    monkeypatch.setattr(env, "_resolve_trajectory", fake_resolve)
+    monkeypatch.setattr(env, "_load_scenario", lambda human_control=False: None)
+    # random.choice must not be consulted when random_path is off.
+    monkeypatch.setattr(
+        "environments.beamng.random.choice",
+        lambda seq: pytest.fail("random.choice called with random_path off"),
+    )
+
+    env._launch(human_control=True)
+
+    assert env.trajectory.source == "teleport:a"
+    assert env._current_pos == p0.spawn_pos

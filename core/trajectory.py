@@ -152,6 +152,7 @@ FALLBACK_SIDE_M = 80.0
 FALLBACK_GROUND_Z = 1.0
 MIN_PATH_SEPARATION_M = 30.0
 SPAWN_CLEARANCE_M = 2.0  # keep the first checkpoint at least this far from the spawn
+MIN_CHECKPOINTS = 10  # every generated path must carry at least this many checkpoints
 
 CACHE_DIR = Path("outputs/trajectories")
 
@@ -368,6 +369,31 @@ def _drop_waypoints_near_spawn(
     return waypoints[-1:]
 
 
+def _waypoints_with_min_count(
+    path: list[Vec3], spawn_pos: Vec3, spacing: float, clearance: float, min_count: int
+) -> list[Vec3]:
+    """Resample `path` (dropping near-spawn points) with at least `min_count` waypoints.
+
+    At the default `spacing`, a teleport that snaps to a short road can yield
+    fewer than `min_count` checkpoints once the leading near-spawn samples are
+    dropped. When that happens, repack the path with a tighter spacing so at
+    least `min_count` waypoints survive. The path itself is kept rather than
+    discarded: multi-agent training assigns one path per vehicle and needs every
+    path, so the fix densifies short paths instead of dropping them.
+    """
+    waypoints = _drop_waypoints_near_spawn(spawn_pos, resample(path, spacing), clearance)
+    if len(waypoints) >= min_count:
+        return waypoints
+    length = _path_length(path)
+    if length <= 0.0:
+        return waypoints
+    # `min_count + 1` segments -> `min_count + 2` samples; the leading near-spawn
+    # sample is dropped, leaving at least `min_count` checkpoints.
+    tight = length / (min_count + 1)
+    densified = _drop_waypoints_near_spawn(spawn_pos, resample(path, tight), clearance)
+    return densified if len(densified) >= len(waypoints) else waypoints
+
+
 def _spawn_rot_towards(spawn_pos: Vec3, waypoints: list[Vec3], fallback: Quat) -> Quat:
     """Quaternion facing the first waypoint that differs from spawn in the XY plane.
 
@@ -398,11 +424,11 @@ def _path_from_teleport(
     if len(path) < 2:
         return None
     spawn_pos = (tele_pos[0], tele_pos[1], tele_pos[2] + SPAWN_Z_OFFSET_M)
-    sparse = _drop_waypoints_near_spawn(
-        spawn_pos, resample(path, SPARSE_SPACING_M), SPAWN_CLEARANCE_M
+    sparse = _waypoints_with_min_count(
+        path, spawn_pos, SPARSE_SPACING_M, SPAWN_CLEARANCE_M, MIN_CHECKPOINTS
     )
-    dense = _drop_waypoints_near_spawn(
-        spawn_pos, resample(path, DENSE_SPACING_M), SPAWN_CLEARANCE_M
+    dense = _waypoints_with_min_count(
+        path, spawn_pos, DENSE_SPACING_M, SPAWN_CLEARANCE_M, MIN_CHECKPOINTS
     )
     traj = TrajectoryData(
         spawn_pos=spawn_pos,
