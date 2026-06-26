@@ -8,10 +8,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opentui/core": "^0.4.1"
+    "@opentui/core": "0.4.2"
   },
   "devDependencies": {
-    "typescript": "^5",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typescript": "^7.0.1-rc"
   }
 }

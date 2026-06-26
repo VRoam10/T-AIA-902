@@ -13,6 +13,48 @@ import { BORDER, COLOR, GLYPH } from "./theme.ts";
 
 type Dimension = number | "auto" | `${number}%`;
 
+// Log retention caps (lines kept in memory / shown). The docked Output is a
+// small preview; the modal keeps a larger "full" history. Both finite.
+export const LOG_PREVIEW_LIMIT = 200;
+export const LOG_MODAL_LIMIT = 2000;
+
+/**
+ * A scrollable log surface that NEVER adds a renderable per line. It keeps a
+ * capped ring buffer of strings and renders them through a SINGLE TextRenderable
+ * whose `content` is updated in place. This is essential: adding one child
+ * renderable per log line churns OpenTUI's native cell buffers and crashes
+ * `opentui.dll` (segfault → Bun exit code 3) after a few thousand lines. One
+ * text node updated in place survives indefinitely.
+ */
+export interface LogSink {
+  append(text: string): void;
+  clear(): void;
+}
+
+export function createLogSink(renderer: CliRenderer, box: ScrollBoxRenderable, limit: number): LogSink {
+  const lines: string[] = [];
+  const text = new TextRenderable(renderer, {
+    id: `${box.id}-text`,
+    content: "",
+    width: "100%",
+    fg: COLOR.value,
+  });
+  box.add(text);
+  return {
+    append(incoming: string) {
+      for (const raw of incoming.split("\n")) lines.push(raw);
+      if (lines.length > limit) lines.splice(0, lines.length - limit);
+      text.content = lines.join("\n");
+      renderer.requestRender();
+    },
+    clear() {
+      lines.length = 0;
+      text.content = "";
+      renderer.requestRender();
+    },
+  };
+}
+
 export interface PanelOptions {
   id: string;
   title?: string;
@@ -170,13 +212,11 @@ export function makeLogModal(renderer: CliRenderer): LogModal {
     stickyScroll: true,
     stickyStart: "bottom",
   });
-  let id = 0;
+  const sink = createLogSink(renderer, box, LOG_MODAL_LIMIT);
   return {
     box,
     append(text: string) {
-      for (const raw of text.split("\n")) {
-        box.add(new TextRenderable(renderer, { id: `lm-${id++}`, content: raw, fg: COLOR.value }));
-      }
+      sink.append(text);
     },
     show() {
       box.visible = true;

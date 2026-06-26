@@ -72,6 +72,51 @@ export async function loadCatalog(): Promise<Catalog> {
   return JSON.parse(stdout) as Catalog;
 }
 
+/** One line carved out of a stream buffer, plus whether it was a transient
+ * (lone-`\r`) repaint — used to route tqdm progress updates separately. */
+export interface SplitLine {
+  text: string;
+  transient: boolean;
+}
+
+/**
+ * Split a stream buffer into complete lines, returning the unconsumed `rest`.
+ * Lines end at `\n`, `\r\n`, or a lone `\r` (the last being tqdm repainting one
+ * line in place → `transient: true`). A trailing lone `\r` is kept in `rest`
+ * because the next chunk may turn it into a `\r\n`. Pure — covered by tests.
+ */
+export function splitStreamLines(buffer: string): { lines: SplitLine[]; rest: string } {
+  const lines: SplitLine[] = [];
+  for (;;) {
+    const rIdx = buffer.indexOf("\r");
+    const nIdx = buffer.indexOf("\n");
+    if (rIdx === -1 && nIdx === -1) break;
+
+    let cut: number;
+    let next: number;
+    let transient = false;
+
+    if (nIdx === -1 || (rIdx !== -1 && rIdx < nIdx)) {
+      if (rIdx === buffer.length - 1) break; // maybe a split \r\n — wait for more
+      if (buffer[rIdx + 1] === "\n") {
+        cut = rIdx;
+        next = rIdx + 2; // \r\n → permanent line
+      } else {
+        cut = rIdx;
+        next = rIdx + 1;
+        transient = true; // lone \r → transient repaint
+      }
+    } else {
+      cut = nIdx;
+      next = nIdx + 1; // \n → permanent line
+    }
+
+    lines.push({ text: buffer.slice(0, cut), transient });
+    buffer = buffer.slice(next);
+  }
+  return { lines, rest: buffer };
+}
+
 export function runBackend(
   command: BackendCommand,
   payload: unknown,
@@ -90,44 +135,12 @@ export function runBackend(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      buffer = drain(buffer, isErr);
+      const { lines, rest } = splitStreamLines(buffer);
+      for (const line of lines) emitLine(line.text, isErr, line.transient);
+      buffer = rest;
     }
     // Flush a trailing partial line (e.g. a final tqdm bar with no newline).
     if (buffer.length > 0) emitLine(buffer.replace(/\r$/, ""), isErr, false);
-  };
-
-  // Emit every complete line in `buffer`, returning the unconsumed remainder.
-  // Lines end at \n, \r\n, or a lone \r — the last being tqdm repainting one
-  // line in place, which we surface as a transient "progress" update.
-  const drain = (buffer: string, isErr: boolean): string => {
-    for (;;) {
-      const rIdx = buffer.indexOf("\r");
-      const nIdx = buffer.indexOf("\n");
-      if (rIdx === -1 && nIdx === -1) break;
-
-      let cut: number;
-      let next: number;
-      let transient = false;
-
-      if (nIdx === -1 || (rIdx !== -1 && rIdx < nIdx)) {
-        if (rIdx === buffer.length - 1) break; // maybe a split \r\n — wait for more
-        if (buffer[rIdx + 1] === "\n") {
-          cut = rIdx;
-          next = rIdx + 2; // \r\n → permanent line
-        } else {
-          cut = rIdx;
-          next = rIdx + 1;
-          transient = true; // lone \r → transient repaint
-        }
-      } else {
-        cut = nIdx;
-        next = nIdx + 1; // \n → permanent line
-      }
-
-      emitLine(buffer.slice(0, cut), isErr, transient);
-      buffer = buffer.slice(next);
-    }
-    return buffer;
   };
 
   const emitLine = (line: string, isErr: boolean, transient: boolean) => {
