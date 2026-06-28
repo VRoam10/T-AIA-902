@@ -152,7 +152,15 @@ FALLBACK_SIDE_M = 80.0
 FALLBACK_GROUND_Z = 1.0
 MIN_PATH_SEPARATION_M = 30.0
 SPAWN_CLEARANCE_M = 2.0  # keep the first checkpoint at least this far from the spawn
-MIN_CHECKPOINTS = 10  # every generated path must carry at least this many checkpoints
+# Advisory only: the healthy checkpoint count a connected path is expected to
+# reach (asserted in tests). Generation no longer enforces it — paths follow the
+# road as far as it goes, so well-connected spawns far exceed it while genuinely
+# short isolated roads carry fewer.
+MIN_CHECKPOINTS = 10
+ROAD_CONNECT_M = 10.0  # road endpoints this close are treated as a junction
+# A teleport whose path can't reach this length (no road / dead-end stub) is
+# dropped instead of emitting a pile of waypoints crammed at one spot.
+MIN_USABLE_PATH_LENGTH_M = 2 * SPARSE_SPACING_M
 
 CACHE_DIR = Path("outputs/trajectories")
 
@@ -369,29 +377,48 @@ def _drop_waypoints_near_spawn(
     return waypoints[-1:]
 
 
-def _waypoints_with_min_count(
-    path: list[Vec3], spawn_pos: Vec3, spacing: float, clearance: float, min_count: int
+def _extend_path_along_network(
+    path: list[Vec3],
+    roads: list[tuple[str, list[Vec3]]],
+    used_ids: set[str],
+    connect_m: float = ROAD_CONNECT_M,
 ) -> list[Vec3]:
-    """Resample `path` (dropping near-spawn points) with at least `min_count` waypoints.
+    """Grow `path` forward through connected roads for as long as the network runs.
 
-    At the default `spacing`, a teleport that snaps to a short road can yield
-    fewer than `min_count` checkpoints once the leading near-spawn samples are
-    dropped. When that happens, repack the path with a tighter spacing so at
-    least `min_count` waypoints survive. The path itself is kept rather than
-    discarded: multi-agent training assigns one path per vehicle and needs every
-    path, so the fix densifies short paths instead of dropping them.
+    After the snapped starting road runs out, hop to whichever unused road joins
+    the current end (within `connect_m`) and best continues the current heading,
+    repeating until no forward road connects (a dead end). This makes a teleport
+    on a short road yield a long, well-spaced trajectory (checkpoints at the
+    default spacing) that follows the road as far as it goes. `used_ids` bounds
+    the walk to each road once, so it always terminates.
     """
-    waypoints = _drop_waypoints_near_spawn(spawn_pos, resample(path, spacing), clearance)
-    if len(waypoints) >= min_count:
-        return waypoints
-    length = _path_length(path)
-    if length <= 0.0:
-        return waypoints
-    # `min_count + 1` segments -> `min_count + 2` samples; the leading near-spawn
-    # sample is dropped, leaving at least `min_count` checkpoints.
-    tight = length / (min_count + 1)
-    densified = _drop_waypoints_near_spawn(spawn_pos, resample(path, tight), clearance)
-    return densified if len(densified) >= len(waypoints) else waypoints
+    path = list(path)
+    while True:
+        end, prev = path[-1], path[-2]
+        dx, dy = end[0] - prev[0], end[1] - prev[1]
+        best: list[Vec3] | None = None
+        best_id: str | None = None
+        best_score = 0.0  # require a forward-ish continuation (cos > 0)
+        for road_id, centerline in roads:
+            if road_id in used_ids or len(centerline) < 2:
+                continue
+            d_start = math.hypot(centerline[0][0] - end[0], centerline[0][1] - end[1])
+            d_end = math.hypot(centerline[-1][0] - end[0], centerline[-1][1] - end[1])
+            if min(d_start, d_end) > connect_m:
+                continue
+            oriented = centerline if d_start <= d_end else list(reversed(centerline))
+            tx, ty = oriented[1][0] - oriented[0][0], oriented[1][1] - oriented[0][1]
+            norm = math.hypot(tx, ty)
+            if norm == 0.0:
+                continue
+            score = (dx * tx + dy * ty) / norm  # |dir| * cos(turn angle)
+            if score > best_score:
+                best_score, best, best_id = score, oriented, road_id
+        if best is None:
+            break
+        used_ids.add(best_id)
+        path.extend(best[1:])  # skip the junction vertex (≈ current end)
+    return path
 
 
 def _spawn_rot_towards(spawn_pos: Vec3, waypoints: list[Vec3], fallback: Quat) -> Quat:
@@ -412,7 +439,12 @@ def _path_from_teleport(
 ) -> tuple[TrajectoryData, float] | None:
     """Build one TrajectoryData by snapping a teleport point to its nearest road.
 
-    Returns (trajectory, road_length) for length-based sorting, or None when no
+    The snapped road is extended forward through connected roads for as long as
+    the network runs, so a teleport on a short road yields a long path with
+    checkpoints at the default spacing. Paths shorter than MIN_USABLE_PATH_LENGTH_M
+    (no real road here) are dropped.
+
+    Returns (trajectory, path_length) for length-based sorting, or None when no
     usable road yields a 2+ point path.
     """
     nearest = _nearest_road(tele_pos, roads)
@@ -423,12 +455,17 @@ def _path_from_teleport(
     path = _road_path_from_teleport(centerline, tele_pos, forward)
     if len(path) < 2:
         return None
+    path = _extend_path_along_network(path, roads, {road_id})
+    if _path_length(path) < MIN_USABLE_PATH_LENGTH_M:
+        # No real road here (dead-end stub / off-road spawn): drop it instead of
+        # emitting a path whose few waypoints all sit at the same place.
+        return None
     spawn_pos = (tele_pos[0], tele_pos[1], tele_pos[2] + SPAWN_Z_OFFSET_M)
-    sparse = _waypoints_with_min_count(
-        path, spawn_pos, SPARSE_SPACING_M, SPAWN_CLEARANCE_M, MIN_CHECKPOINTS
+    sparse = _drop_waypoints_near_spawn(
+        spawn_pos, resample(path, SPARSE_SPACING_M), SPAWN_CLEARANCE_M
     )
-    dense = _waypoints_with_min_count(
-        path, spawn_pos, DENSE_SPACING_M, SPAWN_CLEARANCE_M, MIN_CHECKPOINTS
+    dense = _drop_waypoints_near_spawn(
+        spawn_pos, resample(path, DENSE_SPACING_M), SPAWN_CLEARANCE_M
     )
     traj = TrajectoryData(
         spawn_pos=spawn_pos,
@@ -439,7 +476,7 @@ def _path_from_teleport(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         source=f"teleport:{road_id}",
     )
-    return traj, _path_length(centerline)
+    return traj, _path_length(path)
 
 
 def generate(bng, map_name: str) -> MapTrajectories:
@@ -462,9 +499,11 @@ def generate(bng, map_name: str) -> MapTrajectories:
     if roads and teleports:
         scored: list[tuple[TrajectoryData, float]] = []
         accepted_spawns: list[Vec3] = []
+        dropped = 0
         for pos, rot, _name in teleports:
             built = _path_from_teleport(pos, rot, roads, map_name)
             if built is None:
+                dropped += 1  # no usable road at this teleport
                 continue
             traj, length = built
             if any(
@@ -473,6 +512,11 @@ def generate(bng, map_name: str) -> MapTrajectories:
                 continue
             accepted_spawns.append(traj.spawn_pos)
             scored.append((traj, length))
+        if dropped:
+            print(
+                f"[trajectory] {map_name}: dropped {dropped} teleport(s) with no usable road "
+                f"(< {MIN_USABLE_PATH_LENGTH_M:.0f} m of connected path)"
+            )
         if scored:
             scored.sort(key=lambda t: t[1], reverse=True)
             return MapTrajectories(
