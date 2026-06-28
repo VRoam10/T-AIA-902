@@ -3,8 +3,16 @@
 import io
 import json
 from contextlib import redirect_stdout
+from unittest.mock import MagicMock
 
-from core.pipeline_actions import TrajectoryRequest, run_trajectory, trajectory_cache_path
+import core.pipeline_actions as pipeline_actions
+from core.pipeline_actions import (
+    HumanPlayRequest,
+    TrajectoryRequest,
+    run_human_play,
+    run_trajectory,
+    trajectory_cache_path,
+)
 from core.tui_backend import main
 
 
@@ -34,3 +42,33 @@ def test_run_trajectory_skips_when_cache_exists(tmp_path):
     assert result["path"] == str(cache)
     # Cache untouched.
     assert cache.exists()
+
+
+def test_run_human_play_forwards_random_path(monkeypatch):
+    # The randomize-path option must reach the env so human play deals a new
+    # random path on crash / completion.
+    captured = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(
+        pipeline_actions.registry, "get_environment", lambda name: {"factory": fake_factory}
+    )
+    run_human_play(HumanPlayRequest(map_name="italy", vehicle_id="taxi", random_path=True))
+    assert captured["random_path"] is True
+
+
+def test_run_human_play_defaults_random_path_off(monkeypatch):
+    captured = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(
+        pipeline_actions.registry, "get_environment", lambda name: {"factory": fake_factory}
+    )
+    run_human_play(HumanPlayRequest(map_name="italy", vehicle_id="taxi"))
+    assert captured["random_path"] is False

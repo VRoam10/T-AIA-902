@@ -93,6 +93,7 @@ def _cmd_human_play(payload: dict) -> None:
         map_name=payload["map_name"],
         vehicle_id=payload["vehicle_id"],
         sensor=payload.get("sensor", "None"),
+        random_path=payload.get("random_path", False),
     )
     run_human_play(req)
     _emit_result({"status": "stopped"})
