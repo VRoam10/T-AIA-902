@@ -115,6 +115,40 @@ def test_ask_bool_parses_yes_no():
         assert _ask_bool("?", default=True) is False
 
 
+def test_human_play_menu_omits_wheel_terrain_and_offers_random_path(monkeypatch):
+    import core.cli as cli
+
+    asked_prompts = []
+
+    def fake_ask_bool(prompt, default=False):
+        asked_prompts.append(prompt)
+        # Enable only the "random path / checkpoints" toggle.
+        return "random" in prompt.lower()
+
+    monkeypatch.setattr(cli, "_pick_beamng_options", lambda: ("italy", "taxi"))
+    monkeypatch.setattr(cli, "_pick", lambda options, prompt="Select": "None")
+    monkeypatch.setattr(cli, "_ask_int", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "_ask_bool", fake_ask_bool)
+    monkeypatch.setattr(cli.registry, "list_environments", lambda: ["beamng", "beamng_camera"])
+
+    captured = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(cli.registry, "get_environment", lambda name: {"factory": fake_factory})
+
+    cli._human_play_menu()
+
+    # The per-wheel road position prompt is gone from human play.
+    assert not any("wheel" in p.lower() for p in asked_prompts)
+    # A random path / checkpoints option is offered and forwarded to the env.
+    assert captured["random_path"] is True
+    # wheel_terrain is forced off (its RoadsSensor poll can freeze BeamNG).
+    assert captured["wheel_terrain"] is False
+
+
 def test_obs_suffix_encodes_predicted_checkpoint_count_and_body_orientation():
     from core.cli import _obs_suffix
 

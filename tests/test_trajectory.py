@@ -697,3 +697,58 @@ def test_launch_without_random_path_keeps_first_path(monkeypatch):
 
     assert env.trajectory.source == "teleport:a"
     assert env._current_pos == p0.spawn_pos
+
+
+def test_human_respawn_on_crash_picks_new_random_path(monkeypatch):
+    # Human play: a crash should deal a NEW random path via a fast teleport
+    # (no scenario relaunch), so the player gets fresh checkpoints each crash.
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._paths = [p0, p1]
+    env.trajectory = p0
+    env.waypoints = list(p0.sparse_waypoints)
+    env.vehicle = MagicMock()
+    env.damage_sensor = MagicMock()
+    env.damage_sensor.data = {"damage": 500.0}  # crashed
+    env._waypoint_idx = 7
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+    monkeypatch.setattr("environments.beamng.random.choice", lambda seq: p1)
+
+    respawned = env._maybe_respawn_on_crash()
+
+    assert respawned is True
+    assert env.trajectory.source == "teleport:b"
+    env.vehicle.teleport.assert_called_once_with(p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True)
+    assert env._waypoint_idx == 0
+    assert env.waypoints == list(p1.sparse_waypoints)
+
+
+def test_human_respawn_skips_when_not_crashed(monkeypatch):
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._paths = [p0, p1]
+    env.trajectory = p0
+    env.vehicle = MagicMock()
+    env.damage_sensor = MagicMock()
+    env.damage_sensor.data = {"damage": 0.0}  # intact
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+
+    assert env._maybe_respawn_on_crash() is False
+    env.vehicle.teleport.assert_not_called()
+
+
+def test_human_respawn_noop_without_random_path():
+    # With the random option off, human play behaviour is unchanged (no auto-respawn).
+    from environments.beamng import BeamNGDrivingEnv
+
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")  # random_path defaults False
+    env.vehicle = MagicMock()
+    env.damage_sensor = MagicMock()
+    env.damage_sensor.data = {"damage": 999.0}  # crashed, but option is off
+
+    assert env._maybe_respawn_on_crash() is False
+    env.vehicle.teleport.assert_not_called()

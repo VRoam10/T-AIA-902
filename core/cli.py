@@ -550,13 +550,17 @@ def _human_play_menu():
         "\nCheckpoint hints (waypoints ahead in obs, 0 = none)", 0, min_val=0
     )
     body_orientation = _ask_bool("Include body orientation (pitch + roll) in obs?")
-    wheel_terrain = _ask_bool("Include per-wheel road position in obs?")
+    # wheel_terrain (per-wheel road position) is disabled: its RoadsSensor poll
+    # can hard-freeze BeamNG on large maps, so it isn't offered in human play.
+    wheel_terrain = False
+    random_path = _ask_bool("Randomize path / checkpoints each launch?")
     feature_kwargs = {
         "map_name": map_name,
         "vehicle_id": vehicle_id,
         "trajectory_hints": trajectory_hints,
         "body_orientation": body_orientation,
         "wheel_terrain": wheel_terrain,
+        "random_path": random_path,
     }
 
     env = None

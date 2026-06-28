@@ -101,6 +101,7 @@ class BeamNGDrivingEnv:
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 500
     MAX_DAMAGE = 1000.0  # damage threshold that ends the episode
+    HUMAN_RESPAWN_DAMAGE = 100.0  # human play: damage above this counts as a crash
     HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
 
     AVAILABLE_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "smallgrid"]
@@ -326,6 +327,7 @@ class BeamNGDrivingEnv:
                 # _observe polls sensors, logs the full labeled obs to Lua + stdout,
                 # and advances waypoints/markers as the player drives.
                 self._observe()
+                self._maybe_respawn_on_crash()
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("[BeamNGDrivingEnv] Human play stopped.")
@@ -356,6 +358,7 @@ class BeamNGDrivingEnv:
             while True:
                 # Logs the full labeled obs (incl. the lidar bins) to Lua + stdout.
                 self._observe()
+                self._maybe_respawn_on_crash()
                 # Extra filtering diagnostics not present in the obs vector itself.
                 d = self._lidar_debug
                 if d:
@@ -429,6 +432,10 @@ class BeamNGDrivingEnv:
         )
         self.bng.open(launch=True)
         self.trajectory = self._resolve_trajectory()
+        # Honor random_path on the very first scenario load too (e.g. human play,
+        # which drives a single launched episode and never calls reset()). No-op
+        # when random_path is off, so the default first path is kept.
+        self._pick_episode_path()
         self.waypoints = self._select_waypoints()
         self._current_pos = self.trajectory.spawn_pos
         self._load_scenario(human_control=human_control)
@@ -462,6 +469,31 @@ class BeamNGDrivingEnv:
             return
         self.trajectory = random.choice(self._paths)
         self.waypoints = self._select_waypoints()
+
+    def _maybe_respawn_on_crash(self) -> bool:
+        """Human play: on a crash, deal a fresh random path via a fast teleport.
+
+        Each crash picks a new random path/checkpoints and teleports there
+        (reset=True), so the player gets new checkpoints without relaunching the
+        scenario (a slow full reload). No-op when the random-path option is off
+        or the vehicle hasn't crashed. Returns True if a respawn happened.
+        """
+        if not self.random_path:
+            return False
+        dmg = self.damage_sensor.data if self.damage_sensor is not None else None
+        damage = float((dmg or {}).get("damage", 0.0))
+        if damage < self.HUMAN_RESPAWN_DAMAGE:
+            return False
+        self._pick_episode_path()
+        self.vehicle.teleport(
+            self.trajectory.spawn_pos,
+            rot_quat=self.trajectory.spawn_rot,
+            reset=True,
+        )
+        self._waypoint_idx = 0
+        self._last_damage = 0.0
+        self._update_active_marker(0)
+        return True
 
     def _load_scenario(self, human_control=False):
         # self._randomize_waypoints()
@@ -1380,6 +1412,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
                 # the Lua console, and advances waypoints. We render the same frame as
                 # ASCII art plus the numeric obs lines, redrawn in place each tick.
                 self._observe()
+                self._maybe_respawn_on_crash()
                 frame = self.last_frame
                 if frame is None:
                     frame = np.zeros(self.CAM_OUT_SIZE, dtype=np.float32)
