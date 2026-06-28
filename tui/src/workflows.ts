@@ -86,6 +86,7 @@ export interface HumanPlayState {
   map_name: string;
   vehicle_id: string;
   sensor: string;
+  random_path: boolean;
 }
 
 export interface TrajectoryState {
@@ -184,6 +185,7 @@ export function buildHumanPlayPayload(state: HumanPlayState): Record<string, unk
     map_name: state.map_name,
     vehicle_id: state.vehicle_id,
     sensor: state.sensor,
+    random_path: state.random_path,
   };
 }
 

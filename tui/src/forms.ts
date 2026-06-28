@@ -210,6 +210,7 @@ function buildHumanPlayForm(ctx: Ctx): void {
   addChoice(ctx, "map_name", "Map", [...BEAMNG_MAPS]);
   addChoice(ctx, "vehicle_id", "Vehicle", ctx.vehicleIds);
   addChoice(ctx, "sensor", "Sensor", sensors);
+  addChoice(ctx, "random_path", "Randomize path", ["false", "true"]);
   addAction(ctx, "Launch human play", "run", undefined, { primary: true });
 
   state.runAction = () => {
@@ -218,6 +219,7 @@ function buildHumanPlayForm(ctx: Ctx): void {
       map_name: v.map_name as string,
       vehicle_id: v.vehicle_id as string,
       sensor: v.sensor as string,
+      random_path: bool(v.random_path),
     };
     startRun(ctx, "human-play", buildHumanPlayPayload(playState), "Human play");
   };

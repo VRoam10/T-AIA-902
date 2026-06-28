@@ -174,10 +174,15 @@ describe("benchmark payload", () => {
 });
 
 describe("human-play payload", () => {
-  test("passes map / vehicle / sensor through", () => {
+  test("passes map / vehicle / sensor / random_path through", () => {
     expect(
-      buildHumanPlayPayload({ map_name: "italy", vehicle_id: "taxi", sensor: "LiDAR" }),
-    ).toEqual({ map_name: "italy", vehicle_id: "taxi", sensor: "LiDAR" });
+      buildHumanPlayPayload({
+        map_name: "italy",
+        vehicle_id: "taxi",
+        sensor: "LiDAR",
+        random_path: true,
+      }),
+    ).toEqual({ map_name: "italy", vehicle_id: "taxi", sensor: "LiDAR", random_path: true });
   });
 });
 

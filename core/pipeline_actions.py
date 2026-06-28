@@ -133,6 +133,7 @@ class HumanPlayRequest:
     map_name: str
     vehicle_id: str
     sensor: str = "None"
+    random_path: bool = False
 
 
 @dataclass
@@ -426,11 +427,15 @@ def run_human_play(request: HumanPlayRequest) -> None:
     try:
         if request.sensor == "Camera":
             env = registry.get_environment("beamng_camera")["factory"](
-                map_name=request.map_name, vehicle_id=request.vehicle_id
+                map_name=request.map_name,
+                vehicle_id=request.vehicle_id,
+                random_path=request.random_path,
             )
         else:
             env = registry.get_environment("beamng")["factory"](
-                map_name=request.map_name, vehicle_id=request.vehicle_id
+                map_name=request.map_name,
+                vehicle_id=request.vehicle_id,
+                random_path=request.random_path,
             )
 
         if request.sensor == "LiDAR":

@@ -7,7 +7,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.trajectory import (
+    MIN_CHECKPOINTS,
     MIN_PATH_SEPARATION_M,
+    SPARSE_SPACING_M,
     MapTrajectories,
     TrajectoryData,
     _edge_center,
@@ -319,6 +321,97 @@ def test_path_from_teleport_first_checkpoint_clear_of_spawn():
         assert math.hypot(first[0] - spawn[0], first[1] - spawn[1]) >= 2.0
 
 
+def _chain_roads(seg_len: float, n: int) -> list[tuple[str, list]]:
+    """n straight road segments of `seg_len` metres connected end-to-end along +Y."""
+    return [(f"r{i}", [(0.0, i * seg_len, 0.0), (0.0, (i + 1) * seg_len, 0.0)]) for i in range(n)]
+
+
+def _gaps(wps):
+    return [
+        math.hypot(wps[i + 1][0] - wps[i][0], wps[i + 1][1] - wps[i][1])
+        for i in range(len(wps) - 1)
+    ]
+
+
+def test_path_from_teleport_extends_through_whole_chain():
+    # A teleport on a short road segment should chain through ALL connected roads,
+    # following the network as far as it goes (no artificial length cap), with
+    # checkpoints at the default ~25 m spacing rather than crammed together.
+    roads = _chain_roads(seg_len=60.0, n=6)  # 360 m chain along +Y
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is not None
+    traj, length = built
+    wps = traj.sparse_waypoints
+    assert len(wps) >= MIN_CHECKPOINTS
+    # Checkpoints stay ~25 m apart, NOT packed close together.
+    assert max(_gaps(wps)) == pytest.approx(SPARSE_SPACING_M, abs=1.0)
+    # The path follows the full 360 m chain (not capped short).
+    assert length == pytest.approx(360.0, abs=SPARSE_SPACING_M)
+
+
+def test_path_from_teleport_follows_long_road_without_capping():
+    # A single very long road is used as far as it goes — no artificial cap.
+    centerline = [(0.0, 0.0, 0.0), (0.0, 4000.0, 0.0)]
+    roads = [("huge", centerline)]
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is not None
+    traj, length = built
+    assert length == pytest.approx(4000.0, abs=SPARSE_SPACING_M)
+    assert max(_gaps(traj.sparse_waypoints)) == pytest.approx(SPARSE_SPACING_M, abs=1.0)
+
+
+def test_path_from_teleport_keeps_short_road_without_densifying():
+    # A short-but-real road that can't be extended is kept (not dropped) with the
+    # default ~25 m spacing — fewer checkpoints, never crammed together.
+    roads = [("only", [(0.0, 0.0, 0.0), (0.0, 100.0, 0.0)])]  # 100 m, no connections
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is not None
+    traj, _ = built
+    wps = traj.sparse_waypoints
+    assert max(_gaps(wps)) == pytest.approx(SPARSE_SPACING_M, abs=1.0)
+    assert len(wps) < MIN_CHECKPOINTS  # not densified to reach the minimum
+
+
+def test_path_from_teleport_drops_degenerate_road():
+    # A tiny isolated road with no connections can't make a usable trajectory; it
+    # must be dropped rather than collapsed into a pile of waypoints at one spot.
+    roads = [("tiny", [(0.0, 0.0, 0.0), (0.0, 10.0, 0.0)])]  # 10 m, no connections
+    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is None
+
+
+def test_generate_extends_paths_along_connected_network():
+    # A teleport landing on a short segment of a connected road chain produces a
+    # long, well-spaced path rather than a short one with crammed checkpoints.
+    bng = MagicMock()
+    edges = [{"middle": (0.0, float(y), 0.0)} for y in range(0, 361, 30)]
+    network = {f"seg{i}": {"edges": [edges[i], edges[i + 1]]} for i in range(len(edges) - 1)}
+    bng.scenario.get_road_network.return_value = network
+    bng.scenario.find_waypoints.return_value = [_spawn_obj((0.0, 0.0, 0.0))]
+    mt = generate(bng, map_name="italy")
+    assert len(mt.paths) == 1
+    wps = mt.paths[0].sparse_waypoints
+    assert len(wps) >= MIN_CHECKPOINTS
+    assert max(_gaps(wps)) == pytest.approx(SPARSE_SPACING_M, abs=1.0)
+
+
+def test_generate_drops_degenerate_teleports():
+    # One teleport lands on a usable road, the other on a tiny isolated stub.
+    # Only the usable path is emitted; the degenerate one is dropped.
+    bng = MagicMock()
+    bng.scenario.get_road_network.return_value = {
+        "good": {"edges": [{"middle": (0.0, float(y), 0.0)} for y in range(0, 121, 10)]},
+        "stub": {"edges": [{"middle": (500.0, 0.0, 0.0)}, {"middle": (500.0, 8.0, 0.0)}]},
+    }
+    bng.scenario.find_waypoints.return_value = [
+        _spawn_obj((0.0, 0.0, 0.0)),  # snaps to the 120 m "good" road
+        _spawn_obj((500.0, 0.0, 0.0)),  # snaps to the 8 m "stub" — degenerate
+    ]
+    mt = generate(bng, map_name="italy")
+    assert len(mt.paths) == 1
+    assert mt.paths[0].source == "teleport:good"
+
+
 def test_generate_builds_one_path_per_teleport():
     bng = MagicMock()
     bng.scenario.get_road_network.return_value = _two_road_network()
@@ -575,3 +668,182 @@ def test_single_env_random_reset_teleports_to_chosen_spawn_without_restart(monke
 
     env.vehicle.teleport.assert_called_once_with(p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True)
     env.bng.scenario.restart.assert_not_called()
+
+
+def _two_path_pair():
+    p0 = _sample_traj(source="teleport:a")
+    p1 = TrajectoryData(
+        spawn_pos=(99.0, 99.0, 1.0),
+        spawn_rot=(0.0, 0.0, 0.0, 1.0),
+        sparse_waypoints=[(99.0, 100.0, 0.0), (99.0, 110.0, 0.0)],
+        dense_waypoints=[(99.0, 100.0, 0.0)],
+        map_name="italy",
+        generated_at="2026-06-18T12:00:00+00:00",
+        source="teleport:b",
+    )
+    return p0, p1
+
+
+def test_launch_with_random_path_spawns_on_random_path(monkeypatch):
+    # Human play launches via _launch (it never calls reset()), so the random-path
+    # choice must happen during launch — otherwise human play always uses path[0].
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+
+    monkeypatch.setattr("environments.beamng.BeamNGpy", lambda *a, **k: MagicMock())
+
+    def fake_resolve():
+        env._paths = [p0, p1]
+        env.trajectory = p0
+        return p0
+
+    monkeypatch.setattr(env, "_resolve_trajectory", fake_resolve)
+    monkeypatch.setattr(env, "_load_scenario", lambda human_control=False: None)
+    monkeypatch.setattr("environments.beamng.random.choice", lambda seq: p1)
+
+    env._launch(human_control=True)
+
+    assert env.trajectory.source == "teleport:b"
+    assert env._current_pos == p1.spawn_pos
+    assert env.waypoints == list(p1.sparse_waypoints)
+
+
+def test_launch_without_random_path_keeps_first_path(monkeypatch):
+    # With random_path off, launch must keep the default first path unchanged.
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")  # random_path defaults False
+
+    monkeypatch.setattr("environments.beamng.BeamNGpy", lambda *a, **k: MagicMock())
+
+    def fake_resolve():
+        env._paths = [p0, p1]
+        env.trajectory = p0
+        return p0
+
+    monkeypatch.setattr(env, "_resolve_trajectory", fake_resolve)
+    monkeypatch.setattr(env, "_load_scenario", lambda human_control=False: None)
+    # random.choice must not be consulted when random_path is off.
+    monkeypatch.setattr(
+        "environments.beamng.random.choice",
+        lambda seq: pytest.fail("random.choice called with random_path off"),
+    )
+
+    env._launch(human_control=True)
+
+    assert env.trajectory.source == "teleport:a"
+    assert env._current_pos == p0.spawn_pos
+
+
+def test_human_respawn_on_crash_picks_new_random_path(monkeypatch):
+    # Human play: a crash should deal a NEW random path via a fast teleport
+    # (no scenario relaunch), so the player gets fresh checkpoints each crash.
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._paths = [p0, p1]
+    env.trajectory = p0
+    env.waypoints = list(p0.sparse_waypoints)
+    env.vehicle = MagicMock()
+    env.damage_sensor = MagicMock()
+    env.damage_sensor.data = {"damage": 500.0}  # crashed
+    env._waypoint_idx = 7
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+    monkeypatch.setattr("environments.beamng.random.choice", lambda seq: p1)
+
+    respawned = env._maybe_respawn_on_crash()
+
+    assert respawned is True
+    assert env.trajectory.source == "teleport:b"
+    env.vehicle.teleport.assert_called_once_with(p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True)
+    assert env._waypoint_idx == 0
+    assert env.waypoints == list(p1.sparse_waypoints)
+
+
+def test_human_respawn_skips_when_not_crashed(monkeypatch):
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._paths = [p0, p1]
+    env.trajectory = p0
+    env.vehicle = MagicMock()
+    env.damage_sensor = MagicMock()
+    env.damage_sensor.data = {"damage": 0.0}  # intact
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+
+    assert env._maybe_respawn_on_crash() is False
+    env.vehicle.teleport.assert_not_called()
+
+
+def test_human_respawn_noop_without_random_path():
+    # With the random option off, human play behaviour is unchanged (no auto-respawn).
+    from environments.beamng import BeamNGDrivingEnv
+
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")  # random_path defaults False
+    env.vehicle = MagicMock()
+    env.damage_sensor = MagicMock()
+    env.damage_sensor.data = {"damage": 999.0}  # crashed, but option is off
+
+    assert env._maybe_respawn_on_crash() is False
+    env.vehicle.teleport.assert_not_called()
+
+
+def test_human_reset_on_completion_picks_new_random_path(monkeypatch):
+    # Human play: clearing the last checkpoint resets onto a NEW random path.
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, p1 = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._paths = [p0, p1]
+    env.trajectory = p0
+    env.waypoints = list(p0.sparse_waypoints)
+    env._waypoint_idx = len(env.waypoints)  # all checkpoints cleared
+    env.vehicle = MagicMock()
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+    monkeypatch.setattr("environments.beamng.random.choice", lambda seq: p1)
+
+    assert env._maybe_reset_on_completion() is True
+    assert env.trajectory.source == "teleport:b"
+    env.vehicle.teleport.assert_called_once_with(p1.spawn_pos, rot_quat=p1.spawn_rot, reset=True)
+    assert env._waypoint_idx == 0
+    assert env.waypoints == list(p1.sparse_waypoints)
+
+
+def test_human_reset_on_completion_restarts_same_path_without_random(monkeypatch):
+    # Without the random option, finishing a path restarts the SAME path so the
+    # player isn't stranded past the final checkpoint.
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, _ = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")  # random_path off
+    env._paths = [p0]
+    env.trajectory = p0
+    env.waypoints = list(p0.sparse_waypoints)
+    env._waypoint_idx = len(env.waypoints)
+    env.vehicle = MagicMock()
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+
+    assert env._maybe_reset_on_completion() is True
+    assert env.trajectory.source == "teleport:a"
+    env.vehicle.teleport.assert_called_once_with(p0.spawn_pos, rot_quat=p0.spawn_rot, reset=True)
+    assert env._waypoint_idx == 0
+
+
+def test_human_no_reset_before_completion():
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, _ = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", random_path=True)
+    env._paths = [p0]
+    env.trajectory = p0
+    env.waypoints = list(p0.sparse_waypoints)
+    env._waypoint_idx = 0  # still driving the path
+    env.vehicle = MagicMock()
+
+    assert env._maybe_reset_on_completion() is False
+    env.vehicle.teleport.assert_not_called()
