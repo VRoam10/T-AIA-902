@@ -1,4 +1,4 @@
-from core.cli import main_menu
+from core.tui_launcher import launch_tui
 
 if __name__ == "__main__":
-    main_menu()
+    raise SystemExit(launch_tui())
