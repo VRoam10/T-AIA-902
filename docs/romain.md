@@ -59,3 +59,21 @@ D3D11 error in the log), and NOT CUDA (reproduced with the agents on CPU).
 Fix for now: removed the "per-wheel road position" (`wheel_terrain`) option from
 the training menus so it can't be enabled and trigger the freeze. The feature
 code is still present (eval/human-play and tests), just not offered for training.
+
+Eighth issue:
+Multi-path generation could emit paths with too few checkpoints. Each teleport
+point snaps to its nearest road and the resulting sub-polyline is resampled at a
+fixed 25 m spacing, so a teleport that lands on a short road produced only 1-2
+checkpoints after the spawn-clearance drop — not enough for the agent to learn a
+trajectory.
+
+First attempt (rejected): repack short paths with a tighter spacing to hit
+`MIN_CHECKPOINTS`. This crammed checkpoints a few metres apart on short roads —
+bad for training.
+
+Fix: extend the path itself instead of shrinking the spacing. The snapped road
+is grown forward through connected roads (junctions within `ROAD_CONNECT_M`,
+following the current heading) up to `MIN_PATH_LENGTH_M`, then resampled at the
+normal 25 m spacing. So a teleport on a short road still yields a long path with
+well-spaced checkpoints. Genuinely isolated dead-end roads keep the default
+spacing and simply carry fewer checkpoints rather than crammed ones.
