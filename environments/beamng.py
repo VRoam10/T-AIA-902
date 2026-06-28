@@ -327,7 +327,8 @@ class BeamNGDrivingEnv:
                 # _observe polls sensors, logs the full labeled obs to Lua + stdout,
                 # and advances waypoints/markers as the player drives.
                 self._observe()
-                self._maybe_respawn_on_crash()
+                if not self._maybe_reset_on_completion():
+                    self._maybe_respawn_on_crash()
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("[BeamNGDrivingEnv] Human play stopped.")
@@ -358,7 +359,8 @@ class BeamNGDrivingEnv:
             while True:
                 # Logs the full labeled obs (incl. the lidar bins) to Lua + stdout.
                 self._observe()
-                self._maybe_respawn_on_crash()
+                if not self._maybe_reset_on_completion():
+                    self._maybe_respawn_on_crash()
                 # Extra filtering diagnostics not present in the obs vector itself.
                 d = self._lidar_debug
                 if d:
@@ -470,20 +472,13 @@ class BeamNGDrivingEnv:
         self.trajectory = random.choice(self._paths)
         self.waypoints = self._select_waypoints()
 
-    def _maybe_respawn_on_crash(self) -> bool:
-        """Human play: on a crash, deal a fresh random path via a fast teleport.
+    def _reset_human_episode(self) -> None:
+        """Teleport to a (possibly new random) path's spawn and reset checkpoints.
 
-        Each crash picks a new random path/checkpoints and teleports there
-        (reset=True), so the player gets new checkpoints without relaunching the
-        scenario (a slow full reload). No-op when the random-path option is off
-        or the vehicle hasn't crashed. Returns True if a respawn happened.
+        Picks a new random path when random_path is on (else keeps the current
+        one), teleports there with a fast reset, and rewinds the checkpoint index
+        and marker. Shared by the crash and path-completion handlers.
         """
-        if not self.random_path:
-            return False
-        dmg = self.damage_sensor.data if self.damage_sensor is not None else None
-        damage = float((dmg or {}).get("damage", 0.0))
-        if damage < self.HUMAN_RESPAWN_DAMAGE:
-            return False
         self._pick_episode_path()
         self.vehicle.teleport(
             self.trajectory.spawn_pos,
@@ -493,6 +488,35 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = 0
         self._last_damage = 0.0
         self._update_active_marker(0)
+
+    def _maybe_respawn_on_crash(self) -> bool:
+        """Human play: on a crash, deal a fresh random path via a fast teleport.
+
+        Each crash picks a new random path/checkpoints and teleports there, so the
+        player gets new checkpoints without relaunching the scenario (a slow full
+        reload). No-op when the random-path option is off or the vehicle hasn't
+        crashed. Returns True if a respawn happened.
+        """
+        if not self.random_path:
+            return False
+        dmg = self.damage_sensor.data if self.damage_sensor is not None else None
+        damage = float((dmg or {}).get("damage", 0.0))
+        if damage < self.HUMAN_RESPAWN_DAMAGE:
+            return False
+        self._reset_human_episode()
+        return True
+
+    def _maybe_reset_on_completion(self) -> bool:
+        """Human play: when the player clears the last checkpoint, reset the path.
+
+        Picks a new random path when random_path is on, otherwise restarts the
+        same one, so finishing a path loops you straight into the next drive
+        instead of leaving you stranded past the final checkpoint. Returns True
+        if a reset happened.
+        """
+        if not self.waypoints or self._waypoint_idx < len(self.waypoints):
+            return False
+        self._reset_human_episode()
         return True
 
     def _load_scenario(self, human_control=False):
@@ -1412,7 +1436,8 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
                 # the Lua console, and advances waypoints. We render the same frame as
                 # ASCII art plus the numeric obs lines, redrawn in place each tick.
                 self._observe()
-                self._maybe_respawn_on_crash()
+                if not self._maybe_reset_on_completion():
+                    self._maybe_respawn_on_crash()
                 frame = self.last_frame
                 if frame is None:
                     frame = np.zeros(self.CAM_OUT_SIZE, dtype=np.float32)
