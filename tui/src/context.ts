@@ -17,8 +17,11 @@ import type { Scene } from "./scene.ts";
 import type { Button } from "./widgets.ts";
 import type { MultiSpecState, WorkflowId } from "./workflows.ts";
 
-// Form field layout widths (columns).
-export const LABEL_WIDTH = 16;
+// Form field layout widths (columns). LABEL_WIDTH fits the longest label plus
+// the 2-char focus marker ("▸ ") and a 2-col gutter — e.g. "target_update_freq"
+// (18) + 2 + 2 = 22. Rows are one line tall, so a label that overran its column
+// would word-wrap and overflow onto the next row; labels render wrapMode "none".
+export const LABEL_WIDTH = 22;
 export const VALUE_WIDTH = 26;
 
 export type FieldKind = "choice" | "input" | "action";

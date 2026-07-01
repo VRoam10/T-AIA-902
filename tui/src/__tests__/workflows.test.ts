@@ -8,6 +8,7 @@ import {
   buildEvaluatePayload,
   buildHumanPlayPayload,
   buildMultiTrainPayload,
+  beamngPathSuffix,
   buildTrainPayload,
   buildTrajectoryPayload,
   trainSavePath,
@@ -40,6 +41,20 @@ const EMPTY_CATALOG: Catalog = {
 describe("main menu", () => {
   test("labels match old CLI plus Quit", () => {
     expect(MAIN_MENU_OPTIONS.map((o) => o.label)).toEqual([...OLD_MENU_LABELS, "Quit"]);
+  });
+});
+
+describe("save path encodes beamng options", () => {
+  test("no suffix for defaults; _h<n> for hints; _ori for body orientation", () => {
+    expect(beamngPathSuffix()).toBe("");
+    expect(beamngPathSuffix({ trajectory_hints: 0, body_orientation: false })).toBe("");
+    expect(beamngPathSuffix({ trajectory_hints: 2, body_orientation: false })).toBe("_h2");
+    expect(beamngPathSuffix({ trajectory_hints: 0, body_orientation: true })).toBe("_ori");
+    expect(beamngPathSuffix({ trajectory_hints: 3, body_orientation: true })).toBe("_h3_ori");
+
+    expect(trainSavePath("dqn", "beamng_lidar", { trajectory_hints: 2, body_orientation: true })).toBe(
+      "outputs/dqn_beamng_lidar_h2_ori.pth",
+    );
   });
 });
 

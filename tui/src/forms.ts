@@ -13,6 +13,7 @@ import {
   BEAMNG_DEFAULTS,
   BEAMNG_MAPS,
   MULTI_COLORS,
+  beamngPathSuffix,
   buildBenchmarkPayload,
   buildEvaluatePayload,
   buildHumanPlayPayload,
@@ -45,10 +46,34 @@ function addBeamngFields(ctx: Ctx, envName: string, withRandom: boolean): void {
   addDivider(ctx, "beamng options");
   addChoice(ctx, "map_name", "Map", [...BEAMNG_MAPS]);
   addChoice(ctx, "vehicle_id", "Vehicle", ctx.vehicleIds);
-  addInput(ctx, "trajectory_hints", "Checkpoint hints", "0", vNonNegNumber);
+  // Checkpoint hints and body orientation change what a checkpoint represents,
+  // so editing them refreshes the derived save/model path.
+  addInput(ctx, "trajectory_hints", "Checkpoint hints", "0", vNonNegNumber, () => refreshDerivedPaths(ctx));
   addChoice(ctx, "body_orientation", "Body orientation", ["false", "true"]);
-  addChoice(ctx, "wheel_terrain", "Wheel terrain", ["false", "true"]);
+  // wheel_terrain is intentionally NOT offered: polling the RoadsSensor in the
+  // unstepped reset path hard-freezes training on road-dense maps. The payload
+  // still sends it as false (see BEAMNG_DEFAULTS / beamngFieldsFrom).
   if (withRandom) addChoice(ctx, "random_path", "Randomize path", ["false", "true"]);
+}
+
+// Recompute the train "save path" / evaluate "model path" from the currently
+// selected algo + env + beamng options, so the path always reflects the config
+// (the user shouldn't have to hand-edit it). Called after a rebuild and whenever
+// a contributing field changes; no-op for non-train/evaluate forms.
+export function refreshDerivedPaths(ctx: Ctx): void {
+  const wf = ctx.state.activeWorkflow;
+  if (wf !== "train" && wf !== "evaluate") return;
+  const key = wf === "train" ? "save_path" : "model_path";
+  const field = ctx.state.fields.find((f) => f.key === key);
+  if (!field || field.kind !== "input" || !field.input) return;
+  const v = readValues(ctx);
+  const env = v.env_name as string;
+  const beamng = env?.startsWith("beamng") ? beamngFieldsFrom(v, false) : undefined;
+  const next = trainSavePath(v.algo_name as string, env, beamng);
+  if (field.input.value !== next) {
+    field.input.value = next;
+    ctx.renderer.requestRender();
+  }
 }
 
 function addAgentParamInputs(ctx: Ctx, algoName: string): void {
@@ -240,55 +265,104 @@ function buildTrajectoryForm(ctx: Ctx): void {
   };
 }
 
+// BeamNG envs the given algo can run (multi-agent is BeamNG-only). Falls back to
+// a bare "beamng" if the catalog lists none, so the choice is never empty.
+function multiBeamngEnvs(ctx: Ctx, algo: string): string[] {
+  const envs = (ctx.catalog.compatible_envs[algo] ?? []).filter((e) => e.startsWith("beamng"));
+  return envs.length > 0 ? envs : ["beamng"];
+}
+
+// Resolve the "next vehicle" algo/env from a rebuild preset (so a rebuild keeps
+// the user's selection) — mirrors resolveAlgoEnv for the train form.
+function resolveMultiAlgoEnv(ctx: Ctx): { algos: string[]; algo: string; envs: string[]; env: string } {
+  const algos = ctx.catalog.multi_algos.length > 0 ? ctx.catalog.multi_algos : ctx.algoNames;
+  const presetAlgo = ctx.state.pendingPreset?.multi_algo as string | undefined;
+  const algo = presetAlgo && algos.includes(presetAlgo) ? presetAlgo : algos[0] ?? "";
+  const envs = multiBeamngEnvs(ctx, algo);
+  const presetEnv = ctx.state.pendingPreset?.multi_env as string | undefined;
+  const env = presetEnv && envs.includes(presetEnv) ? presetEnv : envs[0] ?? "";
+  return { algos, algo, envs, env };
+}
+
+// Snapshot the currently selected algo/env/vehicle + beamng options into a spec.
 function addMultiSpec(ctx: Ctx): void {
-  const { catalog, state } = ctx;
-  const algo = "dqn";
-  const env = (catalog.compatible_envs[algo] ?? []).find((e) => e.startsWith("beamng")) ?? "beamng";
+  const { state } = ctx;
+  const v = readValues(ctx);
   const index = state.multiSpecs.length;
+  const algo = (v.multi_algo as string) || ctx.catalog.multi_algos[0] || ctx.algoNames[0] || "dqn";
+  const env = (v.multi_env as string) || multiBeamngEnvs(ctx, algo)[0];
+  const vehicle = (v.multi_vehicle as string) || ctx.vehicleIds[0] || "taxi";
+  const trajectory_hints = num(v.multi_hints, 0);
+  const body_orientation = bool(v.multi_body_orientation);
+  const color = MULTI_COLORS[index % MULTI_COLORS.length];
+  const suffix = beamngPathSuffix({ trajectory_hints, body_orientation });
   state.multiSpecs.push({
     algo,
     env,
-    vehicle_id: "taxi",
-    color: MULTI_COLORS[index % MULTI_COLORS.length],
-    save_path: `outputs/multi-agents/${algo}_${env}_${index}.pth`,
-    trajectory_hints: 0,
-    body_orientation: false,
-    wheel_terrain: false,
+    vehicle_id: vehicle,
+    color,
+    save_path: `outputs/multi-agents/${algo}_${env}${suffix}_${index}.pth`,
+    trajectory_hints,
+    body_orientation,
+    wheel_terrain: false, // never offered (freezes training); see addBeamngFields
   });
-  appendLog(
-    ctx,
-    `${GLYPH.dot} Added vehicle ${index}: ${algo} / ${env} (${MULTI_COLORS[index % MULTI_COLORS.length]})`,
-  );
+  appendLog(ctx, `${GLYPH.dot} Added vehicle ${index}: ${algo} / ${env} / ${vehicle} (${color})`);
+}
+
+// Render the configured vehicles as a read-only list (plain text nodes, not
+// focusable fields). Mirrors addDivider's node bookkeeping.
+function addMultiSpecList(ctx: Ctx): void {
+  const { renderer, scene, state } = ctx;
+  const push = (id: string, content: string, fg: string) => {
+    const node = new TextRenderable(renderer, { id, content, fg, wrapMode: "none" });
+    scene.formBody.add(node);
+    state.formNodes.push(node);
+  };
+  if (state.multiSpecs.length === 0) {
+    push("multi-empty", `${GLYPH.dot} No vehicles yet — set the options above, then Add vehicle`, COLOR.running);
+    return;
+  }
+  state.multiSpecs.forEach((s, i) => {
+    const opts = [s.trajectory_hints > 0 ? `h${s.trajectory_hints}` : "", s.body_orientation ? "ori" : ""]
+      .filter(Boolean)
+      .join(" ");
+    const tail = opts ? `  ${opts}` : "";
+    push(`multi-spec-${i}`, `  ${i}  ${s.algo} / ${s.env} / ${s.vehicle_id}${tail}  (${s.color})`, COLOR.ok);
+  });
 }
 
 function buildMultiTrainForm(ctx: Ctx): void {
-  const { renderer, state } = ctx;
+  const { state } = ctx;
   ctx.scene.formPanel.title = " Multi-agent training (BeamNG) ";
-  // The vehicle-count line is a plain text node, not a focusable field.
-  const count = new TextRenderable(renderer, {
-    id: "multi-count",
-    content: `Vehicles configured: ${state.multiSpecs.length}`,
-    fg: state.multiSpecs.length > 0 ? COLOR.ok : COLOR.running,
-  });
-  ctx.scene.formBody.add(count);
-  state.formNodes.push(count);
   addChoice(ctx, "map_name", "Map", [...BEAMNG_MAPS]);
   addChoice(ctx, "random_path", "Randomize path", ["false", "true"]);
   addInput(ctx, "n_episodes", "Episodes", "500", vPosInt);
   addInput(ctx, "time_limit_minutes", "Time limit (min)", "0.0", vNonNegNumber);
   addChoice(ctx, "checkpoint_policy", "Checkpoint", ["resume", "reset"]);
-  addDivider(ctx, "vehicles");
+
+  // Per-vehicle configuration: each car picks its own algorithm + (compatible)
+  // env + vehicle model; "Add vehicle" snapshots the selection into the list.
+  const { algos, algo, envs, env } = resolveMultiAlgoEnv(ctx);
+  addDivider(ctx, "add a vehicle");
+  addChoice(ctx, "multi_algo", "Algorithm", algos, Math.max(0, algos.indexOf(algo)));
+  addChoice(ctx, "multi_env", "Environment", envs, Math.max(0, envs.indexOf(env)));
+  addChoice(ctx, "multi_vehicle", "Vehicle", ctx.vehicleIds);
+  addInput(ctx, "multi_hints", "Checkpoint hints", "0", vNonNegNumber);
+  addChoice(ctx, "multi_body_orientation", "Body orientation", ["false", "true"]);
   addAction(ctx, "Add vehicle", "add", () => {
     addMultiSpec(ctx);
-    ctx.rebuildActiveForm();
+    ctx.rebuildActiveForm("multi_algo");
   });
+
+  addDivider(ctx, "configured vehicles");
+  addMultiSpecList(ctx);
   addAction(ctx, "Remove last vehicle", "remove", () => {
     if (state.multiSpecs.length === 0) {
       setStatus(ctx, `${GLYPH.err} No vehicle to remove`, COLOR.err);
       return;
     }
     state.multiSpecs.pop();
-    ctx.rebuildActiveForm();
+    ctx.rebuildActiveForm("multi_algo");
   });
   addAction(ctx, "Start multi-agent training", "run", undefined, { primary: true });
   // Gate the primary CTA on having at least one vehicle; re-seeded every rebuild
