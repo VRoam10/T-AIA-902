@@ -6,11 +6,6 @@ from algorithms.q_learning import QLearningAgent
 from algorithms.td3 import TD3Agent
 from core.registry import registry
 
-# Continuous-action algorithms (DDPG/TD3) can only act in continuous action
-# spaces, so they are restricted to the BeamNG driving envs and must never be
-# offered for a discrete-action env like Taxi-v3.
-_CONTINUOUS_ENVS = ["beamng", "beamng_lidar", "beamng_continuous", "beamng_camera"]
-
 registry.register_algorithm(
     "q_learning",
     QLearningAgent,
@@ -42,7 +37,7 @@ registry.register_algorithm(
         "warmup_steps": 128,
         "updates_per_step": 4,
     },
-    compatible_envs=_CONTINUOUS_ENVS,
+    compatible_envs=None,
 )
 
 registry.register_algorithm(
@@ -110,5 +105,5 @@ registry.register_algorithm(
         "warmup_steps": 1000,
         "device": "auto",
     },
-    compatible_envs=_CONTINUOUS_ENVS,
+    compatible_envs=None,
 )

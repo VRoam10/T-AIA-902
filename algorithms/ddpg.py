@@ -94,7 +94,10 @@ class DDPGAgent(BaseAgent):
         updates_per_step: int = 4,
     ):
         self.n_states = n_states
-        self.n_actions = ACTION_DIM  # always 2 for continuous control
+        self.discrete = state_type == "discrete"
+        # Discrete envs (Taxi) score one output per action and argmax to a
+        # Discrete(n) action; continuous control keeps the [accel, steering] pair.
+        self.n_actions = n_actions if self.discrete else ACTION_DIM
         self.gamma = gamma
         self.tau = tau
         self._epsilon = epsilon
@@ -106,7 +109,7 @@ class DDPGAgent(BaseAgent):
         self.train_steps = 0
         self.episode = 0
 
-        self.discrete_states = state_type == "discrete"
+        self.discrete_states = self.discrete
         net_input_size = n_states
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -130,8 +133,17 @@ class DDPGAgent(BaseAgent):
 
     # -- BaseAgent interface -------------------------------------------------
 
-    def select_action(self, state) -> np.ndarray:
-        """Return continuous action [accel, steering] in [-1, 1]."""
+    def select_action(self, state):
+        """Continuous [accel, steering] for driving envs; a discrete action index
+        for discrete envs like Taxi (epsilon-greedy over the actor's per-action
+        scores)."""
+        if self.discrete:
+            if self._epsilon > 0 and np.random.random() < self._epsilon:
+                return int(np.random.randint(self.n_actions))
+            with torch.no_grad():
+                scores = self.actor(self._encode_state(state)).cpu().numpy()[0]
+            return int(np.argmax(scores))
+
         s = self._encode_state(state)
         with torch.no_grad():
             action = self.actor(s).cpu().numpy()[0]
@@ -221,11 +233,20 @@ class DDPGAgent(BaseAgent):
             return one_hot
         return np.array(state, dtype=np.float32)
 
+    def _encode_action(self, action) -> np.ndarray:
+        """One-hot the discrete action so the critic sees an n_actions vector
+        matching the actor's output; continuous actions pass through unchanged."""
+        if self.discrete:
+            one_hot = np.zeros(self.n_actions, dtype=np.float32)
+            one_hot[int(action)] = 1.0
+            return one_hot
+        return np.array(action, dtype=np.float32)
+
     def _store(self, state, action, reward, next_state, done):
         self.memory.append(
             (
                 self._encode_state_np(state),
-                np.array(action, dtype=np.float32),
+                self._encode_action(action),
                 float(reward),
                 self._encode_state_np(next_state),
                 float(done),

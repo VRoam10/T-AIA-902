@@ -1,12 +1,11 @@
 """Regression tests: every algorithm the pipeline offers for Taxi-v3 must run on it.
 
-Taxi-v3 emits a *discrete integer* observation. Neural-network agents (DQN)
-need a fixed-length feature vector, so the integer has to be one-hot encoded;
-before this was fixed, DQN / dqn_per crashed on Taxi with a matmul shape
-mismatch. Tabular Q-learning consumes the integer directly and, given enough
-episodes, must solve the task. Continuous-control agents (DDPG / TD3) output
-continuous actions and cannot drive Taxi's ``Discrete(6)`` space, so they must
-not be advertised as Taxi-compatible.
+Taxi-v3 emits a *discrete integer* observation and expects a discrete action in
+``Discrete(6)``. Neural-network agents therefore have to one-hot encode the
+integer state; the continuous-control agents (DDPG / TD3) additionally have to
+bridge their continuous actor to a discrete action (score-per-action + argmax).
+Before this was fixed, dqn / dqn_per crashed with a matmul shape mismatch and
+ddpg / td3 crashed feeding a continuous vector into Taxi's discrete step.
 """
 
 import gymnasium as gym
@@ -22,22 +21,25 @@ from core.runner import PipelineRunner
 
 TAXI_STATES = 500
 TAXI_ACTIONS = 6
+ALL_TAXI_ALGOS = ["q_learning", "dqn", "dqn_per", "ddpg", "td3"]
 
 
 # ---------------------------------------------------------------------------
-# Registry: which algorithms are offered for Taxi
+# Registry: every algorithm is offered for Taxi
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("algo", ["q_learning", "dqn", "dqn_per"])
-def test_discrete_algo_is_taxi_compatible(algo):
+@pytest.mark.parametrize("algo", ALL_TAXI_ALGOS)
+def test_algo_is_taxi_compatible(algo):
     assert "taxi" in registry.compatible_environments(algo)
 
 
-@pytest.mark.parametrize("algo", ["ddpg", "td3"])
-def test_continuous_algo_is_not_taxi_compatible(algo):
-    # DDPG / TD3 emit continuous actions and cannot act in Taxi's Discrete(6).
-    assert "taxi" not in registry.compatible_environments(algo)
+@pytest.mark.parametrize("algo", ALL_TAXI_ALGOS)
+def test_agent_action_space_matches_taxi(algo):
+    # A discrete env fixes the action count; an algorithm's continuous-control
+    # default (e.g. TD3's n_actions=2) must not shrink Taxi's Discrete(6).
+    agent = build_agent(algo, "taxi")
+    assert agent.n_actions == TAXI_ACTIONS
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +94,24 @@ def test_dqn_family_trains_on_taxi_without_crashing(algo):
     assert agent.train_steps > 0
     agent.epsilon = 0.0
     assert 0 <= agent.select_action(0) < TAXI_ACTIONS
+
+
+@pytest.mark.parametrize("algo", ["ddpg", "td3"])
+def test_continuous_algo_trains_on_taxi_without_crashing(algo):
+    # Regression: DDPG/TD3 are continuous-control algorithms; on Taxi their
+    # actor now scores each discrete action and argmax picks a valid Discrete(6)
+    # action. They must train without crashing and emit integer actions.
+    agent, history = _train_on_taxi(
+        algo,
+        n_episodes=2,
+        agent_params={"batch_size": 16, "memory_size": 1000, "warmup_steps": 32},
+    )
+    assert len(history["rewards"]) == 2
+    assert agent.train_steps > 0
+    agent.epsilon = 0.0
+    action = agent.select_action(0)
+    assert isinstance(action, int)
+    assert 0 <= action < TAXI_ACTIONS
 
 
 def test_q_learning_solves_taxi():

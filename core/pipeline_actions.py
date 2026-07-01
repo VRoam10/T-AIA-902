@@ -9,6 +9,7 @@ the backend bridge and by tests.
 
 from __future__ import annotations
 
+import inspect
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -221,12 +222,22 @@ def build_agent(
         extra = 0
 
     params["n_states"] = env_metadata["n_states"] + extra
-    params.setdefault("n_actions", env_metadata.get("n_actions"))
+    state_type = env_metadata.get("state_type", "continuous")
+    params["state_type"] = state_type
+    if state_type == "discrete":
+        # A discrete env fixes the action count, so it overrides any
+        # continuous-control default (e.g. TD3's n_actions=2).
+        params["n_actions"] = env_metadata.get("n_actions")
+    else:
+        params.setdefault("n_actions", env_metadata.get("n_actions"))
 
     if agent_params:
         params.update(agent_params)
 
-    params.pop("state_type", None)
+    # Only agents whose constructor accepts ``state_type`` (the continuous-control
+    # agents, which switch to discrete one-hot / argmax mode for Taxi) receive it.
+    if "state_type" not in inspect.signature(cls).parameters:
+        params.pop("state_type", None)
     return cls(**params)
 
 
