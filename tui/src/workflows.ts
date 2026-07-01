@@ -114,8 +114,23 @@ export interface MultiTrainState {
   checkpoint_policy: "resume" | "reset";
 }
 
-export function trainSavePath(algoName: string, envName: string): string {
-  return `outputs/${algoName}_${envName}.pth`;
+// Encode the beamng options that change what a checkpoint represents into the
+// file name, so different configs don't overwrite each other: "_h<n>" for
+// checkpoint hints (>0) and "_ori" when body orientation is on.
+export function beamngPathSuffix(beamng?: { trajectory_hints: number; body_orientation: boolean }): string {
+  if (!beamng) return "";
+  let suffix = "";
+  if (beamng.trajectory_hints > 0) suffix += `_h${beamng.trajectory_hints}`;
+  if (beamng.body_orientation) suffix += "_ori";
+  return suffix;
+}
+
+export function trainSavePath(
+  algoName: string,
+  envName: string,
+  beamng?: { trajectory_hints: number; body_orientation: boolean },
+): string {
+  return `outputs/${algoName}_${envName}${beamngPathSuffix(beamng)}.pth`;
 }
 
 export function buildTrainPayload(_catalog: Catalog, state: TrainState): Record<string, unknown> {
@@ -123,7 +138,7 @@ export function buildTrainPayload(_catalog: Catalog, state: TrainState): Record<
     algo_name: state.algo_name,
     env_name: state.env_name,
     n_episodes: state.n_episodes,
-    save_path: state.save_path ?? trainSavePath(state.algo_name, state.env_name),
+    save_path: state.save_path ?? trainSavePath(state.algo_name, state.env_name, state.beamng),
     agent_params: state.agent_params,
     reset_existing: state.checkpoint_policy === "reset",
   };
@@ -140,7 +155,7 @@ export function buildEvaluatePayload(
   const payload: Record<string, unknown> = {
     algo_name: state.algo_name,
     env_name: state.env_name,
-    model_path: state.model_path ?? trainSavePath(state.algo_name, state.env_name),
+    model_path: state.model_path ?? trainSavePath(state.algo_name, state.env_name, state.beamng),
     n_episodes: state.n_episodes,
   };
   if (state.env_name.startsWith("beamng")) {

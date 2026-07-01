@@ -115,7 +115,7 @@ export function makeButton(renderer: CliRenderer, id: string, label: string): Bu
 }
 
 const HELP_LINES = [
-  `${GLYPH.marker} ↑ / ↓     move in the workflow menu`,
+  `${GLYPH.marker} ↑ / ↓     move in the workflow menu · between fields`,
   `  ⏎          open a workflow · run the focused button`,
   `  ⇥ / ⇧ ⇥    next / previous field`,
   `  ← / →      change the focused choice`,

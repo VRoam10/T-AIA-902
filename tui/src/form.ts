@@ -23,6 +23,10 @@ function makeRow(ctx: Ctx, key: string): { row: BoxRenderable; labelText: TextRe
     content: "",
     fg: COLOR.label,
     width: LABEL_WIDTH,
+    flexShrink: 0,
+    // Never wrap: a wrapped label measures 2 lines tall and overflows the
+    // height-1 row onto the next field (the "stacked options" bug).
+    wrapMode: "none",
   });
   row.add(labelText);
   scene.formBody.add(row);
@@ -37,7 +41,11 @@ export function addChoice(ctx: Ctx, key: string, label: string, options: string[
     id: `val-${key}`,
     content: "",
     fg: COLOR.value,
-    width: VALUE_WIDTH,
+    // Fill the rest of the row so long choice values (e.g.
+    // "beamng_continuous_predicted") stay readable; never wrap (see makeRow).
+    flexGrow: 1,
+    flexShrink: 1,
+    wrapMode: "none",
   });
   row.add(valueText);
   const field: Field = {
@@ -60,12 +68,17 @@ export function addInput(
   label: string,
   value: string,
   validate?: (raw: string) => string | null,
+  onInput?: () => void,
 ): void {
   const { renderer, state } = ctx;
   const { row, labelText } = makeRow(ctx, key);
   const input = new InputRenderable(renderer, {
     id: `f-${key}`,
+    // Grow to fill the row (basis VALUE_WIDTH) so long values like a derived
+    // save path stay readable instead of scrolling out of a narrow box.
     width: VALUE_WIDTH,
+    flexGrow: 1,
+    flexShrink: 1,
     value,
     textColor: COLOR.value,
     cursorColor: COLOR.borderFocus,
@@ -75,14 +88,17 @@ export function addInput(
   row.add(input);
   const field: Field = { key, label, kind: "input", row, labelText, input, validate, read: () => input.value };
   state.fields.push(field);
-  if (validate) {
+  if (validate || onInput) {
     input.on(InputRenderableEvents.INPUT, () => {
-      validateField(ctx, field);
-      paintFocus(ctx);
-      syncValidation(ctx);
+      if (validate) {
+        validateField(ctx, field);
+        paintFocus(ctx);
+        syncValidation(ctx);
+      }
+      onInput?.();
       renderer.requestRender();
     });
-    validateField(ctx, field);
+    if (validate) validateField(ctx, field);
   }
 }
 
@@ -118,6 +134,7 @@ export function addDivider(ctx: Ctx, text: string): void {
     content: `── ${text} ${"─".repeat(Math.max(0, 34 - text.length))}`,
     fg: COLOR.muted,
     marginTop: 1,
+    wrapMode: "none",
   });
   ctx.scene.formBody.add(divider);
   state.formNodes.push(divider);
@@ -130,6 +147,7 @@ export function addFormHint(ctx: Ctx, text: string): void {
     content: text,
     fg: COLOR.muted,
     marginTop: 1,
+    wrapMode: "none",
   });
   ctx.scene.formBody.add(hint);
   state.formNodes.push(hint);
@@ -239,10 +257,17 @@ export function clearForm(ctx: Ctx): void {
   scene.formPanel.scrollTo(0);
 }
 
+// Fields whose value is derived from the chosen algorithm + environment. On a
+// rebuild (triggered by changing algo/env) the freshly-built default must win,
+// so we DON'T restore the old value — otherwise the path keeps the previous
+// model's name forever (the "save path doesn't follow the model" bug).
+const DERIVED_FROM_ALGO_ENV = new Set(["save_path", "model_path"]);
+
 // Re-apply previously entered values to matching fields after a rebuild.
 export function applyPreset(ctx: Ctx, preset: Record<string, unknown>): void {
   for (const f of ctx.state.fields) {
     if (!(f.key in preset)) continue;
+    if (DERIVED_FROM_ALGO_ENV.has(f.key)) continue;
     const val = preset[f.key];
     if (f.kind === "input" && f.input && typeof val === "string") {
       f.input.value = val;

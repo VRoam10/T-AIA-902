@@ -97,6 +97,16 @@ export function installKeymap(ctx: Ctx): void {
       return;
     }
 
+    // ↑ / ↓ move between fields too (faster than reaching for ⇥).
+    if (key.name === "up") {
+      focusField(ctx, state.focusIndex - 1);
+      return;
+    }
+    if (key.name === "down") {
+      focusField(ctx, state.focusIndex + 1);
+      return;
+    }
+
     if (key.name === "left") {
       cycleChoice(ctx, -1);
       return;

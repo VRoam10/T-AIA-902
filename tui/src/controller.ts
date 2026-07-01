@@ -15,7 +15,7 @@ import {
   syncValidation,
   validateField,
 } from "./form.ts";
-import { buildForm } from "./forms.ts";
+import { buildForm, refreshDerivedPaths } from "./forms.ts";
 import { BREADCRUMB_KEYS, labelFor, setBadge, setProgress, setStatus, updateBreadcrumb } from "./status.ts";
 import { buildWelcome } from "./welcome.ts";
 
@@ -37,7 +37,8 @@ export function openWorkflow(ctx: Ctx, id: WorkflowId, focusKey?: string): void 
   buildForm(ctx, id);
   state.pendingPreset = null;
   if (preset) applyPreset(ctx, preset);
-  addFormHint(ctx, `⇥ next field   ⏎ run the focused button   esc back`);
+  refreshDerivedPaths(ctx); // make the save/model path reflect the resolved algo+env+beamng options
+  addFormHint(ctx, `⇥ / ↑↓ field   ⏎ run the focused button   esc back`);
   for (const f of state.fields) if (f.kind === "input" && f.validate) validateField(ctx, f);
   setProgress(ctx, "", "", COLOR.muted);
   setStatus(ctx, `${GLYPH.marker} ${labelFor(id)} ready`, COLOR.label);
@@ -61,6 +62,17 @@ export function onChoiceChanged(ctx: Ctx, f: Field): void {
   const wf = ctx.state.activeWorkflow;
   if ((wf === "train" || wf === "evaluate") && (f.key === "algo_name" || f.key === "env_name")) {
     rebuildActiveForm(ctx, f.key); // openWorkflow refreshes the breadcrumb itself
+    return;
+  }
+  // Multi-agent: changing the per-vehicle algorithm refreshes its compatible env list.
+  if (wf === "multi_train" && f.key === "multi_algo") {
+    rebuildActiveForm(ctx, f.key);
+    return;
+  }
+  // body orientation feeds the derived save/model path but doesn't change the
+  // field set, so update the path in place rather than rebuilding.
+  if ((wf === "train" || wf === "evaluate") && f.key === "body_orientation") {
+    refreshDerivedPaths(ctx);
     return;
   }
   if ((BREADCRUMB_KEYS as readonly string[]).includes(f.key)) updateBreadcrumb(ctx);
