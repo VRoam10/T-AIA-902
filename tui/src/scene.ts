@@ -207,7 +207,7 @@ export function buildScene(renderer: CliRenderer, catalog: Catalog): Scene {
     id: "footer",
     height: 1,
     flexShrink: 0,
-    content: `? help · l logs · ⇥ field · ⏎ run · ← → choice · esc back · ^C quit`,
+    content: `? help · l logs · ⇥ ↑↓ field · ⏎ run · ← → choice · esc back · ^C quit`,
     fg: COLOR.muted,
   });
   screen.add(footer);
