@@ -357,6 +357,7 @@ class BeamNGMultiEnv:
         outcome = compute_merged_reward(
             obs,
             perception=slot.perception,
+            n_perception=_PERCEPTION_FEATURES[slot.perception],
             waypoints_len=len(slot.waypoints),
             waypoint_idx=slot.waypoint_idx,
             checkpoint_hit=slot.checkpoint_hit,
@@ -691,6 +692,12 @@ class BeamNGMultiEnv:
             self._apply_path(slot, self.trajectories.paths[slot.path_idx])
         slot.vehicle.teleport(slot.spawn_pos, rot_quat=slot.spawn_rot, reset=True)
         slot.reset_episode()
+        # Let the teleport/repair land before the priming poll: sensors polled
+        # with no intervening step still report the pre-teleport pose/damage,
+        # which seeds last_dist with a huge fake progress delta and triggers an
+        # instant fake crash on the first reward step of the new episode.
+        if self.bng is not None:
+            self.bng.step(5)
         if slot.lidar is not None or slot.electrics is not None:
             slot.last_obs = self.observe(slot)
             slot.last_dist = slot.current_dist

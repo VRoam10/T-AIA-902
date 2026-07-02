@@ -66,6 +66,7 @@ def compute_merged_reward(
     obs,
     *,
     perception: str,
+    n_perception: int,
     waypoints_len: int,
     waypoint_idx: int,
     checkpoint_hit: bool,
@@ -82,17 +83,19 @@ def compute_merged_reward(
 ) -> RewardOutcome:
     """Compute the merged driving reward for one env step.
 
-    `obs` is the normalized observation vector: the first five entries are
-    ``speed, steering, heading_err, lateral_err, damage_norm`` and ``obs[5:]``
-    is the perception block (LiDAR distance bins or camera pixels). `perception`
-    selects whether ``obs[5:]`` is treated as LiDAR ranges for the obstacle
-    penalty. `checkpoint_dist` is the distance to the current target checkpoint
-    (for the off-track penalty), and `warn_dist`/`reset_dist` are its thresholds.
-    All other arguments are the caller's current episode state; the returned
-    `RewardOutcome` holds the updated values to write back.
+    `obs` is the normalized observation vector: the first six entries are
+    ``speed, steering, heading_err, lateral_err, damage_norm, dist_norm`` and
+    the ``n_perception`` entries after them are the perception block (LiDAR
+    distance bins or camera pixels); waypoint hints and extra features may
+    follow and must not be read here. `perception` selects whether the block is
+    treated as LiDAR ranges for the obstacle penalty. `checkpoint_dist` is the
+    distance to the current target checkpoint (for the off-track penalty), and
+    `warn_dist`/`reset_dist` are its thresholds. All other arguments are the
+    caller's current episode state; the returned `RewardOutcome` holds the
+    updated values to write back.
     """
     speed, _steering, heading_err, _lateral_err, damage_norm = obs[:5]
-    perception_bins = obs[5:]
+    perception_bins = obs[6 : 6 + n_perception]
     damage = damage_norm * 1000.0
     # heading_err is normalized by pi in the observation; undo it for cos().
     alignment = float(np.cos(heading_err * np.pi))

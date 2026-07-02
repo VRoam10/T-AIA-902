@@ -423,6 +423,36 @@ class TestLifecycle:
         assert slot.waypoint_idx == 0
         assert slot.steps == 0
 
+    def test_reset_vehicle_steps_physics_between_teleport_and_priming_observe(self):
+        # Sensors polled right after a teleport with no intervening physics step
+        # return the pre-teleport pose/damage, which seeds last_dist with a huge
+        # fake progress delta and an instant fake crash on the first reward step.
+        env = _env()
+        env.bng = MagicMock()
+        slot = env.slots[0]
+        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        order = []
+        env.bng.step.side_effect = lambda n: order.append(("step", n))
+        slot.vehicle = MagicMock()
+        slot.vehicle.state = {"pos": (0.0, 0.0, 0.0), "vel": (1.0, 0.0, 0.0)}
+        slot.vehicle.teleport.side_effect = lambda *a, **k: order.append(("teleport",))
+        slot.vehicle.poll_sensors.side_effect = lambda: order.append(("poll",))
+        slot.electrics = MagicMock()
+        slot.electrics.data = {"wheelspeed": 0.0, "steering": 0.0}
+        slot.damage_sensor = MagicMock()
+        slot.damage_sensor.data = {"damage": 0.0}
+        slot.lidar = MagicMock()
+        slot.lidar.poll.return_value = {"pointCloud": None}
+        slot.ego_local_extents = None
+
+        env.reset_vehicle(slot)
+
+        assert ("teleport",) in order
+        assert ("poll",) in order
+        step_calls = [c for c in order if c[0] == "step"]
+        assert step_calls, "reset_vehicle must step physics after the teleport"
+        assert order.index(("teleport",)) < order.index(step_calls[0]) < order.index(("poll",))
+
     def test_close_removes_lidars_and_closes_bng(self):
         env = _env()
         bng = MagicMock()

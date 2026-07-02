@@ -996,6 +996,7 @@ class BeamNGDrivingEnv:
         outcome = compute_merged_reward(
             obs,
             perception=self.PERCEPTION,
+            n_perception=self.N_STATES - 6,
             waypoints_len=len(self.waypoints),
             waypoint_idx=self._waypoint_idx,
             checkpoint_hit=self._checkpoint_hit,
