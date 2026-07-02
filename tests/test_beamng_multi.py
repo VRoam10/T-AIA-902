@@ -229,6 +229,7 @@ class TestPathErrorsAndReward:
         slot.checkpoint_dist = 0.0
         obs = np.zeros(slot.n_states, dtype=np.float32)
         obs[0] = 0.5  # moving (speed) so no stationary penalty
+        obs[5:] = 1.0  # clear LiDAR bins (far); zeros read as an obstacle at 0 m (-5)
         reward, done = env.compute_reward(slot, obs)
         assert reward >= 100.0
         assert slot.checkpoint_hit is False  # consumed

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 
 from core.pipeline_actions import (
     BeamNGOptions,
@@ -28,6 +29,7 @@ from core.pipeline_actions import (
     run_train,
     run_trajectory,
 )
+from core.stop_signal import request_stop
 
 RESULT_PREFIX = "[TUI_RESULT] "
 ERROR_PREFIX = "[TUI_ERROR] "
@@ -129,6 +131,22 @@ _COMMANDS = {
 }
 
 
+def _watch_for_stop() -> None:
+    """Set the cooperative stop flag when the TUI sends "STOP" on stdin.
+
+    The TUI cancels a run (or quits the app) by writing "STOP" to our stdin. The
+    running command's loop polls ``stop_requested()`` and breaks at a safe point
+    so its ``finally`` runs the usual cleanup — saving checkpoints and closing
+    BeamNG — instead of us being hard-killed and orphaning the simulator. Only an
+    explicit "STOP" trips it; a bare EOF is ignored so a run is never killed at
+    startup.
+    """
+    for line in sys.stdin:
+        if line.strip().upper() == "STOP":
+            request_stop()
+            return
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="core.tui_backend")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -144,9 +162,13 @@ def main(argv: list[str] | None = None) -> int:
         _cmd_catalog({})
         return 0
 
+    threading.Thread(target=_watch_for_stop, daemon=True).start()
     try:
         payload = json.loads(args.config_json)
         _COMMANDS[args.command](payload)
+    except KeyboardInterrupt:
+        # Terminal Ctrl+C: the command's `finally` already ran its cleanup.
+        pass
     except Exception as exc:  # noqa: BLE001 — bridge reports any failure to TUI
         print(f"{ERROR_PREFIX}{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

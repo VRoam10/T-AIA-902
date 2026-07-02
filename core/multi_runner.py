@@ -3,6 +3,9 @@
 import time
 
 import numpy as np
+from tqdm import tqdm
+
+from core.stop_signal import stop_requested
 
 
 class MultiAgentRunner:
@@ -25,8 +28,13 @@ class MultiAgentRunner:
         def all_done():
             return all(s.episode >= n_episodes for s in env.slots)
 
+        # Progress spans only the episodes left to run this session, so resumed
+        # runs (slots loaded past episode 0) still advance to 100%.
+        remaining = sum(max(0, n_episodes - s.episode) for s in env.slots)
+        pbar = tqdm(total=remaining, desc="Multi-agent", unit="ep")
+
         try:
-            while not all_done() and not time_up():
+            while not all_done() and not time_up() and not stop_requested():
                 pending = []
                 for slot in env.slots:
                     if slot.episode >= n_episodes:
@@ -58,9 +66,12 @@ class MultiAgentRunner:
 
                     if done:
                         self._finish_episode(env, slot, save_every)
+                        pbar.update(1)
+                        pbar.set_postfix(active=sum(1 for s in env.slots if s.episode < n_episodes))
         except KeyboardInterrupt:
-            print("Multi-agent training interrupted by user.")
+            pbar.write("Multi-agent training interrupted by user.")
         finally:
+            pbar.close()
             for slot in env.slots:
                 slot.agent.save(slot.save_path)
                 self._save_slot_plot(slot)

@@ -7,8 +7,8 @@ import type { Ctx } from "./context.ts";
 import { COLOR, GLYPH } from "./theme.ts";
 import { cycleChoice, firstError, focusField, formValid } from "./form.ts";
 import { moveMenu, selectedWorkflow } from "./menu.ts";
-import { stopSpinner } from "./runner.ts";
-import { setBadge, setProgress, setStatus } from "./status.ts";
+import { requestStop } from "./runner.ts";
+import { setStatus } from "./status.ts";
 import { backToMenu, closeLogs, openLogs, openWorkflow, shutdown } from "./controller.ts";
 
 const SCROLL_KEYS = ["up", "down", "pageup", "pagedown", "home", "end"];
@@ -21,7 +21,7 @@ export function installKeymap(ctx: Ctx): void {
     if (scene.help.visible) {
       key.preventDefault();
       if (key.name === "escape" || key.name === "?" || key.sequence === "?") scene.help.hide();
-      if (key.ctrl && key.name === "c") shutdown(ctx);
+      if (key.ctrl && key.name === "c") void shutdown(ctx);
       return;
     }
 
@@ -31,7 +31,7 @@ export function installKeymap(ctx: Ctx): void {
         return;
       }
       if (key.ctrl && key.name === "c") {
-        shutdown(ctx);
+        void shutdown(ctx);
         return;
       }
       // Let scroll keys reach the focused modal; swallow the rest.
@@ -40,21 +40,15 @@ export function installKeymap(ctx: Ctx): void {
     }
 
     if (key.ctrl && key.name === "c") {
-      if (state.backendHandle) {
-        state.trajectoryCancelled = true;
-        state.backendHandle.kill();
-        state.backendHandle = null;
-        stopSpinner(ctx);
-        state.runState = "idle";
-        setStatus(ctx, `${GLYPH.err} Cancelled`, COLOR.err);
-        setBadge(ctx, "cancelled", COLOR.err);
-        setProgress(ctx, "", "", COLOR.muted);
-        scene.formPanel.borderColor = COLOR.border;
-        if (state.fields.length > 0) focusField(ctx, state.focusIndex);
-        renderer.requestRender();
-      } else {
-        shutdown(ctx);
-      }
+      if (state.backendHandle) requestStop(ctx);
+      else void shutdown(ctx);
+      return;
+    }
+
+    // While a run is active, Esc or `s` stops it gracefully (saves checkpoints,
+    // closes the simulator); a second stop or Ctrl+C forces a hard kill.
+    if (state.backendHandle && (key.name === "escape" || (key.name === "s" && !state.focusedInput))) {
+      requestStop(ctx);
       return;
     }
 
