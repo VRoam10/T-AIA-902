@@ -120,34 +120,39 @@ def test_resample_rejects_short_path():
         resample([(0.0, 0.0, 0.0)], spacing=5.0)
 
 
-def test_heading_to_quat_north_is_identity():
-    # +Y direction = North in BeamNG = identity quaternion (0,0,0,1)
-    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, 10.0, 0.0))
+def test_heading_to_quat_south_is_identity():
+    # BeamNG's measured convention (probed in-sim 2026-07-02 via add_vehicle
+    # AND teleport, reading back the vehicle direction vector): the identity
+    # quaternion faces -Y (South), and positive qz turns the nose CLOCKWISE
+    # (conjugate of the standard math convention).
+    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, -10.0, 0.0))
     assert (qx, qy) == (0.0, 0.0)
     assert qz == pytest.approx(0.0, abs=1e-6)
     assert qw == pytest.approx(1.0, abs=1e-6)
 
 
+def test_heading_to_quat_north():
+    # +Y direction = North = yaw π, so (qz, qw) = (±1, 0) (q and -q are
+    # equivalent rotations).
+    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, 10.0, 0.0))
+    assert (qx, qy) == (0.0, 0.0)
+    assert abs(qz) == pytest.approx(1.0, abs=1e-6)
+    assert qw == pytest.approx(0.0, abs=1e-6)
+
+
 def test_heading_to_quat_east():
-    # +X direction = East. BeamNGpy yaw is CCW around +Z, so East = yaw -π/2.
+    # +X direction = East. BeamNG yaw is clockwise-positive from South, so
+    # East (a counter-clockwise quarter turn) = yaw -π/2. This is the case the
+    # first two convention guesses got wrong: probed in-sim, qz=+sin(π/4)
+    # spawns the car facing WEST.
     qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
     assert (qx, qy) == (0.0, 0.0)
     assert qz == pytest.approx(-math.sin(math.pi / 4), abs=1e-6)
     assert qw == pytest.approx(math.cos(math.pi / 4), abs=1e-6)
 
 
-def test_heading_to_quat_south():
-    # -Y direction = South. atan2(-0.0, -10.0) = -π so (qz, qw) = (-1, 0),
-    # which represents the same physical rotation as (1, 0) (q and -q are
-    # equivalent rotations).
-    qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (0.0, -10.0, 0.0))
-    assert (qx, qy) == (0.0, 0.0)
-    assert abs(qz) == pytest.approx(1.0, abs=1e-6)
-    assert qw == pytest.approx(0.0, abs=1e-6)
-
-
 def test_heading_to_quat_west():
-    # -X direction = West. BeamNGpy yaw is CCW around +Z, so West = yaw +π/2.
+    # -X direction = West = yaw +π/2 (clockwise-positive).
     qx, qy, qz, qw = heading_to_quat((0.0, 0.0, 0.0), (-10.0, 0.0, 0.0))
     assert (qx, qy) == (0.0, 0.0)
     assert qz == pytest.approx(math.sin(math.pi / 4), abs=1e-6)
@@ -229,7 +234,12 @@ def test_extract_longest_road_skips_single_edge_roads():
     assert _extract_longest_road(network) == (None, None)
 
 
-def _spawn_obj(pos, rot=(0.0, 0.0, 0.0, 1.0), name="wp"):
+# Yaw π around +Z: faces +Y (North). BeamNG's identity quat faces -Y (South),
+# so fixtures on +Y-heading roads use this to point teleports up the road.
+NORTH_ROT = (0.0, 0.0, 1.0, 0.0)
+
+
+def _spawn_obj(pos, rot=NORTH_ROT, name="wp"):
     obj = MagicMock()
     obj.pos = pos
     obj.rot_quat = rot
@@ -298,7 +308,7 @@ def test_generate_logs_quicktravel_names(capsys):
 
 
 def test_path_from_teleport_spawn_faces_first_checkpoint():
-    # Road heads +X (east); teleport at origin with identity rotation (faces +Y/north).
+    # Road heads +X (east); teleport at origin with identity rotation (faces -Y/south).
     roads = [("r", [(0.0, 0.0, 0.0), (50.0, 0.0, 0.0), (100.0, 0.0, 0.0)])]
     built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
     assert built is not None
@@ -339,6 +349,52 @@ def test_path_from_teleport_spawn_faces_road_not_offset_checkpoint():
     assert abs(fy) < 0.05
 
 
+def test_path_from_teleport_spawn_moved_onto_road_when_offset():
+    # Residual issue-47 case: quick-travel points sit BESIDE the roadway (garages,
+    # lay-bys), sometimes tens of metres off. From out there NO rotation can be
+    # right — facing the road leaves the first checkpoint ~90 deg abeam, facing
+    # the checkpoint points across the road. The spawn must be projected ONTO the
+    # road so the first checkpoint ends up dead ahead.
+    east_rot = heading_to_quat((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    roads = [("r", [(0.0, 0.0, 0.0), (40.0, 0.0, 0.0), (80.0, 0.0, 0.0), (120.0, 0.0, 0.0)])]
+    built = _path_from_teleport((50.0, -20.0, 0.0), east_rot, roads, "italy")
+    assert built is not None
+    traj, _ = built
+    # Spawn sits on the centerline at the teleport's projection, not 20 m south.
+    assert traj.spawn_pos[0] == pytest.approx(50.0, abs=1e-6)
+    assert traj.spawn_pos[1] == pytest.approx(0.0, abs=1e-6)
+    # And it faces the first checkpoint (dead ahead down the road).
+    fx, fy = _quat_to_forward(traj.spawn_rot)
+    cp1 = traj.sparse_waypoints[0]
+    dx, dy = cp1[0] - traj.spawn_pos[0], cp1[1] - traj.spawn_pos[1]
+    cos_off = (fx * dx + fy * dy) / math.hypot(dx, dy)
+    assert cos_off == pytest.approx(1.0, abs=1e-3)
+
+
+def test_path_from_teleport_projection_keeps_spawn_near_teleport():
+    # Sparse centerline vertices (a 4000 m road with only two): the spawn must be
+    # the projection onto the SEGMENT next to the teleport, not dragged 2000 m
+    # back to the nearest vertex.
+    roads = [("huge", [(0.0, 0.0, 0.0), (0.0, 4000.0, 0.0)])]
+    built = _path_from_teleport((3.0, 2000.0, 0.0), NORTH_ROT, roads, "italy")
+    assert built is not None
+    traj, _ = built
+    assert traj.spawn_pos[0] == pytest.approx(0.0, abs=1e-6)
+    assert traj.spawn_pos[1] == pytest.approx(2000.0, abs=1e-6)
+    # Checkpoints continue forward from the projection, not from the far vertex.
+    assert traj.sparse_waypoints[0][1] > 2000.0
+
+
+def test_path_from_teleport_drops_path_with_no_road_ahead():
+    # Teleport at the terminus of a dead-end road, facing off the end: plenty of
+    # road BEHIND, none ahead. Must be dropped rather than emitted as a single
+    # checkpoint sitting at the spawn.
+    south_rot = heading_to_quat((0.0, 0.0, 0.0), (0.0, -1.0, 0.0))
+    roads = [("r", [(0.0, 0.0, 0.0), (0.0, 120.0, 0.0)])]
+    built = _path_from_teleport((0.0, 0.0, 0.0), south_rot, roads, "italy")
+    assert built is None
+
+
 def test_path_from_teleport_spawn_faces_forward_when_snap_vertex_is_behind():
     # Regression for issue 47: the teleport sits PAST the road's nearest vertex,
     # so the snapped path starts at a vertex BEHIND the spawn. The first
@@ -346,7 +402,7 @@ def test_path_from_teleport_spawn_faces_forward_when_snap_vertex_is_behind():
     # the road, not backward at the vertex behind the car.
     roads = [("r", [(0.0, 0.0, 0.0), (0.0, 100.0, 0.0)])]  # straight road heading +Y
     # Teleport at y=30 facing +Y; the nearest vertex is the origin, 30 m BEHIND.
-    built = _path_from_teleport((0.0, 30.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    built = _path_from_teleport((0.0, 30.0, 0.0), NORTH_ROT, roads, "italy")
     assert built is not None
     traj, _ = built
     spawn = traj.spawn_pos
@@ -376,7 +432,7 @@ def test_path_from_teleport_extends_through_whole_chain():
     # following the network as far as it goes (no artificial length cap), with
     # checkpoints at the default ~25 m spacing rather than crammed together.
     roads = _chain_roads(seg_len=60.0, n=6)  # 360 m chain along +Y
-    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    built = _path_from_teleport((0.0, 0.0, 0.0), NORTH_ROT, roads, "italy")
     assert built is not None
     traj, length = built
     wps = traj.sparse_waypoints
@@ -391,7 +447,7 @@ def test_path_from_teleport_follows_long_road_without_capping():
     # A single very long road is used as far as it goes — no artificial cap.
     centerline = [(0.0, 0.0, 0.0), (0.0, 4000.0, 0.0)]
     roads = [("huge", centerline)]
-    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    built = _path_from_teleport((0.0, 0.0, 0.0), NORTH_ROT, roads, "italy")
     assert built is not None
     traj, length = built
     assert length == pytest.approx(4000.0, abs=SPARSE_SPACING_M)
@@ -402,7 +458,7 @@ def test_path_from_teleport_keeps_short_road_without_densifying():
     # A short-but-real road that can't be extended is kept (not dropped) with the
     # default ~25 m spacing — fewer checkpoints, never crammed together.
     roads = [("only", [(0.0, 0.0, 0.0), (0.0, 100.0, 0.0)])]  # 100 m, no connections
-    built = _path_from_teleport((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    built = _path_from_teleport((0.0, 0.0, 0.0), NORTH_ROT, roads, "italy")
     assert built is not None
     traj, _ = built
     wps = traj.sparse_waypoints
@@ -453,9 +509,10 @@ def test_generate_drops_degenerate_teleports():
 def test_generate_builds_one_path_per_teleport():
     bng = MagicMock()
     bng.scenario.get_road_network.return_value = _two_road_network()
+    east_rot = heading_to_quat((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
     bng.scenario.find_waypoints.return_value = [
         _spawn_obj((0.0, 0.0, 0.0)),  # snaps to "north"
-        _spawn_obj((201.0, 0.0, 0.0)),  # snaps to "east"
+        _spawn_obj((201.0, 0.0, 0.0), rot=east_rot),  # snaps to "east"
     ]
     mt = generate(bng, map_name="italy")
     assert isinstance(mt, MapTrajectories)
@@ -560,18 +617,30 @@ def test_road_centerlines_lists_all_multi_edge_roads():
     assert ids == {"a", "c"}
 
 
-def test_quat_to_forward_identity_is_north():
+def test_quat_to_forward_identity_is_south():
+    # Mirror of the heading_to_quat convention: identity faces -Y (South).
     fx, fy = _quat_to_forward((0.0, 0.0, 0.0, 1.0))
     assert fx == pytest.approx(0.0, abs=1e-6)
-    assert fy == pytest.approx(1.0, abs=1e-6)
+    assert fy == pytest.approx(-1.0, abs=1e-6)
 
 
 def test_quat_to_forward_east():
-    # yaw -pi/2 faces +X (East): forward = (1, 0)
+    # yaw -pi/2 faces +X (East) under BeamNG's clockwise-positive yaw.
     rot = (0.0, 0.0, math.sin(-math.pi / 4), math.cos(-math.pi / 4))
     fx, fy = _quat_to_forward(rot)
     assert fx == pytest.approx(1.0, abs=1e-6)
     assert fy == pytest.approx(0.0, abs=1e-6)
+
+
+def test_heading_quat_forward_roundtrip():
+    # Any heading encoded by heading_to_quat must decode back to the same
+    # direction — the pair breaks together or not at all.
+    for dx, dy in [(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0), (3.0, -4.0)]:
+        rot = heading_to_quat((0.0, 0.0, 0.0), (dx, dy, 0.0))
+        fx, fy = _quat_to_forward(rot)
+        n = math.hypot(dx, dy)
+        assert fx == pytest.approx(dx / n, abs=1e-6)
+        assert fy == pytest.approx(dy / n, abs=1e-6)
 
 
 def test_nearest_road_picks_closest():

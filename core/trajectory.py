@@ -130,18 +130,21 @@ def resample(path: list[Vec3], spacing: float) -> list[Vec3]:
 def heading_to_quat(p0: Vec3, p1: Vec3) -> Quat:
     """Quaternion (x, y, z, w) matching BeamNG's vehicle-spawn convention.
 
-    Returns the rotation that orients a vehicle's forward axis (+Y in BeamNG)
-    to point from `p0` toward `p1` in the XY plane.  The identity quaternion
-    (0, 0, 0, 1) corresponds to facing North (+Y); positive yaw is CCW around
-    +Z (standard right-handed math convention, verified against beamngpy's
-    angle_to_quat helper).  Vertical delta is ignored.
+    Returns the rotation that points a spawned vehicle's nose from `p0` toward
+    `p1` in the XY plane. BeamNG's convention, measured in-sim (2026-07-02) by
+    placing vehicles via both add_vehicle (prefab) and Vehicle.teleport and
+    reading back their direction vector: the identity quaternion (0, 0, 0, 1)
+    faces South (-Y), and positive qz turns the nose CLOCKWISE — the conjugate
+    of the standard right-handed math convention. The sim's nose direction is
+    (-sin yaw, -cos yaw) for yaw = 2*atan2(qz, qw); this matched all probed
+    spawns to within 0.1 deg. Vertical delta is ignored.
     """
     dx, dy = p1[0] - p0[0], p1[1] - p0[1]
     if dx == 0.0 and dy == 0.0:
         raise ValueError("p0 and p1 must differ in the XY plane")
-    # BeamNG's yaw is CCW around +Z with identity facing +Y, so the standard
-    # atan2(y, x) angle from +X needs a -π/2 shift; equivalently atan2(-dx, dy).
-    heading = math.atan2(-dx, dy)
+    # Nose at yaw θ is (-sin θ, -cos θ), so facing (dx, dy) needs
+    # θ = atan2(-dx, -dy).
+    heading = math.atan2(-dx, -dy)
     return (0.0, 0.0, math.sin(heading / 2.0), math.cos(heading / 2.0))
 
 
@@ -282,9 +285,13 @@ def _road_centerlines(network: dict) -> list[tuple[str, list[Vec3]]]:
 
 
 def _quat_to_forward(rot: Quat) -> tuple[float, float]:
-    """XY forward unit vector for a pure-Z-yaw quaternion (identity -> +Y)."""
+    """XY nose unit vector for a pure-Z-yaw vehicle quaternion.
+
+    Mirrors heading_to_quat's measured BeamNG convention: identity faces -Y
+    (South) and positive yaw turns the nose clockwise.
+    """
     yaw = 2.0 * math.atan2(rot[2], rot[3])
-    return (-math.sin(yaw), math.cos(yaw))
+    return (-math.sin(yaw), -math.cos(yaw))
 
 
 def _nearest_road(
@@ -454,19 +461,37 @@ def _extend_path_along_network(
     return path
 
 
+def _project_onto_polyline(path: list[Vec3], p: Vec3) -> tuple[Vec3, int]:
+    """Closest point on `path` to `p` in the XY plane, and its segment index.
+
+    Returns (point, i) with the point lying on segment (path[i], path[i+1]);
+    Z is interpolated along the segment. Requires len(path) >= 2.
+    """
+    best: Vec3 = path[0]
+    best_i = 0
+    best_d = float("inf")
+    for i in range(len(path) - 1):
+        a, b = path[i], path[i + 1]
+        abx, aby = b[0] - a[0], b[1] - a[1]
+        norm2 = abx * abx + aby * aby
+        t = 0.0
+        if norm2 > 0.0:
+            t = max(0.0, min(1.0, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / norm2))
+        q = (a[0] + abx * t, a[1] + aby * t, a[2] + (b[2] - a[2]) * t)
+        d = math.hypot(q[0] - p[0], q[1] - p[1])
+        if d < best_d:
+            best_d, best, best_i = d, q, i
+    return best, best_i
+
+
 def _spawn_rot_along_path(spawn_pos: Vec3, waypoints: list[Vec3], fallback: Quat) -> Quat:
     """Quaternion oriented along the path's initial direction of travel.
 
-    Faces the road tangent at the start of the path (first checkpoint -> next),
-    so the vehicle spawns pointing DOWN the road rather than straight at the
-    first checkpoint. The teleport/spawn is laterally offset from the road
-    centerline (spawn spheres sit beside it), so the straight line
-    spawn -> checkpoint points across the road, up to ~90 deg off the direction
-    the car must actually drive (issue 47). The same skew appears when the first
-    checkpoint lands very close to the spawn. Using the checkpoint-to-checkpoint
-    tangent instead is immune to the lateral offset. Falls back to facing the
-    first distinct checkpoint from the spawn (single-point paths), then to
-    `fallback`.
+    Faces the tangent of the path's first non-degenerate segment. With the spawn
+    projected onto the road (see _path_from_teleport) the path starts at the
+    spawn itself, so this is the road direction where the car sits — pointing it
+    at the first checkpoint down the road. Falls back to facing the first
+    distinct point from the spawn (degenerate paths), then to `fallback`.
     """
     for i in range(len(waypoints) - 1):
         a, b = waypoints[i], waypoints[i + 1]
@@ -482,6 +507,14 @@ def _path_from_teleport(
     tele_pos: Vec3, tele_rot: Quat, roads: list[tuple[str, list[Vec3]]], map_name: str
 ) -> tuple[TrajectoryData, float] | None:
     """Build one TrajectoryData by snapping a teleport point to its nearest road.
+
+    The spawn is the teleport's projection ONTO the road centerline, not the raw
+    teleport position: quick-travel points sit beside the roadway (garages,
+    lay-bys), sometimes tens of metres off, and from out there no spawn rotation
+    can face both the road and the first checkpoint (issue 47's residual case).
+    On the centerline, the first checkpoint is dead ahead by construction. The
+    projection is computed on the snapped road before network extension so a
+    later road curving back near the teleport cannot hijack it.
 
     The snapped road is extended forward through connected roads for as long as
     the network runs, so a teleport on a short road yields a long path with
@@ -499,21 +532,30 @@ def _path_from_teleport(
     path = _road_path_from_teleport(centerline, tele_pos, forward)
     if len(path) < 2:
         return None
+    spawn_xyz, seg_i = _project_onto_polyline(path, tele_pos)
     path = _extend_path_along_network(path, roads, {road_id})
     if _path_length(path) < MIN_USABLE_PATH_LENGTH_M:
         # No real road here (dead-end stub / off-road spawn): drop it instead of
         # emitting a path whose few waypoints all sit at the same place.
         return None
-    spawn_pos = (tele_pos[0], tele_pos[1], tele_pos[2] + SPAWN_Z_OFFSET_M)
+    # Trim the path to start exactly at the spawn so checkpoints and the spawn
+    # rotation both measure from where the car actually sits.
+    drive_path = [spawn_xyz] + path[seg_i + 1 :]
+    spawn_pos = (spawn_xyz[0], spawn_xyz[1], spawn_xyz[2] + SPAWN_Z_OFFSET_M)
     sparse = _drop_waypoints_near_spawn(
-        spawn_pos, resample(path, SPARSE_SPACING_M), SPAWN_CLEARANCE_M
+        spawn_pos, resample(drive_path, SPARSE_SPACING_M), SPAWN_CLEARANCE_M
     )
     dense = _drop_waypoints_near_spawn(
-        spawn_pos, resample(path, DENSE_SPACING_M), SPAWN_CLEARANCE_M
+        spawn_pos, resample(drive_path, DENSE_SPACING_M), SPAWN_CLEARANCE_M
     )
+    if len(sparse) < 2:
+        # The drivable path ahead collapsed to (at most) the spawn itself —
+        # e.g. a teleport at the terminus of a dead-end road facing off the
+        # end. No trainable trajectory here.
+        return None
     traj = TrajectoryData(
         spawn_pos=spawn_pos,
-        spawn_rot=_spawn_rot_along_path(spawn_pos, sparse, tele_rot),
+        spawn_rot=_spawn_rot_along_path(spawn_pos, drive_path, tele_rot),
         sparse_waypoints=sparse,
         dense_waypoints=dense,
         map_name=map_name,

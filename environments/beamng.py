@@ -11,12 +11,7 @@ try:
 except ImportError:
     BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
 
-from config import (
-    LIDAR_VISUALISE,
-    LOG_CAMERA,
-    LOG_CHECKPOINT_HIT,
-    LOG_LIDAR,
-)
+from config import LIDAR_VISUALISE, LOG_CAMERA, LOG_CHECKPOINT_HIT, LOG_LIDAR
 from core.trajectory import TrajectoryData, load_or_generate
 from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import (
@@ -628,7 +623,7 @@ class BeamNGDrivingEnv:
         extra = self._extra_features(state)
         obs = np.concatenate([kin, lidar_bins, waypoint_hints, extra])
 
-        self._log_observation(kin, lidar_bins, waypoint_hints, extra)
+        # self._log_observation(kin, lidar_bins, waypoint_hints, extra)
 
         return obs
 
