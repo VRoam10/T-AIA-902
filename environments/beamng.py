@@ -630,7 +630,7 @@ class BeamNGDrivingEnv:
         extra = self._extra_features(state)
         obs = np.concatenate([kin, lidar_bins, waypoint_hints, extra])
 
-        self._log_observation(kin, lidar_bins, waypoint_hints, extra)
+        # self._log_observation(kin, lidar_bins, waypoint_hints, extra)
 
         return obs
 
