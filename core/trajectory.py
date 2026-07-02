@@ -366,15 +366,48 @@ def _path_length(centerline: list[Vec3]) -> float:
 def _drop_waypoints_near_spawn(
     spawn_pos: Vec3, waypoints: list[Vec3], clearance: float
 ) -> list[Vec3]:
-    """Drop leading waypoints within `clearance` metres (XY) of the spawn.
+    """Drop leading waypoints that sit on, near, or behind the spawn.
 
-    Keeps the first checkpoint off the spawn so it isn't auto-registered at
-    episode start. Always keeps at least the final waypoint.
+    Keeps the first checkpoint both (a) at least `clearance` metres from the
+    spawn, so it isn't auto-registered at episode start, and (b) ahead of the
+    spawn in the direction of travel, so the vehicle spawns facing it rather
+    than at a checkpoint behind it (issue 47). The path is snapped to the
+    nearest road vertex, which can lie behind the teleport position; without the
+    "ahead" test such a vertex stays the first checkpoint and the spawn rotation
+    (which points at the first checkpoint) ends up backward. Travel direction is
+    taken from the path's first non-degenerate segment. Always keeps at least
+    the final waypoint.
     """
+    forward = _first_segment_direction(waypoints)
+    if forward is None:  # no usable heading (0/1 points or all coincident)
+        for i, wp in enumerate(waypoints):
+            if math.hypot(wp[0] - spawn_pos[0], wp[1] - spawn_pos[1]) >= clearance:
+                return waypoints[i:]
+        return waypoints[-1:]
+
+    fx, fy = forward
     for i, wp in enumerate(waypoints):
-        if math.hypot(wp[0] - spawn_pos[0], wp[1] - spawn_pos[1]) >= clearance:
+        dx, dy = wp[0] - spawn_pos[0], wp[1] - spawn_pos[1]
+        ahead = dx * fx + dy * fy > 0.0
+        if ahead and math.hypot(dx, dy) >= clearance:
             return waypoints[i:]
     return waypoints[-1:]
+
+
+def _first_segment_direction(waypoints: list[Vec3]) -> tuple[float, float] | None:
+    """XY direction of the path's first non-degenerate segment, or None.
+
+    Waypoints are ordered along the path, so this is the forward travel
+    direction near the spawn. Returns None when no two waypoints differ in XY.
+    """
+    if len(waypoints) < 2:
+        return None
+    start = waypoints[0]
+    for wp in waypoints[1:]:
+        dx, dy = wp[0] - start[0], wp[1] - start[1]
+        if dx != 0.0 or dy != 0.0:
+            return (dx, dy)
+    return None
 
 
 def _extend_path_along_network(
@@ -421,13 +454,24 @@ def _extend_path_along_network(
     return path
 
 
-def _spawn_rot_towards(spawn_pos: Vec3, waypoints: list[Vec3], fallback: Quat) -> Quat:
-    """Quaternion facing the first waypoint that differs from spawn in the XY plane.
+def _spawn_rot_along_path(spawn_pos: Vec3, waypoints: list[Vec3], fallback: Quat) -> Quat:
+    """Quaternion oriented along the path's initial direction of travel.
 
-    Used so a spawned vehicle looks toward its next checkpoint rather than at a
-    teleport marker's own (often identity) heading. Falls back to `fallback`
-    when no waypoint is distinct from the spawn position.
+    Faces the road tangent at the start of the path (first checkpoint -> next),
+    so the vehicle spawns pointing DOWN the road rather than straight at the
+    first checkpoint. The teleport/spawn is laterally offset from the road
+    centerline (spawn spheres sit beside it), so the straight line
+    spawn -> checkpoint points across the road, up to ~90 deg off the direction
+    the car must actually drive (issue 47). The same skew appears when the first
+    checkpoint lands very close to the spawn. Using the checkpoint-to-checkpoint
+    tangent instead is immune to the lateral offset. Falls back to facing the
+    first distinct checkpoint from the spawn (single-point paths), then to
+    `fallback`.
     """
+    for i in range(len(waypoints) - 1):
+        a, b = waypoints[i], waypoints[i + 1]
+        if abs(b[0] - a[0]) > 1e-6 or abs(b[1] - a[1]) > 1e-6:
+            return heading_to_quat(a, b)
     for wp in waypoints:
         if abs(wp[0] - spawn_pos[0]) > 1e-6 or abs(wp[1] - spawn_pos[1]) > 1e-6:
             return heading_to_quat(spawn_pos, wp)
@@ -469,7 +513,7 @@ def _path_from_teleport(
     )
     traj = TrajectoryData(
         spawn_pos=spawn_pos,
-        spawn_rot=_spawn_rot_towards(spawn_pos, sparse, tele_rot),
+        spawn_rot=_spawn_rot_along_path(spawn_pos, sparse, tele_rot),
         sparse_waypoints=sparse,
         dense_waypoints=dense,
         map_name=map_name,
