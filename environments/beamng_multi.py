@@ -31,6 +31,7 @@ from environments.beamng_geometry import (
     process_lidar,
     wheel_terrain_features,
 )
+from environments.beamng_reward import compute_merged_reward
 
 
 @dataclass
@@ -80,6 +81,7 @@ class VehicleSlot:
     current_pos: tuple = (0.0, 0.0, 0.0)
     checkpoint_dist: float = 0.0
     checkpoint_hit: bool = False
+    invuln_steps: int = 0  # damage-immune steps remaining (granted on checkpoint hit)
     steps: int = 0
     ego_local_extents: tuple | None = None
     last_obs: np.ndarray | None = None
@@ -106,6 +108,7 @@ class VehicleSlot:
         self.current_dist = 0.0
         self.checkpoint_dist = 0.0
         self.checkpoint_hit = False
+        self.invuln_steps = 0
         self.steps = 0
         self.ep_reward = 0.0
         self.ep_losses = []
@@ -350,97 +353,30 @@ class BeamNGMultiEnv:
         return float(heading_err), float(lateral_err), dist
 
     def compute_reward(self, slot, obs):
-        if slot.reward_mode == "ddpg":
-            return self._reward_ddpg(slot, obs)
-        return self._reward_default(slot, obs)
-
-    def _reward_default(self, slot, obs):
-        speed, steering, _heading_err, _lateral_err, damage_norm = obs[:5]
-        damage = damage_norm * 1000.0
-        done = False
-        reward = 0.0
-
-        if speed < 0.05:
-            reward -= 2.0
-        reward -= abs(steering) * 0.2
-
-        if damage > slot.last_damage + 50:
-            reward -= 50.0
-        if damage >= self.MAX_DAMAGE:
-            done = True
-        slot.last_damage = damage
-
-        if slot.steps >= self.MAX_STEPS:
-            done = True
-
-        if slot.checkpoint_hit:
-            reward += 100.0 * slot.waypoint_idx
-            slot.checkpoint_hit = False
-
-        if slot.waypoint_idx >= len(slot.waypoints):
-            reward += 200.0
-            done = True
-
-        dist = slot.checkpoint_dist
-        if dist >= self.CHECKPOINT_RESET_DIST:
-            reward -= 100.0
-            done = True
-        elif dist >= self.CHECKPOINT_WARN_DIST:
-            reward -= (
-                (dist - self.CHECKPOINT_WARN_DIST)
-                / (self.CHECKPOINT_RESET_DIST - self.CHECKPOINT_WARN_DIST)
-                * 10.0
-            )
-
-        return float(reward), done
-
-    def _reward_ddpg(self, slot, obs):
-        speed, _steering, heading_err, _lateral_err, damage_norm = obs[:5]
-        lidar_bins = obs[5:]
-        damage = damage_norm * 1000.0
-        alignment = np.cos(heading_err * np.pi)
-        done = False
-        reward = 0.0
-
-        dist_delta = slot.last_dist - slot.current_dist
-        reward += dist_delta * 3.0
-        slot.last_dist = slot.current_dist
-
-        reward += speed * alignment * 3.0
-        reward += alignment * 0.5
-
-        if speed < 0.05:
-            reward -= 1.0
-
-        min_lidar = float(np.min(lidar_bins)) if lidar_bins.size else 1.0
-        if min_lidar < 0.2:
-            reward -= (1.0 - min_lidar) * 5.0
-        elif min_lidar < 0.4:
-            reward -= (1.0 - min_lidar) * 2.0
-
-        damage_delta = damage - slot.last_damage
-        if damage_delta > 0:
-            reward -= damage_delta * 0.3
-        if damage_delta > 150:
-            reward -= 30.0
-            done = True
-        if damage >= self.MAX_DAMAGE:
-            done = True
-        slot.last_damage = damage
-
-        if slot.steps >= self.MAX_STEPS:
-            done = True
-
-        if slot.checkpoint_hit:
-            reward += 50.0
-            slot.checkpoint_hit = False
-
-        if slot.waypoint_idx >= len(slot.waypoints):
-            reward += 200.0
-            slot.waypoint_idx = 0
-            done = True
-
-        return float(reward), done
+        """Merged reward, shared with the single-vehicle env via beamng_reward."""
+        outcome = compute_merged_reward(
+            obs,
+            perception=slot.perception,
+            waypoints_len=len(slot.waypoints),
+            waypoint_idx=slot.waypoint_idx,
+            checkpoint_hit=slot.checkpoint_hit,
+            last_dist=slot.last_dist,
+            current_dist=slot.current_dist,
+            checkpoint_dist=slot.checkpoint_dist,
+            last_damage=slot.last_damage,
+            steps=slot.steps,
+            invuln_steps=slot.invuln_steps,
+            max_steps=self.MAX_STEPS,
+            max_damage=self.MAX_DAMAGE,
+            warn_dist=self.CHECKPOINT_WARN_DIST,
+            reset_dist=self.CHECKPOINT_RESET_DIST,
+        )
+        slot.last_dist = outcome.last_dist
+        slot.last_damage = outcome.last_damage
+        slot.invuln_steps = outcome.invuln_steps
+        slot.checkpoint_hit = outcome.checkpoint_hit
+        slot.waypoint_idx = outcome.waypoint_idx
+        return outcome.reward, outcome.done
 
     def observe(self, slot: VehicleSlot) -> np.ndarray:
         """Poll a slot's sensors and return its normalized observation vector."""
