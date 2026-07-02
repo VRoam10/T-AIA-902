@@ -117,6 +117,7 @@ class DQNAgent(BaseAgent):
         per_beta_steps: int = 50_000,
         per_epsilon: float = 1e-6,
     ):
+        self.n_states = n_states
         self.n_actions = n_actions
         self.gamma = gamma
         self._epsilon = epsilon
@@ -150,10 +151,10 @@ class DQNAgent(BaseAgent):
 
     # -- BaseAgent interface -------------------------------------------------
 
-    def select_action(self, state: np.ndarray) -> int:
+    def select_action(self, state) -> int:
         if random.random() < self._epsilon:
             return random.randrange(self.n_actions)
-        s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        s = torch.FloatTensor(self._encode(state)).unsqueeze(0).to(self.device)
         with torch.no_grad():
             return int(self.q_net(s).argmax(dim=1).item())
 
@@ -214,12 +215,27 @@ class DQNAgent(BaseAgent):
 
     # -- Internal ------------------------------------------------------------
 
+    def _encode(self, state) -> np.ndarray:
+        """Turn an observation into the fixed-length vector the network expects.
+
+        Discrete environments such as Taxi-v3 emit a scalar integer state; a
+        dense network cannot consume it directly, so we one-hot encode it to
+        length ``n_states``. Continuous environments already provide a feature
+        vector, which passes through unchanged.
+        """
+        arr = np.asarray(state, dtype=np.float32)
+        if arr.ndim == 0:
+            onehot = np.zeros(self.n_states, dtype=np.float32)
+            onehot[int(arr)] = 1.0
+            return onehot
+        return arr
+
     def _store(self, state, action, reward, next_state, done):
         transition = (
-            np.array(state, dtype=np.float32),
+            self._encode(state),
             int(action),
             float(reward),
-            np.array(next_state, dtype=np.float32),
+            self._encode(next_state),
             float(done),
         )
         if self.use_per:

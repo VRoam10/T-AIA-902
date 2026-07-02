@@ -70,6 +70,7 @@ class TD3Agent(BaseAgent):
         self,
         n_states: int,
         n_actions: int,
+        state_type: str = "continuous",
         hidden: int = 128,
         actor_lr: float = 3e-4,
         critic_lr: float = 3e-4,
@@ -89,6 +90,9 @@ class TD3Agent(BaseAgent):
     ):
         self.n_states = n_states
         self.n_actions = n_actions
+        # Discrete envs (Taxi) score one output per action and argmax to a
+        # Discrete(n) action; discrete states are one-hot encoded for the nets.
+        self.discrete = state_type == "discrete"
         self.gamma = gamma
         self.tau = tau
         self.policy_delay = policy_delay
@@ -123,15 +127,26 @@ class TD3Agent(BaseAgent):
 
     # -- BaseAgent interface -------------------------------------------------
 
-    def select_action(self, state) -> np.ndarray:
-        """Select action. Pure random during warmup, then actor + noise."""
+    def select_action(self, state):
+        """Continuous action for driving envs; a discrete action index for
+        discrete envs like Taxi. Pure random during warmup, then actor + noise
+        (continuous) or epsilon-greedy argmax over the actor's scores (discrete)."""
         self.total_steps += 1
 
         # Warmup: pure random actions to fill replay buffer with diverse experience
         if self.total_steps <= self.warmup_steps:
+            if self.discrete:
+                return int(np.random.randint(self.n_actions))
             return np.random.uniform(-1.0, 1.0, size=self.n_actions).astype(np.float32)
 
-        s = torch.FloatTensor(np.array(state, dtype=np.float32)).unsqueeze(0).to(self.device)
+        if self.discrete:
+            if self._epsilon > 0 and np.random.random() < self._epsilon:
+                return int(np.random.randint(self.n_actions))
+            with torch.no_grad():
+                scores = self.actor(self._encode_state(state)).cpu().numpy().flatten()
+            return int(np.argmax(scores))
+
+        s = self._encode_state(state)
         with torch.no_grad():
             action = self.actor(s).cpu().numpy().flatten()
 
@@ -205,13 +220,32 @@ class TD3Agent(BaseAgent):
 
     # -- Internal ------------------------------------------------------------
 
+    def _encode_state(self, state) -> torch.Tensor:
+        return torch.FloatTensor(self._encode_state_np(state)).unsqueeze(0).to(self.device)
+
+    def _encode_state_np(self, state) -> np.ndarray:
+        if self.discrete:
+            one_hot = np.zeros(self.n_states, dtype=np.float32)
+            one_hot[int(state)] = 1.0
+            return one_hot
+        return np.array(state, dtype=np.float32)
+
+    def _encode_action(self, action) -> np.ndarray:
+        """One-hot the discrete action so the critic sees an n_actions vector
+        matching the actor's output; continuous actions pass through unchanged."""
+        if self.discrete:
+            one_hot = np.zeros(self.n_actions, dtype=np.float32)
+            one_hot[int(action)] = 1.0
+            return one_hot
+        return np.array(action, dtype=np.float32)
+
     def _store(self, state, action, reward, next_state, done):
         self.memory.append(
             (
-                np.array(state, dtype=np.float32),
-                np.array(action, dtype=np.float32),
+                self._encode_state_np(state),
+                self._encode_action(action),
                 float(reward),
-                np.array(next_state, dtype=np.float32),
+                self._encode_state_np(next_state),
                 float(done),
             )
         )

@@ -321,6 +321,44 @@ def test_path_from_teleport_first_checkpoint_clear_of_spawn():
         assert math.hypot(first[0] - spawn[0], first[1] - spawn[1]) >= 2.0
 
 
+def test_path_from_teleport_spawn_faces_road_not_offset_checkpoint():
+    # Regression for issue 47 (the "90 degrees to the side" case): the teleport is
+    # offset to the SIDE of the road (spawn spheres sit beside the centerline), so
+    # the straight line spawn -> first checkpoint points diagonally ACROSS the
+    # road. The spawn must face ALONG the road (its direction of travel), not at
+    # the offset checkpoint.
+    east_rot = heading_to_quat((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))  # teleport faces +X
+    roads = [("r", [(0.0, 0.0, 0.0), (40.0, 0.0, 0.0), (80.0, 0.0, 0.0), (120.0, 0.0, 0.0)])]
+    # Teleport 20 m south of a vertex; nearest checkpoint is up-and-across the road.
+    built = _path_from_teleport((40.0, -20.0, 0.0), east_rot, roads, "italy")
+    assert built is not None
+    traj, _ = built
+    fx, fy = _quat_to_forward(traj.spawn_rot)
+    # Faces east (+X), along the road — NOT diagonally toward the offset checkpoint.
+    assert fx > 0.99
+    assert abs(fy) < 0.05
+
+
+def test_path_from_teleport_spawn_faces_forward_when_snap_vertex_is_behind():
+    # Regression for issue 47: the teleport sits PAST the road's nearest vertex,
+    # so the snapped path starts at a vertex BEHIND the spawn. The first
+    # checkpoint — and therefore the spawn rotation — must point forward along
+    # the road, not backward at the vertex behind the car.
+    roads = [("r", [(0.0, 0.0, 0.0), (0.0, 100.0, 0.0)])]  # straight road heading +Y
+    # Teleport at y=30 facing +Y; the nearest vertex is the origin, 30 m BEHIND.
+    built = _path_from_teleport((0.0, 30.0, 0.0), (0.0, 0.0, 0.0, 1.0), roads, "italy")
+    assert built is not None
+    traj, _ = built
+    spawn = traj.spawn_pos
+    # No checkpoint may sit behind the spawn — every one is north (+Y) of it.
+    for wps in (traj.sparse_waypoints, traj.dense_waypoints):
+        assert all(wp[1] > spawn[1] for wp in wps), "a checkpoint sits behind the spawn"
+    # The spawn faces forward (+Y), toward the first checkpoint ahead of it.
+    fx, fy = _quat_to_forward(traj.spawn_rot)
+    assert fy > 0.0
+    assert abs(fx) < 1e-6
+
+
 def _chain_roads(seg_len: float, n: int) -> list[tuple[str, list]]:
     """n straight road segments of `seg_len` metres connected end-to-end along +Y."""
     return [(f"r{i}", [(0.0, i * seg_len, 0.0), (0.0, (i + 1) * seg_len, 0.0)]) for i in range(n)]

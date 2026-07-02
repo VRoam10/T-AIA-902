@@ -15,8 +15,6 @@ from config import (
     LIDAR_VISUALISE,
     LOG_CAMERA,
     LOG_CHECKPOINT_HIT,
-    LOG_CHECKPOINT_RESPAWN,
-    LOG_CHECKPOINT_WARN,
     LOG_LIDAR,
 )
 from core.trajectory import TrajectoryData, load_or_generate
@@ -27,6 +25,7 @@ from environments.beamng_geometry import (
     ego_local_extents_from_bbox,
     wheel_terrain_features,
 )
+from environments.beamng_reward import compute_merged_reward
 
 
 class BeamNGDrivingEnv:
@@ -62,6 +61,10 @@ class BeamNGDrivingEnv:
     ]
 
     N_ACTIONS = len(ACTIONS)
+
+    # Perception kind for this env, consumed by the shared reward to decide
+    # whether obs[5:] is a LiDAR range field (obstacle penalty) or camera pixels.
+    PERCEPTION = "lidar"
 
     # LiDAR configuration
     LIDAR_RAYS = 8  # number of horizontal angular bins (azimuth)
@@ -177,6 +180,8 @@ class BeamNGDrivingEnv:
         self._last_damage = 0.0
         self._last_dist = 0.0
         self._steps = 0
+        self._invuln_steps = 0  # damage-immune steps remaining (granted on checkpoint hit)
+        self._checkpoint_hit = False
         self._active_marker_id: str | None = None
         self._checkpoint_dist = 0.0
         self._log_obs = False  # human play enables obs logging; training leaves it off
@@ -252,6 +257,7 @@ class BeamNGDrivingEnv:
         self._last_damage = 0.0
         self._last_dist = 0.0
         self._steps = 0
+        self._invuln_steps = 0
         self._checkpoint_hit = False
 
         # Hold still for a moment so physics settle
@@ -984,133 +990,30 @@ class BeamNGDrivingEnv:
         return float(heading_err), float(lateral_err), dist
 
     def _compute_reward(self, obs):
-        if self.reward_mode == "ddpg":
-            return self._compute_reward_ddpg(obs)
-        return self._compute_reward_default(obs)
-
-    def _compute_reward_default(self, obs):
-        """Original reward function for discrete-action algorithms (DQN, Q-learning)."""
-        speed, steering, heading_err, lateral_err, damage_norm = obs[:5]
-        damage = damage_norm * 1000.0
-
-        done = False
-        reward = 0.0
-
-        # 4. Penalise being stationary — the agent must move
-        if speed < 0.05:
-            reward -= 2.0
-
-        # 5. Penalise excessive steering
-        reward -= abs(steering) * 0.2
-
-        # 6. Penalise (and terminate on) significant damage
-        if damage > self._last_damage + 50:
-            reward -= 50.0
-        if damage >= self.MAX_DAMAGE:
-            done = True
-        self._last_damage = damage
-
-        # 7. Step limit
-        if self._steps >= self.MAX_STEPS:
-            done = True
-
-        # 8. Checkpoint bonus (big reward for reaching waypoints)
-        if self._checkpoint_hit:
-            reward += 100.0 * self._waypoint_idx
-            self._checkpoint_hit = False
-
-        # 9. Lap completion bonus
-        if self._waypoint_idx >= len(self.waypoints):
-            reward += 200.0
-            done = True
-
-        # Distance-from-checkpoint penalty
-        dist = self._checkpoint_dist
-        if dist >= self.CHECKPOINT_RESET_DIST:
-            # Too far from checkpoint: big malus and teleport back to spawn
-            reward -= 100.0
-            done = True
-            if LOG_CHECKPOINT_RESPAWN:
-                self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — respawned')")
-        elif dist >= self.CHECKPOINT_WARN_DIST:
-            # Getting off track: proportional penalty
-            reward -= (
-                (dist - self.CHECKPOINT_WARN_DIST)
-                / (self.CHECKPOINT_RESET_DIST - self.CHECKPOINT_WARN_DIST)
-                * 10.0
-            )
-            if LOG_CHECKPOINT_WARN:
-                self.bng.queue_lua_command("log('I', 'RL', 'too far from checkpoint — minus')")
-
-        return float(reward), done
-
-    def _compute_reward_ddpg(self, obs):
-        """Reward function optimized for continuous-action algorithms (DDPG, TD3).
-
-        Main signals:
-        1. Progress toward next waypoint (getting closer = good)
-        2. Speed projected onto waypoint direction (driving toward it = good)
-        3. Checkpoint bonuses (reaching waypoints = very good)
-        4. Penalties: obstacles, damage, out of bounds
-        """
-        speed, _steering, heading_err, _lateral_err, damage_norm = obs[:5]
-        lidar_bins = obs[5:]
-        damage = damage_norm * 1000.0
-        # heading_err is normalized by pi in obs, undo it for cos
-        alignment = np.cos(heading_err * np.pi)
-
-        done = False
-        reward = 0.0
-
-        # 1. Progress reward: bonus for getting closer to waypoint, penalty for drifting away
-        dist_delta = self._last_dist - self._current_dist  # positive = getting closer
-        reward += dist_delta * 3.0
-        self._last_dist = self._current_dist
-
-        # 2. Speed projected toward waypoint: speed * cos(heading_error)
-        reward += speed * alignment * 3.0
-
-        # 3. Small alignment bonus even when slow
-        reward += alignment * 0.5
-
-        # 4. Penalise being stationary
-        if speed < 0.05:
-            reward -= 1.0
-
-        # 5. Penalise obstacle proximity (LiDAR)
-        min_lidar = float(np.min(lidar_bins))
-        if min_lidar < 0.2:
-            reward -= (1.0 - min_lidar) * 5.0
-        elif min_lidar < 0.4:
-            reward -= (1.0 - min_lidar) * 2.0
-
-        # 6. Damage
-        damage_delta = damage - self._last_damage
-        if damage_delta > 0:
-            reward -= damage_delta * 0.3
-        if damage_delta > 150:
-            reward -= 30.0
-            done = True
-        if damage >= self.MAX_DAMAGE:
-            done = True
-        self._last_damage = damage
-
-        # 7. Step limit
-        if self._steps >= self.MAX_STEPS:
-            done = True
-
-        # 8. Checkpoint bonus
-        if self._checkpoint_hit:
-            reward += 50.0
-            self._checkpoint_hit = False
-
-        # 9. Lap completion
-        if self._waypoint_idx >= len(self.waypoints):
-            reward += 200.0
-            self._waypoint_idx = 0
-            done = True
-
-        return float(reward), done
+        """Merged reward, shared with the multi-vehicle env via beamng_reward."""
+        outcome = compute_merged_reward(
+            obs,
+            perception=self.PERCEPTION,
+            waypoints_len=len(self.waypoints),
+            waypoint_idx=self._waypoint_idx,
+            checkpoint_hit=self._checkpoint_hit,
+            last_dist=self._last_dist,
+            current_dist=self._current_dist,
+            checkpoint_dist=self._checkpoint_dist,
+            last_damage=self._last_damage,
+            steps=self._steps,
+            invuln_steps=self._invuln_steps,
+            max_steps=self.MAX_STEPS,
+            max_damage=self.MAX_DAMAGE,
+            warn_dist=self.CHECKPOINT_WARN_DIST,
+            reset_dist=self.CHECKPOINT_RESET_DIST,
+        )
+        self._last_dist = outcome.last_dist
+        self._last_damage = outcome.last_damage
+        self._invuln_steps = outcome.invuln_steps
+        self._checkpoint_hit = outcome.checkpoint_hit
+        self._waypoint_idx = outcome.waypoint_idx
+        return outcome.reward, outcome.done
 
     def _update_active_marker(self, idx: int):
         """Draw a bright sphere in-game on the current target waypoint.
@@ -1156,6 +1059,7 @@ class BeamNGLidarEnv(BeamNGDrivingEnv):
     detected and asphalt does not flood the lower rows.
     """
 
+    PERCEPTION = "lidar_grid"
     LIDAR_V_BINS = 4  # vertical elevation bins
     LIDAR_VERT_RES = 16  # more layers to populate the wider vertical FOV
     LIDAR_VERT_ANGLE = 20.0  # wider vertical FOV (±10°) so the rows span useful elevations
@@ -1255,6 +1159,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         action[2] -> brake    [0, 1]  (actor output clipped to positive half)
     """
 
+    PERCEPTION = "camera"
     CAM_RESOLUTION = (84, 84)
     CAM_OUT_SIZE = (16, 16)
     N_ACTIONS = 3
