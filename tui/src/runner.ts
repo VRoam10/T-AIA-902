@@ -36,6 +36,7 @@ export function beginRun(ctx: Ctx, label: string): void {
   state.lastPercent = -1;
   ctx.scene.formPanel.borderColor = COLOR.running;
   appendLog(ctx, `\n── ${label} ──`);
+  appendLog(ctx, `${GLYPH.dot} press Esc, s, or Ctrl+C to stop this run`);
   setProgress(ctx, "", "", COLOR.running);
   state.spinnerFrame = 0;
   tickSpinner(ctx);
@@ -52,9 +53,31 @@ function completeRun(ctx: Ctx, message: string): void {
   ctx.scene.formPanel.borderColor = COLOR.ok;
 }
 
+// Reset the UI to a neutral idle after a cooperative stop (the backend has
+// already saved checkpoints and, for most commands, closed the simulator).
+function finalizeStopped(ctx: Ctx): void {
+  const { state } = ctx;
+  if (state.stopTimer) {
+    clearTimeout(state.stopTimer);
+    state.stopTimer = null;
+  }
+  state.stopRequested = false;
+  state.runState = "idle";
+  stopSpinner(ctx);
+  setStatus(ctx, `${GLYPH.ok} Stopped`, COLOR.ok);
+  setBadge(ctx, "stopped", COLOR.muted);
+  setProgress(ctx, "", "", COLOR.muted);
+  ctx.scene.formPanel.borderColor = COLOR.border;
+  if (state.fields.length > 0) focusField(ctx, state.focusIndex);
+}
+
 function endRun(ctx: Ctx, code: number | null, label: string): void {
   const { state } = ctx;
   state.backendHandle = null;
+  if (state.stopRequested) {
+    finalizeStopped(ctx);
+    return;
+  }
   stopSpinner(ctx);
   if (code === 0) {
     completeRun(ctx, `Done: ${label}`);
@@ -74,6 +97,28 @@ export function startRun(ctx: Ctx, command: BackendCommand, payload: unknown, la
   ctx.state.backendHandle = runBackend(command, payload, (ev: BackendEvent) =>
     onBackendEvent(ctx, ev, label),
   );
+}
+
+// Cooperatively stop the active run: the backend saves checkpoints and closes
+// BeamNG in its `finally`, then exits (finalized on its exit event). A second
+// request force-kills, in case the graceful stop hangs.
+export function requestStop(ctx: Ctx): void {
+  const { state } = ctx;
+  const handle = state.backendHandle;
+  if (!handle) return;
+  if (state.stopRequested) {
+    handle.kill();
+    return;
+  }
+  state.stopRequested = true;
+  state.trajectoryCancelled = true; // also halts a multi-map trajectory sequence
+  setStatus(ctx, `${GLYPH.dot} Stopping…`, COLOR.running);
+  setBadge(ctx, "stopping", COLOR.running);
+  handle.stop();
+  state.stopTimer = setTimeout(() => {
+    state.backendHandle?.kill();
+  }, 25000);
+  ctx.renderer.requestRender();
 }
 
 export function onBackendEvent(ctx: Ctx, ev: BackendEvent, label: string): void {
@@ -139,6 +184,7 @@ export function runTrajectorySequence(
     state.backendHandle = null;
     if (state.trajectoryCancelled) {
       state.trajectoryCancelled = false;
+      finalizeStopped(ctx);
       renderer.requestRender();
       return;
     }

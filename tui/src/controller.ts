@@ -21,7 +21,7 @@ import { buildWelcome } from "./welcome.ts";
 
 export function openWorkflow(ctx: Ctx, id: WorkflowId, focusKey?: string): void {
   if (id === "quit") {
-    shutdown(ctx);
+    void shutdown(ctx);
     return;
   }
   const { state } = ctx;
@@ -97,8 +97,18 @@ export function backToMenu(ctx: Ctx): void {
   ctx.renderer.requestRender();
 }
 
-export function shutdown(ctx: Ctx): void {
-  if (ctx.state.backendHandle) ctx.state.backendHandle.kill();
+export async function shutdown(ctx: Ctx): Promise<void> {
+  const handle = ctx.state.backendHandle;
+  if (handle) {
+    // Cooperative quit: the backend saves checkpoints and closes BeamNG in its
+    // finally, then exits. Wait (bounded) so the sim actually closes before we
+    // tear the UI down; force-kill if it overruns.
+    setStatus(ctx, `${GLYPH.dot} Closing simulator…`, COLOR.running);
+    ctx.renderer.requestRender();
+    handle.stop();
+    await Promise.race([handle.exited, Bun.sleep(25000)]);
+    handle.kill();
+  }
   ctx.renderer.destroy();
   process.exit(0);
 }

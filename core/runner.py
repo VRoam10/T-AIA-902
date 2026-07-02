@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 from core.base_agent import BaseAgent
 from core.seeding import seed_action_space, set_global_seed
+from core.stop_signal import stop_requested
 
 
 class PipelineRunner:
@@ -48,6 +49,9 @@ class PipelineRunner:
                 if time_limit and (time.time() - start) >= time_limit:
                     pbar.write(f"Time limit reached after {ep - 1} episodes.")
                     break
+                if stop_requested():
+                    pbar.write("Stopped by user.")
+                    break
 
                 state = self._reset_env(env, seed=first_reset)
                 first_reset = None
@@ -57,7 +61,7 @@ class PipelineRunner:
                 ep_step_count = 0
                 done = False
 
-                while not done:
+                while not done and not stop_requested():
                     action = agent.select_action(state)
                     next_state, reward, done, info = self._step_env(env, action)
                     ep_step_count += 1
@@ -139,13 +143,15 @@ class PipelineRunner:
 
         try:
             for _ep in pbar:
+                if stop_requested():
+                    break
                 state = self._reset_env(env, seed=first_reset)
                 first_reset = None
                 ep_reward = 0.0
                 ep_step_count = 0
                 done = False
 
-                while not done:
+                while not done and not stop_requested():
                     action = agent.select_action(state)
                     next_state, reward, done, info = self._step_env(env, action)
                     ep_step_count += 1

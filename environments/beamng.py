@@ -17,6 +17,7 @@ from config import (
     LOG_CHECKPOINT_HIT,
     LOG_LIDAR,
 )
+from core.stop_signal import stop_requested
 from core.trajectory import TrajectoryData, load_or_generate
 from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import (
@@ -329,7 +330,7 @@ class BeamNGDrivingEnv:
         print("[BeamNGDrivingEnv] Human control active — drive in-game. Press Ctrl+C to stop.")
 
         try:
-            while True:
+            while not stop_requested():
                 # _observe polls sensors, logs the full labeled obs to Lua + stdout,
                 # and advances waypoints/markers as the player drives.
                 self._observe()
@@ -362,7 +363,7 @@ class BeamNGDrivingEnv:
             )
 
         try:
-            while True:
+            while not stop_requested():
                 # Logs the full labeled obs (incl. the lidar bins) to Lua + stdout.
                 self._observe()
                 if not self._maybe_reset_on_completion():
@@ -387,9 +388,10 @@ class BeamNGDrivingEnv:
     def close(self, kill_sim: bool = True):
         """Close this environment.
 
-        BeamNGpy `close()` kills the BeamNG process by default. Human-play uses
-        `kill_sim=False` so returning to the menu or switching options only
-        disconnects this client and leaves the already-open game running.
+        With ``kill_sim`` (the default) BeamNGpy `close()` terminates the BeamNG
+        process; ``kill_sim=False`` calls `disconnect()`, dropping this client
+        while leaving the game running. Sessions pass the default so quitting the
+        TUI never leaves an orphaned simulator.
         """
         if self.bng is not None:
             self._remove_lidar()
@@ -1336,7 +1338,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         first = True
 
         try:
-            while True:
+            while not stop_requested():
                 # _observe polls the camera (caches last_frame), logs the full obs to
                 # the Lua console, and advances waypoints. We render the same frame as
                 # ASCII art plus the numeric obs lines, redrawn in place each tick.
