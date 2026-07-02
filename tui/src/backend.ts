@@ -122,8 +122,11 @@ export function runBackend(
   payload: unknown,
   onEvent: (event: BackendEvent) => void,
 ): { kill(): void } {
+  // `-u` runs the backend unbuffered so its per-episode print() logs (notably
+  // multi-agent training, which has no tqdm bar of its own on stdout) stream to
+  // the TUI live instead of arriving in one block at process exit.
   const proc = Bun.spawn(
-    [PYTHON, "-m", "core.tui_backend", command, "--config-json", JSON.stringify(payload)],
+    [PYTHON, "-u", "-m", "core.tui_backend", command, "--config-json", JSON.stringify(payload)],
     { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },
   );
 

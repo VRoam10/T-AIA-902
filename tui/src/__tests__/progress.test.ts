@@ -43,6 +43,30 @@ describe("parseProgress", () => {
     expect(parseProgress("")).toBeNull();
     expect(parseProgress("[DQNAgent] Using device: cuda")).toBeNull();
   });
+
+  test("parses a multi-agent tqdm line (hyphenated desc + active= postfix)", () => {
+    const info = parseProgress(
+      "Multi-agent:  25%|██        | 5/20 [00:03<00:09,  1.6ep/s, active=2]",
+    );
+    expect(info).not.toBeNull();
+    // The hyphen breaks the cosmetic label match; onBackendEvent never reads
+    // label, so an empty label here is the expected, harmless outcome.
+    expect(info!.label).toBe("");
+    expect(info!.percent).toBe(25);
+    expect(info!.current).toBe(5);
+    expect(info!.total).toBe(20);
+    expect(info!.postfix).toContain("active 2");
+  });
+
+  test("parses the multi-agent completion frame", () => {
+    const info = parseProgress(
+      "Multi-agent: 100%|████████| 20/20 [00:12<00:00,  1.6ep/s, active=0]",
+    );
+    expect(info!.percent).toBe(100);
+    expect(info!.current).toBe(20);
+    expect(info!.total).toBe(20);
+    expect(info!.postfix).toContain("active 0");
+  });
 });
 
 describe("progressBar", () => {
