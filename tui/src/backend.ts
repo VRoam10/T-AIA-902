@@ -117,17 +117,31 @@ export function splitStreamLines(buffer: string): { lines: SplitLine[]; rest: st
   return { lines, rest: buffer };
 }
 
+/**
+ * Handle to a running backend process. `stop` shuts it down cooperatively — the
+ * backend saves checkpoints and closes BeamNG in its `finally`, then exits —
+ * while `kill` force-terminates and `exited` resolves with the exit code.
+ */
+export interface BackendHandle {
+  /** Cancel the run (or quit the app): the backend cleans up, then exits. */
+  stop(): void;
+  /** Force-terminate now (last resort; may orphan the simulator). */
+  kill(): void;
+  /** Resolves with the process exit code. */
+  exited: Promise<number>;
+}
+
 export function runBackend(
   command: BackendCommand,
   payload: unknown,
   onEvent: (event: BackendEvent) => void,
-): { kill(): void } {
+): BackendHandle {
   // `-u` runs the backend unbuffered so its per-episode print() logs (notably
   // multi-agent training, which has no tqdm bar of its own on stdout) stream to
   // the TUI live instead of arriving in one block at process exit.
   const proc = Bun.spawn(
     [PYTHON, "-u", "-m", "core.tui_backend", command, "--config-json", JSON.stringify(payload)],
-    { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },
+    { cwd: REPO_ROOT, stdin: "pipe", stdout: "pipe", stderr: "pipe" },
   );
 
   const pump = async (stream: ReadableStream<Uint8Array>, isErr: boolean) => {
@@ -166,9 +180,20 @@ export function runBackend(
     onEvent({ type: "exit", code });
   })();
 
+  // Cooperative shutdown: write "STOP" then EOF. The backend runs its `finally`
+  // (saves checkpoints, closes BeamNG) and exits on its own; a hard kill() would
+  // skip that cleanup and orphan the simulator.
+  const stop = () => {
+    try {
+      proc.stdin.write("STOP\n");
+      proc.stdin.end();
+    } catch {
+      // stdin already closed (process gone) — nothing to signal.
+    }
+  };
   return {
-    kill() {
-      proc.kill();
-    },
+    stop,
+    kill: () => proc.kill(),
+    exited: proc.exited,
   };
 }

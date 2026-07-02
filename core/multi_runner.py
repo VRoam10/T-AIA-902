@@ -5,6 +5,8 @@ import time
 import numpy as np
 from tqdm import tqdm
 
+from core.stop_signal import stop_requested
+
 
 class MultiAgentRunner:
     """Drives N agents on one shared BeamNG scenario.
@@ -32,7 +34,7 @@ class MultiAgentRunner:
         pbar = tqdm(total=remaining, desc="Multi-agent", unit="ep")
 
         try:
-            while not all_done() and not time_up():
+            while not all_done() and not time_up() and not stop_requested():
                 pending = []
                 for slot in env.slots:
                     if slot.episode >= n_episodes:

@@ -457,7 +457,7 @@ def run_human_play(request: HumanPlayRequest) -> None:
             env.human_play()
     finally:
         if env is not None:
-            env.close(kill_sim=False)
+            env.close(kill_sim=True)
 
 
 # --------------------------------------------------------------------------- #

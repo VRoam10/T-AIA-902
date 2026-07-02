@@ -12,7 +12,7 @@ import {
   type TextRenderable,
 } from "@opentui/core";
 
-import type { Catalog } from "./backend.ts";
+import type { BackendHandle, Catalog } from "./backend.ts";
 import type { Scene } from "./scene.ts";
 import type { Button } from "./widgets.ts";
 import type { MultiSpecState, WorkflowId } from "./workflows.ts";
@@ -54,7 +54,7 @@ export interface AppState {
   formNodes: { id: string }[];
   focusIndex: number;
   focusedInput: InputRenderable | null;
-  backendHandle: { kill(): void } | null;
+  backendHandle: BackendHandle | null;
   runState: RunState;
   fieldErrors: Map<string, string>;
   // Captured field values handed to a form builder during a rebuild so it can
@@ -68,6 +68,11 @@ export interface AppState {
   spinnerFrame: number;
   runLabel: string;
   lastPercent: number;
+  // Cooperative stop bookkeeping: `stopRequested` marks a stop in flight so the
+  // exit renders as "stopped" and a second request force-kills; `stopTimer` is
+  // the force-kill fallback used if the backend never exits.
+  stopRequested: boolean;
+  stopTimer: Timer | null;
   // The active form's "run" handler, set by the form builder.
   runAction: () => void;
   // Multi-agent: a dynamic list of vehicle specs the user grows before running.
@@ -91,6 +96,8 @@ export function createState(): AppState {
     spinnerFrame: 0,
     runLabel: "",
     lastPercent: -1,
+    stopRequested: false,
+    stopTimer: null,
     runAction: () => {},
     multiSpecs: [],
   };
