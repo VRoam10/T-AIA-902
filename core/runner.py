@@ -42,6 +42,7 @@ class PipelineRunner:
         ep_begin = start_episode + 1
         ep_end = start_episode + n_episodes + 1
         pbar = tqdm(range(ep_begin, ep_end), desc="Training", unit="ep")
+        postfix: dict[str, str] = {}
         first_reset = seed
 
         try:
@@ -59,6 +60,7 @@ class PipelineRunner:
                 ep_losses = []
                 ep_speeds = []
                 ep_step_count = 0
+                ep_checkpoints = 0
                 done = False
 
                 while not done and not stop_requested():
@@ -73,6 +75,14 @@ class PipelineRunner:
                         ep_losses.append(loss)
                     state = next_state
                     ep_reward += reward
+                    # Live "checkpoints passed" (BeamNG reports waypoint_idx every
+                    # step): repaint only when it changes, so envs without it
+                    # (Taxi) never touch the postfix.
+                    wp = info.get("waypoint_idx") if isinstance(info, dict) else None
+                    if wp is not None and int(wp) != ep_checkpoints:
+                        ep_checkpoints = int(wp)
+                        postfix["checkpoints"] = str(ep_checkpoints)
+                        pbar.set_postfix(postfix)
 
                 agent.decay_epsilon()
                 if hasattr(agent, "episode"):
@@ -87,12 +97,15 @@ class PipelineRunner:
                 # Update progress bar
                 avg_r = np.mean(rewards[-20:])
                 avg_loss = np.mean(ep_losses) if ep_losses else float("nan")
-                pbar.set_postfix(
+                postfix = dict(
                     reward=f"{ep_reward:.1f}",
                     avg20=f"{avg_r:.1f}",
                     eps=f"{agent.epsilon:.3f}",
                     loss=f"{avg_loss:.4f}",
                 )
+                if isinstance(info, dict) and "waypoint_idx" in info:
+                    postfix["checkpoints"] = str(ep_checkpoints)
+                pbar.set_postfix(postfix)
 
                 if save_path and ep % save_every == 0:
                     agent.save(save_path)
@@ -140,6 +153,7 @@ class PipelineRunner:
 
         pbar = tqdm(range(1, n_episodes + 1), desc="Evaluating", unit="ep")
         first_reset = seed
+        postfix: dict[str, str] = {}
 
         try:
             for _ep in pbar:
@@ -149,6 +163,7 @@ class PipelineRunner:
                 first_reset = None
                 ep_reward = 0.0
                 ep_step_count = 0
+                ep_checkpoints = 0
                 done = False
 
                 while not done and not stop_requested():
@@ -157,13 +172,21 @@ class PipelineRunner:
                     ep_step_count += 1
                     state = next_state
                     ep_reward += reward
+                    wp = info.get("waypoint_idx") if isinstance(info, dict) else None
+                    if wp is not None and int(wp) != ep_checkpoints:
+                        ep_checkpoints = int(wp)
+                        postfix["checkpoints"] = str(ep_checkpoints)
+                        pbar.set_postfix(postfix)
 
                 ep_steps = self._episode_steps(info, ep_step_count)
                 rewards.append(ep_reward)
                 steps.append(ep_steps)
 
                 avg = np.mean(rewards)
-                pbar.set_postfix(reward=f"{ep_reward:.1f}", avg=f"{avg:.1f}")
+                postfix = dict(reward=f"{ep_reward:.1f}", avg=f"{avg:.1f}")
+                if isinstance(info, dict) and "waypoint_idx" in info:
+                    postfix["checkpoints"] = str(ep_checkpoints)
+                pbar.set_postfix(postfix)
 
         except KeyboardInterrupt:
             pbar.write("Evaluation interrupted by user.")

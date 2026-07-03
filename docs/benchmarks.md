@@ -62,6 +62,17 @@ exact same path as the tabular/deep discrete agents. Greedy evaluation sets the
 agent's `epsilon` to 0, which disables exploration noise (OU noise for DDPG,
 Gaussian for TD3), so the policy is evaluated deterministically.
 
+**BeamNG options** — the *Run a benchmark* form exposes the BeamNG environment
+options (map, vehicle, checkpoint hints, body orientation) whenever a `beamng*`
+env is selected. They are baked into the benchmark's env factory, and the
+agent's observation size is widened accordingly (`trajectory_hints·2`, `+2` for
+body orientation) — the same sizing rule as training. The training-only options
+(`random_path`, dense warm-up episodes) are deliberately unavailable: one
+factory serves both training and greedy evaluation, and evaluation always runs
+sparse checkpoints on a fixed path. DDPG/TD3 benchmark with their own reward
+mode (as in training); the comparison benchmark shares one env across variants
+and keeps the default reward mode.
+
 This continuous path is covered by `tests/test_benchmarks_continuous.py`, which
 runs DDPG and TD3 through `convergence`, multi-seed aggregation and `comparison`
 on a stub environment with the same contract as BeamNG (N-dim continuous

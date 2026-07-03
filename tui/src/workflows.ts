@@ -81,6 +81,7 @@ export interface BenchmarkState {
   env_name?: string;
   algos?: string[];
   param_grid?: Record<string, unknown[]>;
+  beamng?: BeamNGFields;
 }
 
 export interface HumanPlayState {
@@ -192,6 +193,15 @@ export function buildBenchmarkPayload(
     payload.algo_name = state.algo_name;
     payload.env_name = state.env_name;
     payload.reward_threshold = state.reward_threshold ?? 7.0;
+  }
+  if (state.env_name?.startsWith("beamng")) {
+    // Benchmarks share one env factory between training and greedy evaluation,
+    // so the training-only options (random_path, dense warm-up) are not sent.
+    const { map_name, vehicle_id, trajectory_hints, body_orientation, wheel_terrain } = {
+      ...BEAMNG_DEFAULTS,
+      ...state.beamng,
+    };
+    payload.beamng = { map_name, vehicle_id, trajectory_hints, body_orientation, wheel_terrain };
   }
   return payload;
 }

@@ -114,6 +114,8 @@ d'entrainement), la validation des champs numeriques et un overlay d'aide clavie
 ### 3. Run a benchmark
 
 - Choisir un benchmark (`convergence`, `comparison`, `gridsearch`)
+- Choisir l'algorithme et l'environnement — un env `beamng*` expose ses options (map, vehicule, checkpoint hints, body orientation) comme pour l'entrainement ; les options d'entrainement uniquement (random path, dense warm-up) sont exclues car le meme env sert aussi a l'evaluation greedy
+- Pendant le run, la Status box affiche `checkpoints <n>` (checkpoints passes) en direct pour les envs BeamNG
 - Saisir les **seeds** (defaut `0,1,2,3,4`), le nombre d'**episodes d'evaluation** et le **seuil de succes**
 - Les resultats sont affiches a la fin et exportes dans `outputs/benchmarks/`
 

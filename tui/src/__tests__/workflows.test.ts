@@ -186,6 +186,40 @@ describe("benchmark payload", () => {
     void reward_threshold;
     expect(buildBenchmarkPayload(EMPTY_CATALOG, noThreshold as BenchmarkState).reward_threshold).toBe(7.0);
   });
+
+  test("convergence beamng env attaches beamng block without random_path/dense_episodes", () => {
+    const state: BenchmarkState = { ...base, env_name: "beamng_lidar", beamng: { ...BEAMNG_DEFAULTS, map_name: "italy", random_path: true, dense_episodes: 5 } };
+    const p = buildBenchmarkPayload(EMPTY_CATALOG, state) as { beamng: Record<string, unknown> };
+    expect(p.beamng).toBeDefined();
+    expect(p.beamng.map_name).toBe("italy");
+    expect("random_path" in p.beamng).toBe(false);
+    expect("dense_episodes" in p.beamng).toBe(false);
+  });
+
+  test("comparison beamng env attaches beamng block WITHOUT random_path", () => {
+    const state: BenchmarkState = { ...base, benchmark_name: "comparison", env_name: "beamng_lidar", beamng: { ...BEAMNG_DEFAULTS, vehicle_id: "ibishu_pigeon", random_path: true } };
+    const p = buildBenchmarkPayload(EMPTY_CATALOG, state) as { beamng: Record<string, unknown> };
+    expect(p.beamng).toBeDefined();
+    expect(p.beamng.vehicle_id).toBe("ibishu_pigeon");
+    expect("random_path" in p.beamng).toBe(false);
+  });
+
+  test("gridsearch beamng env attaches beamng block without dense_episodes", () => {
+    const state: BenchmarkState = { ...base, benchmark_name: "gridsearch", env_name: "beamng_lidar", beamng: { ...BEAMNG_DEFAULTS, trajectory_hints: 3, dense_episodes: 5 } };
+    const p = buildBenchmarkPayload(EMPTY_CATALOG, state) as { beamng: Record<string, unknown> };
+    expect(p.beamng).toBeDefined();
+    expect(p.beamng.trajectory_hints).toBe(3);
+    expect("dense_episodes" in p.beamng).toBe(false);
+  });
+
+  test("taxi env omits beamng block entirely for all benchmark kinds", () => {
+    const conv = buildBenchmarkPayload(EMPTY_CATALOG, { ...base, benchmark_name: "convergence", env_name: "taxi" });
+    expect(conv.beamng).toBeUndefined();
+    const comp = buildBenchmarkPayload(EMPTY_CATALOG, { ...base, benchmark_name: "comparison", env_name: "taxi" });
+    expect(comp.beamng).toBeUndefined();
+    const grid = buildBenchmarkPayload(EMPTY_CATALOG, { ...base, benchmark_name: "gridsearch", env_name: "taxi" });
+    expect(grid.beamng).toBeUndefined();
+  });
 });
 
 describe("human-play payload", () => {
