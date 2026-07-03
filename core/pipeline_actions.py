@@ -128,6 +128,7 @@ class BenchmarkRequest:
     env_name: str | None = None
     algos: list[str] | None = None
     param_grid: dict[str, list] | None = None
+    beamng: BeamNGOptions | None = None
 
 
 @dataclass
@@ -213,14 +214,7 @@ def build_agent(
     cls = algo_info["class"]
     params = dict(algo_info["default_config"])
 
-    if beamng is not None:
-        extra = (
-            beamng.trajectory_hints * 2
-            + (2 if beamng.body_orientation else 0)
-            + (2 if beamng.wheel_terrain else 0)
-        )
-    else:
-        extra = 0
+    extra = _beamng_extra_dims(beamng) if beamng is not None else 0
 
     params["n_states"] = env_metadata["n_states"] + extra
     state_type = env_metadata.get("state_type", "continuous")
@@ -240,6 +234,15 @@ def build_agent(
     if "state_type" not in inspect.signature(cls).parameters:
         params.pop("state_type", None)
     return cls(**params)
+
+
+def _beamng_extra_dims(beamng: BeamNGOptions) -> int:
+    """Extra observation dims added by the optional BeamNG observation flags."""
+    return (
+        beamng.trajectory_hints * 2
+        + (2 if beamng.body_orientation else 0)
+        + (2 if beamng.wheel_terrain else 0)
+    )
 
 
 def _beamng_kwargs(beamng: BeamNGOptions | None, *, with_random_path: bool) -> dict:
@@ -364,6 +367,50 @@ def _validate_benchmark(request: BenchmarkRequest) -> None:
         raise ValueError(f"Missing required fields for '{name}': {', '.join(missing)}")
 
 
+def _benchmark_env(request: BenchmarkRequest, algo_name: str | None = None):
+    """Resolve (env_factory, env_metadata) for a benchmark run.
+
+    Benchmarks call ``env_factory()`` with no arguments, so for BeamNG envs the
+    request's options are baked into the factory and the metadata's ``n_states``
+    is widened by the extra observation dims — mirroring ``run_train`` /
+    ``build_agent``. The one factory also feeds ``evaluate_policy``, so the
+    training-only options (``random_path``, ``dense_episodes``) are deliberately
+    left out — eval must stay sparse and on a fixed path (see ``run_evaluate``).
+    Continuous-control algos train with their own reward mode (same rule as
+    ``run_train``); pass ``algo_name=None`` to keep the default.
+    """
+    env_info = registry.get_environment(request.env_name)
+    factory = env_info["factory"]
+    metadata = dict(env_info["metadata"])
+    if not request.env_name.startswith("beamng"):
+        return factory, metadata
+
+    beamng = request.beamng or BeamNGOptions()
+    kwargs = _beamng_kwargs(beamng, with_random_path=False)
+    if algo_name in ("ddpg", "td3"):
+        kwargs["reward_mode"] = algo_name
+    metadata["n_states"] += _beamng_extra_dims(beamng)
+    return (lambda: factory(**kwargs)), metadata
+
+
+def _benchmark_agent_params(algo_name: str, metadata: dict) -> dict:
+    """Agent params for a benchmark: algorithm defaults + env-driven typing.
+
+    Benchmarks instantiate ``agent_cls(**params)`` themselves, taking
+    ``n_states`` / ``n_actions`` from ``env_metadata``. This mirrors the rest
+    of ``build_agent``: ``state_type`` is passed only to constructors that
+    accept it, and a discrete env fixes the action count over any
+    continuous-control default (e.g. TD3's ``n_actions=2``).
+    """
+    algo_info = registry.get_algorithm(algo_name)
+    params = dict(algo_info["default_config"])
+    if "state_type" in inspect.signature(algo_info["class"]).parameters:
+        params["state_type"] = metadata.get("state_type", "continuous")
+    if metadata.get("state_type") == "discrete":
+        params["n_actions"] = metadata.get("n_actions")
+    return params
+
+
 def run_benchmark(request: BenchmarkRequest) -> dict[str, object]:
     _validate_benchmark(request)
     bench = registry.get_benchmark(request.benchmark_name)["class"]()
@@ -383,35 +430,40 @@ def run_benchmark(request: BenchmarkRequest) -> dict[str, object]:
 
 def _run_single(bench, request: BenchmarkRequest, common: dict) -> dict[str, object]:
     algo_info = registry.get_algorithm(request.algo_name)
-    env_info = registry.get_environment(request.env_name)
+    env_factory, metadata = _benchmark_env(request, request.algo_name)
     config = {
-        "agent_params": algo_info["default_config"],
-        "env_metadata": env_info["metadata"],
+        "agent_params": _benchmark_agent_params(request.algo_name, metadata),
+        "env_metadata": metadata,
         "threshold": request.reward_threshold,
         **common,
     }
     seeds = common["seeds"]
     if len(seeds) > 1:
-        results = bench.run_multi(algo_info["class"], env_info["factory"], config)
+        results = bench.run_multi(algo_info["class"], env_factory, config)
         bench.export_multi(results, request.algo_name, request.env_name)
         return {"status": "ok", "summary": format_aggregate(results)}
     config["seed"] = seeds[0]
-    results = bench.run(algo_info["class"], env_info["factory"], config)
+    results = bench.run(algo_info["class"], env_factory, config)
     bench.export(results, request.algo_name, request.env_name)
     return {"status": "ok", "report": bench.report(results)}
 
 
 def _run_comparison(bench, request: BenchmarkRequest, common: dict) -> dict[str, object]:
     algos = request.algos
-    env_info = registry.get_environment(request.env_name)
+    # Every variant shares this one env factory, so BeamNG keeps the default
+    # reward mode here (per-algo reward modes would need per-variant factories).
+    env_factory, metadata = _benchmark_env(request)
     config = {
-        "env_metadata": env_info["metadata"],
+        "env_metadata": metadata,
         "threshold": request.reward_threshold,
         "window": 100,
-        "variants": [{"name": algo, "algo": algo} for algo in algos],
+        "variants": [
+            {"name": algo, "algo": algo, "agent_params": _benchmark_agent_params(algo, metadata)}
+            for algo in algos
+        ],
         **common,
     }
-    results = bench.run(None, env_info["factory"], config)
+    results = bench.run(None, env_factory, config)
     lines = []
     for label, data in results["variants"].items():
         stat = data["aggregate"].get("eval_mean_reward", {})
@@ -422,14 +474,14 @@ def _run_comparison(bench, request: BenchmarkRequest, common: dict) -> dict[str,
 
 def _run_gridsearch(bench, request: BenchmarkRequest, common: dict) -> dict[str, object]:
     algo_info = registry.get_algorithm(request.algo_name)
-    env_info = registry.get_environment(request.env_name)
+    env_factory, metadata = _benchmark_env(request, request.algo_name)
     config = {
-        "agent_params": algo_info["default_config"],
-        "env_metadata": env_info["metadata"],
+        "agent_params": _benchmark_agent_params(request.algo_name, metadata),
+        "env_metadata": metadata,
         "param_grid": request.param_grid,
         **common,
     }
-    results = bench.run(algo_info["class"], env_info["factory"], config)
+    results = bench.run(algo_info["class"], env_factory, config)
     bench.export(results, request.algo_name, request.env_name)
     return {"status": "ok", "report": bench.report(results)}
 

@@ -193,6 +193,7 @@ function buildBenchmarkForm(ctx: Ctx): void {
   addChoice(ctx, "benchmark_name", "Benchmark", ctx.benchNames);
   addChoice(ctx, "algo_name", "Algorithm", ctx.algoNames, Math.max(0, ctx.algoNames.indexOf(algo)));
   addChoice(ctx, "env_name", "Environment", envs, Math.max(0, envs.indexOf(env)));
+  addBeamngFields(ctx, env, false);
   addDivider(ctx, "evaluation");
   addInput(ctx, "seeds_text", "Seeds", "0,1,2,3,4", vSeeds);
   addInput(ctx, "eval_episodes", "Eval episodes", "100", vPosInt);
@@ -205,13 +206,14 @@ function buildBenchmarkForm(ctx: Ctx): void {
     ctx,
     "param_grid_json",
     "Param grid (JSON)",
-    JSON.stringify(gridPreset(ctx.algoNames[0] ?? "")),
+    JSON.stringify(gridPreset(algo)),
     vJson,
   );
   addAction(ctx, "Run benchmark", "run", undefined, { primary: true });
 
   state.runAction = () => {
     const v = readValues(ctx);
+    const envName = v.env_name as string;
     const seeds = String(v.seeds_text)
       .split(",")
       .map((s) => Number(s.trim()))
@@ -224,12 +226,13 @@ function buildBenchmarkForm(ctx: Ctx): void {
       max_episodes: num(v.max_episodes, 2000),
       reward_threshold: num(v.reward_threshold, 7),
       algo_name: v.algo_name as string,
-      env_name: v.env_name as string,
+      env_name: envName,
       algos: String(v.algos_text)
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean),
       param_grid: parseGrid(String(v.param_grid_json)),
+      beamng: envName.startsWith("beamng") ? beamngFieldsFrom(v, false) : undefined,
     };
     startRun(ctx, "benchmark", buildBenchmarkPayload(catalog, benchState), "Benchmark");
   };

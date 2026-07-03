@@ -99,6 +99,9 @@ describe("other workflows", () => {
 });
 
 describe("log rendering (prevents opentui.dll segfault / exit 3 on long runs)", () => {
+  // The assertion is a node-count invariant, not a latency bound: 1000 appends
+  // re-layout the joined log text natively, which can exceed bun's 5 s default
+  // on slower machines. Generous explicit timeout keeps the guard deterministic.
   test("appending many lines never adds a renderable per line", () => {
     backToMenu(ctx); // start clean
     const before = ctx.scene.outputBox.content.getChildrenCount();
@@ -106,7 +109,7 @@ describe("log rendering (prevents opentui.dll segfault / exit 3 on long runs)", 
     // The fix: logs render through ONE in-place text node, so the child count
     // stays constant no matter how many lines stream in (no native buffer churn).
     expect(ctx.scene.outputBox.content.getChildrenCount()).toBe(before);
-  });
+  }, 20_000);
 });
 
 describe("workflows menu", () => {

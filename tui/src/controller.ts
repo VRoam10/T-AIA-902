@@ -56,11 +56,14 @@ export function rebuildActiveForm(ctx: Ctx, focusKey?: string): void {
   }
 }
 
-// A focused choice changed: rebuild train/evaluate when algo/env changes (their
-// dependent fields differ), and always refresh the breadcrumb.
+// A focused choice changed: rebuild train/evaluate/benchmark when algo/env
+// changes (their dependent fields differ), and always refresh the breadcrumb.
 export function onChoiceChanged(ctx: Ctx, f: Field): void {
   const wf = ctx.state.activeWorkflow;
-  if ((wf === "train" || wf === "evaluate") && (f.key === "algo_name" || f.key === "env_name")) {
+  if (
+    (wf === "train" || wf === "evaluate" || wf === "benchmark") &&
+    (f.key === "algo_name" || f.key === "env_name")
+  ) {
     rebuildActiveForm(ctx, f.key); // openWorkflow refreshes the breadcrumb itself
     return;
   }

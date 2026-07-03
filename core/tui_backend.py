@@ -86,6 +86,7 @@ def _cmd_benchmark(payload: dict) -> None:
         env_name=payload.get("env_name"),
         algos=payload.get("algos"),
         param_grid=payload.get("param_grid"),
+        beamng=_beamng_from(payload),
     )
     _emit_result(run_benchmark(req))
 
