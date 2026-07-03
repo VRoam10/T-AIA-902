@@ -37,7 +37,10 @@ function beamngFieldsFrom(values: Record<string, unknown>, withRandom: boolean):
     body_orientation: bool(values.body_orientation),
     wheel_terrain: bool(values.wheel_terrain),
   };
-  if (withRandom) f.random_path = bool(values.random_path);
+  if (withRandom) {
+    f.random_path = bool(values.random_path);
+    f.dense_episodes = num(values.dense_episodes, 0);
+  }
   return f;
 }
 
@@ -53,7 +56,12 @@ function addBeamngFields(ctx: Ctx, envName: string, withRandom: boolean): void {
   // wheel_terrain is intentionally NOT offered: polling the RoadsSensor in the
   // unstepped reset path hard-freezes training on road-dense maps. The payload
   // still sends it as false (see BEAMNG_DEFAULTS / beamngFieldsFrom).
-  if (withRandom) addChoice(ctx, "random_path", "Randomize path", ["false", "true"]);
+  if (withRandom) {
+    addChoice(ctx, "random_path", "Randomize path", ["false", "true"]);
+    // Curriculum warm-up: dense checkpoints (8 m) for the first N episodes,
+    // then sparse (25 m). Training-only; evaluation always runs sparse.
+    addInput(ctx, "dense_episodes", "Dense warm-up episodes", "0", vNonNegNumber);
+  }
 }
 
 // Recompute the train "save path" / evaluate "model path" from the currently

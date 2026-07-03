@@ -93,6 +93,7 @@ class BeamNGOptions:
     body_orientation: bool = False
     wheel_terrain: bool = False
     random_path: bool = False
+    dense_episodes: int = 0
 
 
 @dataclass
@@ -252,7 +253,10 @@ def _beamng_kwargs(beamng: BeamNGOptions | None, *, with_random_path: bool) -> d
         "wheel_terrain": beamng.wheel_terrain,
     }
     if with_random_path:
+        # Training-only options: evaluation always runs sparse checkpoints so
+        # the dense warm-up curriculum never leaks into eval metrics.
         kwargs["random_path"] = beamng.random_path
+        kwargs["dense_episodes"] = beamng.dense_episodes
     return kwargs
 
 

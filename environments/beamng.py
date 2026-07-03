@@ -151,6 +151,7 @@ class BeamNGDrivingEnv:
         body_orientation: bool = False,
         wheel_terrain: bool = False,
         random_path: bool = False,
+        dense_episodes: int = 0,
     ):
         """
         Args:
@@ -159,6 +160,10 @@ class BeamNGDrivingEnv:
             beamng_user: Optional path to BeamNG user folder (where mods/configs live).
             host: BeamNG server host (default localhost).
             port: BeamNG server port (default 25252).
+            dense_episodes: Curriculum warm-up — use dense waypoints (8 m apart,
+                            trivially hittable) for this many initial episodes,
+                            then switch to sparse (25 m). 0 = sparse from the
+                            start (default).
         """
         self.beamng_home = beamng_home
         self.beamng_user = beamng_user
@@ -193,6 +198,8 @@ class BeamNGDrivingEnv:
         self.body_orientation = body_orientation
         self.wheel_terrain = wheel_terrain
         self.random_path = random_path
+        self.dense_episodes = dense_episodes
+        self._episode_idx = 0  # incremented on each reset(); drives the waypoint curriculum
         self.n_states = (
             self.N_STATES
             + trajectory_hints * 2
@@ -215,6 +222,8 @@ class BeamNGDrivingEnv:
 
     def _select_waypoints(self) -> list[tuple[float, float, float]]:
         assert self.trajectory is not None
+        if self.dense_episodes > 0 and self._episode_idx <= self.dense_episodes:
+            return list(self.trajectory.dense_waypoints)
         return list(self.trajectory.sparse_waypoints)
 
     # ------------------------------------------------------------------
@@ -223,6 +232,7 @@ class BeamNGDrivingEnv:
 
     def reset(self) -> np.ndarray:
         """Reset the episode and return the initial observation."""
+        self._episode_idx += 1
         if self.bng is None:
             self._launch()
         else:
@@ -240,6 +250,10 @@ class BeamNGDrivingEnv:
                 )
             else:
                 self.bng.scenario.restart()
+            # Waypoint density can flip between episodes (dense warm-up ->
+            # sparse curriculum), so re-select every reset. Redundant but
+            # harmless right after _pick_episode_path on the random-path branch.
+            self.waypoints = self._select_waypoints()
             self._update_active_marker(0)
             # Test LiDAR après restart
             try:
@@ -1101,6 +1115,7 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
         body_orientation: bool = False,
         wheel_terrain: bool = False,
         random_path: bool = False,
+        dense_episodes: int = 0,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -1115,6 +1130,7 @@ class BeamNGContinuousEnv(BeamNGDrivingEnv):
             body_orientation=body_orientation,
             wheel_terrain=wheel_terrain,
             random_path=random_path,
+            dense_episodes=dense_episodes,
         )
 
     def step(self, action):
@@ -1181,6 +1197,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
         body_orientation: bool = False,
         wheel_terrain: bool = False,
         random_path: bool = False,
+        dense_episodes: int = 0,
     ):
         super().__init__(
             beamng_home=beamng_home,
@@ -1194,6 +1211,7 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             body_orientation=body_orientation,
             wheel_terrain=wheel_terrain,
             random_path=random_path,
+            dense_episodes=dense_episodes,
         )
         self.camera: Camera = None
         self.last_frame: np.ndarray | None = None  # 2-D grayscale (CAM_OUT_SIZE), updated each step

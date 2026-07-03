@@ -41,6 +41,7 @@ export interface BeamNGFields {
   body_orientation: boolean;
   wheel_terrain: boolean;
   random_path?: boolean;
+  dense_episodes?: number;
 }
 
 export const BEAMNG_DEFAULTS: BeamNGFields = {

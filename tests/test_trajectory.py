@@ -845,6 +845,54 @@ def test_launch_without_random_path_keeps_first_path(monkeypatch):
     assert env._current_pos == p0.spawn_pos
 
 
+def test_dense_episodes_curriculum_switches_dense_to_sparse(monkeypatch):
+    # Curriculum warm-up: the first `dense_episodes` episodes use dense
+    # waypoints (easy checkpoint hits), later episodes switch to sparse.
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, _ = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", dense_episodes=2)
+    env.trajectory = p0
+    env.bng = MagicMock()
+    env.vehicle = MagicMock()
+    env.lidar = MagicMock()
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+
+    def fake_observe():
+        env._current_dist = 0.0
+        return [0.0]
+
+    monkeypatch.setattr(env, "_observe", fake_observe)
+
+    env.reset()  # episode 1: dense
+    assert env.waypoints == list(p0.dense_waypoints)
+    env.reset()  # episode 2: still dense
+    assert env.waypoints == list(p0.dense_waypoints)
+    env.reset()  # episode 3: past the warm-up -> sparse
+    assert env.waypoints == list(p0.sparse_waypoints)
+
+
+def test_dense_episodes_zero_keeps_sparse_from_first_episode(monkeypatch):
+    from environments.beamng import BeamNGDrivingEnv
+
+    p0, _ = _two_path_pair()
+    env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy")  # dense_episodes defaults 0
+    env.trajectory = p0
+    env.bng = MagicMock()
+    env.vehicle = MagicMock()
+    env.lidar = MagicMock()
+    monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+
+    def fake_observe():
+        env._current_dist = 0.0
+        return [0.0]
+
+    monkeypatch.setattr(env, "_observe", fake_observe)
+
+    env.reset()
+    assert env.waypoints == list(p0.sparse_waypoints)
+
+
 def test_human_respawn_on_crash_picks_new_random_path(monkeypatch):
     # Human play: a crash should deal a NEW random path via a fast teleport
     # (no scenario relaunch), so the player gets fresh checkpoints each crash.
