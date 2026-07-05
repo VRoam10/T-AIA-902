@@ -23,6 +23,7 @@ class ConvergenceBenchmark(BaseBenchmark):
         agent_params["n_states"] = metadata.get("n_states", 5)
         if "n_actions" not in agent_params:
             agent_params["n_actions"] = metadata.get("n_actions", 6)
+        self._finalize_agent_params(agent_cls, agent_params, metadata)
         agent = agent_cls(**agent_params)
 
         max_episodes = config.get("max_episodes", 2000)

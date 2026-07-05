@@ -50,8 +50,7 @@ class GridSearchBenchmark(BaseBenchmark):
 
         metadata = config.get("env_metadata", {})
         base_params = dict(config.get("agent_params", {}))
-        base_params.setdefault("n_states", metadata.get("n_states", 5))
-        base_params.setdefault("n_actions", metadata.get("n_actions", 6))
+        self._finalize_agent_params(agent_cls, base_params, metadata)
 
         seeds = config.get("seeds", [0, 1, 2])
         max_episodes = config.get("max_episodes", 1000)

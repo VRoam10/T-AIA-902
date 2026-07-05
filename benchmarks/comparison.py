@@ -123,8 +123,7 @@ class ComparisonBenchmark(BaseBenchmark):
         else:
             cls = variant.get("agent_cls", default_cls)
             params = dict(variant.get("agent_params", {}))
-        params.setdefault("n_states", metadata.get("n_states", 5))
-        params.setdefault("n_actions", metadata.get("n_actions", 6))
+        BaseBenchmark._finalize_agent_params(cls, params, metadata)
         return label, cls, params
 
     def _run_single(
