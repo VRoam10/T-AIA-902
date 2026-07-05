@@ -1,4 +1,5 @@
 import csv
+import inspect
 import json
 import os
 from abc import ABC, abstractmethod
@@ -24,6 +25,24 @@ class BaseBenchmark(ABC):
     def run(self, agent_cls: type, env_factory: Callable, config: dict) -> dict:
         """Run the benchmark. Returns a results dict."""
         ...
+
+    @staticmethod
+    def _finalize_agent_params(cls: type, params: dict, metadata: dict) -> dict:
+        """Fill in env-derived params shared by every benchmark's agent construction.
+
+        Mirrors ``core.pipeline_actions.build_agent``'s sizing: ``n_states``/
+        ``n_actions`` come from the env metadata, and ``state_type`` is only set
+        for agents whose constructor accepts it (continuous-control agents like
+        DDPG/TD3, which switch to discrete one-hot state / argmax-over-scores
+        action mode on a ``state_type="discrete"`` env such as Taxi). Without
+        this, those agents silently default to continuous mode and emit a
+        float action into a discrete env's step function.
+        """
+        params.setdefault("n_states", metadata.get("n_states", 5))
+        params.setdefault("n_actions", metadata.get("n_actions", 6))
+        if "state_type" in inspect.signature(cls).parameters:
+            params.setdefault("state_type", metadata.get("state_type", "continuous"))
+        return params
 
     def evaluate_policy(
         self,

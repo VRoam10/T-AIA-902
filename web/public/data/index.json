@@ -1,6 +1,96 @@
 {
   "runs": [
     {
+      "id": "convergence_td3_taxi_multiseed_20260705_155024",
+      "benchmark": "convergence",
+      "algo": "td3",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1
+      ],
+      "n_seeds": 2,
+      "git_commit": "235b413",
+      "device": "cpu",
+      "multiseed": true,
+      "headline_eval_reward": -200.0,
+      "path": "convergence_td3_taxi_multiseed_20260705_155024"
+    },
+    {
+      "id": "convergence_q_learning_taxi_20260703_122608",
+      "benchmark": "convergence",
+      "algo": "q_learning",
+      "env": "taxi",
+      "seeds": null,
+      "n_seeds": null,
+      "git_commit": "e278fd4",
+      "device": "cpu",
+      "multiseed": false,
+      "headline_eval_reward": 8.8333,
+      "path": "convergence_q_learning_taxi_20260703_122608"
+    },
+    {
+      "id": "convergence_dqn_taxi_multiseed_20260703_112629",
+      "benchmark": "convergence",
+      "algo": "dqn",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1
+      ],
+      "n_seeds": 2,
+      "git_commit": "e278fd4",
+      "device": "cpu",
+      "multiseed": true,
+      "headline_eval_reward": -175.14,
+      "path": "convergence_dqn_taxi_multiseed_20260703_112629"
+    },
+    {
+      "id": "convergence_dqn_per_taxi_multiseed_20260703_120819",
+      "benchmark": "convergence",
+      "algo": "dqn_per",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1
+      ],
+      "n_seeds": 2,
+      "git_commit": "e278fd4",
+      "device": "cpu",
+      "multiseed": true,
+      "headline_eval_reward": -139.13,
+      "path": "convergence_dqn_per_taxi_multiseed_20260703_120819"
+    },
+    {
+      "id": "convergence_ddpg_taxi_20260705_193935",
+      "benchmark": "convergence",
+      "algo": "ddpg",
+      "env": "taxi",
+      "seeds": null,
+      "n_seeds": null,
+      "git_commit": "235b413",
+      "device": "cpu",
+      "multiseed": false,
+      "headline_eval_reward": -200.0,
+      "path": "convergence_ddpg_taxi_20260705_193935"
+    },
+    {
+      "id": "comparison_q_learning+dqn+dqn_per_taxi_20260703_123817",
+      "benchmark": "comparison",
+      "algo": "q_learning+dqn+dqn_per",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1
+      ],
+      "n_seeds": null,
+      "git_commit": "e278fd4",
+      "device": "cpu",
+      "multiseed": false,
+      "headline_eval_reward": -71.2334,
+      "path": "comparison_q_learning+dqn+dqn_per_taxi_20260703_123817"
+    },
+    {
       "id": "gridsearch_q_learning_taxi_20260618_190454",
       "benchmark": "gridsearch",
       "algo": "q_learning",
