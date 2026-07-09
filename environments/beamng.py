@@ -1,4 +1,5 @@
 import random
+import socket
 import sys
 import threading
 import time
@@ -104,6 +105,14 @@ class BeamNGDrivingEnv:
 
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 500
+
+    # close() shutdown timing: BeamNGpy close runs in a daemon thread bounded by
+    # CLOSE_JOIN_TIMEOUT so a frozen sim cannot hang the pipeline; with kill_sim
+    # we then poll the sim port every KILL_WAIT_POLL seconds, up to
+    # KILL_WAIT_TIMEOUT, until it stops accepting connections.
+    CLOSE_JOIN_TIMEOUT = 5.0
+    KILL_WAIT_TIMEOUT = 60.0
+    KILL_WAIT_POLL = 0.5
     MAX_DAMAGE = 1000.0  # damage threshold that ends the episode
     HUMAN_RESPAWN_DAMAGE = 100.0  # human play: damage above this counts as a crash
     HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
@@ -413,9 +422,37 @@ class BeamNGDrivingEnv:
             close_fn = self.bng.close if kill_sim else self.bng.disconnect
             t = threading.Thread(target=close_fn, daemon=True)
             t.start()
-            t.join(timeout=5.0)
+            t.join(timeout=self.CLOSE_JOIN_TIMEOUT)
             self.bng = None
             self.vehicle = None
+            if kill_sim:
+                self._wait_sim_shutdown()
+
+    def _wait_sim_shutdown(self):
+        """Block until the simulator's port stops accepting connections.
+
+        BeamNGpy ``open(launch=True)`` connects to any instance still listening
+        on the port before it considers launching a new one, and ``close()``
+        above is fire-and-forget (daemon thread, bounded join) while the actual
+        shutdown (scenario close, Quit ack, process kill) can take much longer.
+        Without this wait, a back-to-back close -> open — a benchmark's training
+        env close followed by evaluate_policy's fresh env — connects to the
+        dying simulator and raises BNGDisconnectedError once the kill lands,
+        instead of relaunching the game. Bounded by KILL_WAIT_TIMEOUT so a
+        frozen sim still cannot hang the pipeline.
+        """
+        deadline = time.time() + self.KILL_WAIT_TIMEOUT
+        while time.time() < deadline:
+            try:
+                socket.create_connection((self.host, self.port), timeout=1.0).close()
+            except OSError:
+                return
+            time.sleep(self.KILL_WAIT_POLL)
+        print(
+            f"[BeamNGDrivingEnv] Warning: simulator still listening on "
+            f"{self.host}:{self.port} after {self.KILL_WAIT_TIMEOUT:.0f}s; "
+            "the next launch may connect to the dying instance."
+        )
 
     def _remove_lidar(self):
         """Detach the current LiDAR before replacing the ego vehicle/scenario."""
@@ -1326,13 +1363,13 @@ class BeamNGCameraEnv(BeamNGContinuousEnv):
             f"mean={px.mean():+.2f} px={px.size} ({h}x{w})"
         )
 
-    def close(self):
+    def close(self, kill_sim: bool = True):
         if self.camera is not None:
             t = threading.Thread(target=self.camera.remove, daemon=True)
             t.start()
             t.join(timeout=3.0)
             self.camera = None
-        super().close()
+        super().close(kill_sim=kill_sim)
 
     def human_play_camera(self):
         """Human play with the 16×16 dashcam frame rendered as ASCII art in-place."""

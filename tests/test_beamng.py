@@ -1,5 +1,7 @@
 """Tests for environments.beamng — refactored LiDAR delegation (no sim)."""
 
+import socket
+import time
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -83,6 +85,55 @@ class TestExtraFeatures:
         left, right = env._wheel_terrain_features()
         assert left == pytest.approx(1.0, abs=1e-6)
         assert right == pytest.approx(0.0, abs=1e-6)
+
+
+class TestCloseWaitsForSimShutdown:
+    """close(kill_sim=True) must not return while the sim port still accepts
+    connections. BeamNGpy open(launch=True) connects to any instance still
+    listening before it launches a new one, so returning early lets the next
+    env (benchmark eval right after training) latch onto the dying simulator
+    and die with BNGDisconnectedError instead of relaunching the game."""
+
+    def _fake_sim_env(self, close_delay: float):
+        """Env pointed at a local listening socket standing in for the sim.
+
+        The mocked BeamNGpy close() sleeps past the join timeout before
+        releasing the port, mimicking the real shutdown (scenario close,
+        Quit ack, process kill) outliving the daemon-thread join.
+        """
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+
+        env = BeamNGDrivingEnv(beamng_home="unused", host="127.0.0.1", port=port)
+        env.CLOSE_JOIN_TIMEOUT = 0.1
+        env.KILL_WAIT_POLL = 0.05
+        env.KILL_WAIT_TIMEOUT = 10.0
+
+        env.bng = MagicMock()
+
+        def slow_close():
+            time.sleep(close_delay)
+            listener.close()
+
+        env.bng.close.side_effect = slow_close
+        env.bng.disconnect.side_effect = lambda: None
+        return env, port
+
+    def test_kill_sim_blocks_until_port_refuses_connections(self):
+        env, port = self._fake_sim_env(close_delay=1.0)
+        env.close(kill_sim=True)
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+
+    def test_disconnect_leaves_sim_running(self):
+        env, port = self._fake_sim_env(close_delay=1.0)
+        start = time.time()
+        env.close(kill_sim=False)
+        assert time.time() - start < 1.0  # no port wait on disconnect
+        # The sim (listener) is still accepting: disconnect must not kill it.
+        socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
 
 
 class TestRoadsSensorLifecycle:
