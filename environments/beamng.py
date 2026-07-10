@@ -264,18 +264,6 @@ class BeamNGDrivingEnv:
             # harmless right after _pick_episode_path on the random-path branch.
             self.waypoints = self._select_waypoints()
             self._update_active_marker(0)
-            # Test LiDAR après restart
-            try:
-                data = self.lidar.poll()
-                pc = data.get("pointCloud", None)
-
-                if pc is None:
-                    print("[TEST LIDAR] pointCloud = None après restart")
-                else:
-                    print("[TEST LIDAR] points après restart :", len(pc))
-
-            except Exception as e:
-                print("[TEST LIDAR] ERREUR après restart :", repr(e))
 
         self._waypoint_idx = 0
         self._last_damage = 0.0
