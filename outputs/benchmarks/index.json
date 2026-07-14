@@ -1,0 +1,39 @@
+{
+  "runs": [
+    {
+      "id": "convergence_td3_beamng_continuous_multiseed_20260710_202335",
+      "benchmark": "convergence",
+      "algo": "td3",
+      "env": "beamng_continuous",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_seeds": 3,
+      "git_commit": "unknown",
+      "device": "cuda",
+      "multiseed": true,
+      "headline_eval_reward": 39573.3399,
+      "path": "convergence_td3_beamng_continuous_multiseed_20260710_202335"
+    },
+    {
+      "id": "convergence_ddpg_beamng_continuous_multiseed_20260710_104615",
+      "benchmark": "convergence",
+      "algo": "ddpg",
+      "env": "beamng_continuous",
+      "seeds": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "n_seeds": 4,
+      "git_commit": "unknown",
+      "device": "cuda",
+      "multiseed": true,
+      "headline_eval_reward": 75134.6288,
+      "path": "convergence_ddpg_beamng_continuous_multiseed_20260710_104615"
+    }
+  ]
+}
