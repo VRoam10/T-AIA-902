@@ -8,7 +8,9 @@ __pycache__
 .claude/
 
 # Outputs (models, plots)
-outputs/
+outputs/*
+!outputs/benchmarks/
+!outputs/benchmarks/**
 *.npy
 *.pth
 *_training_results.png
