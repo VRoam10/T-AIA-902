@@ -18,6 +18,23 @@
       "path": "convergence_td3_beamng_continuous_multiseed_20260710_202335"
     },
     {
+      "id": "convergence_dqn_per_beamng_lidar_multiseed_20260715_195516",
+      "benchmark": "convergence",
+      "algo": "dqn_per",
+      "env": "beamng_lidar",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_seeds": 3,
+      "git_commit": "unknown",
+      "device": "cuda",
+      "multiseed": true,
+      "headline_eval_reward": 11375.9824,
+      "path": "convergence_dqn_per_beamng_lidar_multiseed_20260715_195516"
+    },
+    {
       "id": "convergence_ddpg_beamng_continuous_multiseed_20260710_104615",
       "benchmark": "convergence",
       "algo": "ddpg",

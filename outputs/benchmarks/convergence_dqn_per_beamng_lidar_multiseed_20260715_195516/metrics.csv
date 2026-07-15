@@ -1,0 +1,4 @@
+seed,convergence_episode,total_episodes,training_time_s,threshold,window,final_avg_reward,final_std_reward,best_reward,best_episode,worst_reward,worst_episode,mean_reward,median_reward,q25_reward,q75_reward,improvement_rate,mean_steps,max_steps,min_steps,eval_episodes,eval_mean_reward,eval_std_reward,eval_mean_steps,eval_success_rate
+0,100,200,10436.79,7,100,9917.6452,5551.0831,23967.7592,140,-2016.3678,135,4674.382,1795.1335,76.2371,8986.5905,80.820727,116.74,500,9,10,15530.1179,460.2464,459.6,1.0
+1,100,200,5591.56,7,100,5782.6402,8651.5503,22805.4347,173,-2351.366,190,2799.167,1277.707,-605.7334,2066.0581,30.080679,61.41,500,9,10,8535.0485,6418.586,45.4,1.0
+2,100,200,4729.54,7,100,5388.8721,3250.3098,16660.4221,104,-2652.3402,40,2175.0848,2066.7268,-377.7722,2948.2452,32.043166,51.51,500,7,10,10062.7808,6968.3441,142.6,1.0

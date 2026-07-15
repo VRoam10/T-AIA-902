@@ -1,0 +1,17 @@
+{
+  "git_commit": "unknown",
+  "python": "3.11.9",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "numpy": "2.2.3",
+  "torch": "2.5.1+cu121",
+  "device": "cuda",
+  "benchmark": "convergence",
+  "algo": "dqn_per",
+  "env": "beamng_lidar",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "n_seeds": 3
+}
