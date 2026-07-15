@@ -174,6 +174,22 @@
       "multiseed": true,
       "headline_eval_reward": 75134.6288,
       "path": "convergence_ddpg_beamng_continuous_multiseed_20260710_104615"
+    },
+    {
+      "id": "comparison_td3+ddpg_beamng_camera_20260715_035022",
+      "benchmark": "comparison",
+      "algo": "td3+ddpg",
+      "env": "beamng_camera",
+      "seeds": [
+        0,
+        1
+      ],
+      "n_seeds": null,
+      "git_commit": "unknown",
+      "device": "cuda",
+      "multiseed": false,
+      "headline_eval_reward": 4307.6625,
+      "path": "comparison_td3+ddpg_beamng_camera_20260715_035022"
     }
   ]
 }
