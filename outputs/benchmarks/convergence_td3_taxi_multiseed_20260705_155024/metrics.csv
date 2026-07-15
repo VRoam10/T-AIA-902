@@ -1,0 +1,3 @@
+seed,total_episodes,training_time_s,threshold,window,final_avg_reward,final_std_reward,best_reward,best_episode,worst_reward,worst_episode,mean_reward,median_reward,q25_reward,q75_reward,improvement_rate,mean_steps,max_steps,min_steps,eval_episodes,eval_mean_reward,eval_std_reward,eval_mean_steps,eval_success_rate
+0,250,1208.2,7.0,100,-200.0,0.0,-200.0,1,-200.0,1,-200.0,-200.0,-200.0,-200.0,0.0,200.0,200,200,30,-200.0,0.0,200.0,0.0
+1,250,1636.36,7.0,100,-200.0,0.0,-200.0,1,-200.0,1,-200.0,-200.0,-200.0,-200.0,0.0,200.0,200,200,30,-200.0,0.0,200.0,0.0

@@ -1,0 +1,2 @@
+total_episodes,training_time_s,threshold,window,final_avg_reward,final_std_reward,best_reward,best_episode,worst_reward,worst_episode,mean_reward,median_reward,q25_reward,q75_reward,improvement_rate,mean_steps,max_steps,min_steps,eval_episodes,eval_mean_reward,eval_std_reward,eval_mean_steps,eval_success_rate
+1200,0.65,7.0,100,3.3875,6.4662,15.0,619,-920.0,27,-96.47,-7.0,-47.0,4.0,0.329155,42.05,200,6,30,8.8333,2.6468,12.17,0.9

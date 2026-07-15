@@ -17,6 +17,23 @@
       "path": "convergence_td3_taxi_multiseed_20260705_155024"
     },
     {
+      "id": "convergence_td3_beamng_continuous_multiseed_20260710_202335",
+      "benchmark": "convergence",
+      "algo": "td3",
+      "env": "beamng_continuous",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_seeds": 3,
+      "git_commit": "unknown",
+      "device": "cuda",
+      "multiseed": true,
+      "headline_eval_reward": 39573.3399,
+      "path": "convergence_td3_beamng_continuous_multiseed_20260710_202335"
+    },
+    {
       "id": "convergence_q_learning_taxi_20260703_122608",
       "benchmark": "convergence",
       "algo": "q_learning",
@@ -62,6 +79,23 @@
       "path": "convergence_dqn_per_taxi_multiseed_20260703_120819"
     },
     {
+      "id": "convergence_dqn_per_beamng_lidar_multiseed_20260715_195516",
+      "benchmark": "convergence",
+      "algo": "dqn_per",
+      "env": "beamng_lidar",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_seeds": 3,
+      "git_commit": "unknown",
+      "device": "cuda",
+      "multiseed": true,
+      "headline_eval_reward": 11375.9824,
+      "path": "convergence_dqn_per_beamng_lidar_multiseed_20260715_195516"
+    },
+    {
       "id": "convergence_ddpg_taxi_20260705_193935",
       "benchmark": "convergence",
       "algo": "ddpg",
@@ -73,22 +107,6 @@
       "multiseed": false,
       "headline_eval_reward": -200.0,
       "path": "convergence_ddpg_taxi_20260705_193935"
-    },
-    {
-      "id": "comparison_q_learning+dqn+dqn_per_taxi_20260703_123817",
-      "benchmark": "comparison",
-      "algo": "q_learning+dqn+dqn_per",
-      "env": "taxi",
-      "seeds": [
-        0,
-        1
-      ],
-      "n_seeds": null,
-      "git_commit": "e278fd4",
-      "device": "cpu",
-      "multiseed": false,
-      "headline_eval_reward": -71.2334,
-      "path": "comparison_q_learning+dqn+dqn_per_taxi_20260703_123817"
     },
     {
       "id": "gridsearch_q_learning_taxi_20260618_190454",
@@ -141,23 +159,6 @@
       "path": "comparison_q_learning-variants_taxi_20260618_190441"
     },
     {
-      "id": "convergence_td3_beamng_continuous_multiseed_20260710_202335",
-      "benchmark": "convergence",
-      "algo": "td3",
-      "env": "beamng_continuous",
-      "seeds": [
-        0,
-        1,
-        2
-      ],
-      "n_seeds": 3,
-      "git_commit": "unknown",
-      "device": "cuda",
-      "multiseed": true,
-      "headline_eval_reward": 39573.3399,
-      "path": "convergence_td3_beamng_continuous_multiseed_20260710_202335"
-    },
-    {
       "id": "convergence_ddpg_beamng_continuous_multiseed_20260710_104615",
       "benchmark": "convergence",
       "algo": "ddpg",
@@ -190,6 +191,22 @@
       "multiseed": false,
       "headline_eval_reward": 4307.6625,
       "path": "comparison_td3+ddpg_beamng_camera_20260715_035022"
+    },
+    {
+      "id": "comparison_q_learning+dqn+dqn_per_taxi_20260703_123817",
+      "benchmark": "comparison",
+      "algo": "q_learning+dqn+dqn_per",
+      "env": "taxi",
+      "seeds": [
+        0,
+        1
+      ],
+      "n_seeds": null,
+      "git_commit": "e278fd4",
+      "device": "cpu",
+      "multiseed": false,
+      "headline_eval_reward": -71.2334,
+      "path": "comparison_q_learning+dqn+dqn_per_taxi_20260703_123817"
     }
   ]
 }

@@ -1,0 +1,4 @@
+variant,converged_rate,training_time_s_mean,training_time_s_std,final_avg_reward_mean,final_avg_reward_std,mean_reward_mean,mean_reward_std,best_reward_mean,best_reward_std,eval_episodes_mean,eval_episodes_std,eval_mean_reward_mean,eval_mean_reward_std,eval_std_reward_mean,eval_std_reward_std,eval_mean_steps_mean,eval_mean_steps_std,eval_success_rate_mean,eval_success_rate_std
+q_learning,0.0,0.34,0.0,-138.53,12.99,-425.436,0.6,0.5,8.5,30.0,0.0,-71.2334,10.3666,100.9739,2.5785,84.185,9.315,0.5666,0.0333
+dqn,0.0,162.885,1.975,-213.04,2.94,-255.102,1.61,-2.5,16.5,30.0,0.0,-200.0,0.0,0.0,0.0,200.0,0.0,0.0,0.0
+dqn_per,0.0,198.205,14.275,-192.4,35.92,-247.822,16.682,14.5,0.5,30.0,0.0,-189.5166,10.4834,31.4533,31.4533,190.565,9.435,0.05,0.05
