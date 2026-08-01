@@ -16,14 +16,15 @@ from core.pipeline_actions import (
     _benchmark_env,
     run_benchmark,
 )
+from environments import beamng_spec
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture
-def fake_taxi_registry(monkeypatch):
-    """A minimal discrete env registered as 'taxi'."""
+def fake_other_registry(monkeypatch):
+    """A minimal non-BeamNG env, for the pass-through branch."""
 
     def _factory(**kwargs):
         env = MagicMock()
@@ -104,19 +105,19 @@ def fake_algorithms(monkeypatch):
 # ---------------------------------------------------------------------------
 # _benchmark_env
 # ---------------------------------------------------------------------------
-def test_benchmark_env_non_beamng_returns_factory_and_metadata(fake_taxi_registry):
+def test_benchmark_env_non_beamng_returns_factory_and_metadata(fake_other_registry):
     req = BenchmarkRequest(
         benchmark_name="convergence",
         seeds=[0],
         eval_episodes=2,
         success_threshold=0,
         max_episodes=3,
-        algo_name="q_learning",
-        env_name="taxi",
+        algo_name="dqn",
+        env_name="lineworld",
     )
     factory, metadata = _benchmark_env(req)
-    assert factory is fake_taxi_registry["factory"]
-    assert metadata == fake_taxi_registry["metadata"]
+    assert factory is fake_other_registry["factory"]
+    assert metadata == fake_other_registry["metadata"]
 
 
 def test_benchmark_env_beamng_forwards_options(fake_beamng_registry):
@@ -131,7 +132,7 @@ def test_benchmark_env_beamng_forwards_options(fake_beamng_registry):
         env_name="beamng",
         beamng=BeamNGOptions(
             map_name="italy",
-            vehicle_id="super",
+            sensor="adv_lidar",
             trajectory_hints=3,
             body_orientation=True,
             wheel_terrain=True,
@@ -142,7 +143,7 @@ def test_benchmark_env_beamng_forwards_options(fake_beamng_registry):
     factory, metadata = _benchmark_env(req, algo_name="ddpg")
     factory()
     assert captured["map_name"] == "italy"
-    assert captured["vehicle_id"] == "super"
+    assert captured["sensor"] == "adv_lidar"
     assert captured["trajectory_hints"] == 3
     assert captured["body_orientation"] is True
     assert captured["wheel_terrain"] is True
@@ -165,7 +166,9 @@ def test_benchmark_env_beamng_excludes_training_only_options(fake_beamng_registr
     assert "dense_episodes" not in captured
 
 
-def test_benchmark_env_beamng_includes_reward_mode_for_ddpg_td3(fake_beamng_registry):
+def test_benchmark_env_derives_output_from_the_algo(fake_beamng_registry):
+    """The env's action head must match the agent's. There is one reward now, so
+    the old per-algo `reward_mode` is gone; `output` is what varies."""
     info, captured = fake_beamng_registry
     req = BenchmarkRequest(
         benchmark_name="convergence",
@@ -177,16 +180,14 @@ def test_benchmark_env_beamng_includes_reward_mode_for_ddpg_td3(fake_beamng_regi
         env_name="beamng",
         beamng=BeamNGOptions(),
     )
-    factory, _ = _benchmark_env(req, algo_name="ddpg")
-    factory()
-    assert captured.get("reward_mode") == "ddpg"
-    captured.clear()
-    factory2, _ = _benchmark_env(req, algo_name="td3")
-    factory2()
-    assert captured.get("reward_mode") == "td3"
+    for algo, expected in [("ddpg", "continuous"), ("td3", "continuous"), ("dqn", "fixed")]:
+        captured.clear()
+        factory, _ = _benchmark_env(req, algo_name=algo)
+        factory()
+        assert captured.get("output") == expected, algo
 
 
-def test_benchmark_env_beamng_omits_reward_mode_for_dqn_and_none(fake_beamng_registry):
+def test_benchmark_env_omits_output_without_an_algo(fake_beamng_registry):
     info, captured = fake_beamng_registry
     req = BenchmarkRequest(
         benchmark_name="convergence",
@@ -198,16 +199,13 @@ def test_benchmark_env_beamng_omits_reward_mode_for_dqn_and_none(fake_beamng_reg
         env_name="beamng",
         beamng=BeamNGOptions(),
     )
-    factory, _ = _benchmark_env(req, algo_name="dqn")
+    factory, _ = _benchmark_env(req, algo_name=None)
     factory()
-    assert "reward_mode" not in captured
-    captured.clear()
-    factory2, _ = _benchmark_env(req, algo_name=None)
-    factory2()
-    assert "reward_mode" not in captured
+    assert "output" not in captured
+    assert "reward_mode" not in captured  # the concept is gone entirely
 
 
-def test_benchmark_env_beamng_widens_n_states(fake_beamng_registry):
+def test_benchmark_env_beamng_sizes_n_states_from_sensor_and_flags(fake_beamng_registry):
     info, captured = fake_beamng_registry
     req = BenchmarkRequest(
         benchmark_name="convergence",
@@ -217,11 +215,14 @@ def test_benchmark_env_beamng_widens_n_states(fake_beamng_registry):
         max_episodes=3,
         algo_name="ddpg",
         env_name="beamng",
-        beamng=BeamNGOptions(trajectory_hints=2, body_orientation=True, wheel_terrain=True),
+        beamng=BeamNGOptions(
+            sensor="adv_lidar", trajectory_hints=2, body_orientation=True, wheel_terrain=True
+        ),
     )
     factory, metadata = _benchmark_env(req, algo_name="ddpg")
-    # 4 + 2*2 + 2*1 + 2*1 = 4 + 4 + 2 + 2 = 12
-    assert metadata["n_states"] == 12
+    # The size comes from the spec, not from the registry metadata: 38 + 4 + 2 + 2.
+    assert metadata["n_states"] == 46
+    assert metadata["n_actions"] == 3  # continuous head
 
 
 def test_benchmark_env_beamng_defaults_when_none(fake_beamng_registry):
@@ -238,9 +239,11 @@ def test_benchmark_env_beamng_defaults_when_none(fake_beamng_registry):
     )
     factory, metadata = _benchmark_env(req, algo_name="ddpg")
     factory()
-    # defaults: trajectory_hints=0, no flags → no widening
-    assert metadata["n_states"] == info["metadata"]["n_states"]
+    # A missing options block means "all defaults", not "skip BeamNG sizing": the
+    # size now comes from the spec (default sensor, no flags), not from metadata.
+    assert metadata["n_states"] == beamng_spec.obs_size(beamng_spec.DEFAULT_SENSOR)
     assert captured["map_name"] == "gridmap_v2"
+    assert captured["sensor"] == beamng_spec.DEFAULT_SENSOR
 
 
 def test_benchmark_env_does_not_mutate_registry_metadata(fake_beamng_registry, monkeypatch):
@@ -354,7 +357,7 @@ def test_run_comparison_builds_variants_and_shares_factory(
 # ---------------------------------------------------------------------------
 # run_benchmark smoke test (taxi guard)
 # ---------------------------------------------------------------------------
-def test_run_benchmark_taxi_returns_ok(monkeypatch, fake_taxi_registry):
+def test_run_benchmark_taxi_returns_ok(monkeypatch, fake_other_registry):
     # Provide a real-looking fake benchmark that can execute quickly.
     class FakeBench:
         def run(self, agent_cls, env_factory, config):
@@ -377,8 +380,8 @@ def test_run_benchmark_taxi_returns_ok(monkeypatch, fake_taxi_registry):
         eval_episodes=2,
         success_threshold=0,
         max_episodes=3,
-        algo_name="q_learning",
-        env_name="taxi",
+        algo_name="dqn",
+        env_name="lineworld",
         reward_threshold=7,
     )
     result = run_benchmark(req)

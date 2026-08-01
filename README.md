@@ -1,6 +1,18 @@
 # RL Pipeline
 
-Pipeline de Reinforcement Learning modulaire pour entrainer et evaluer des agents sur differents environnements (Taxi-v3, BeamNG.drive).
+Pipeline de Reinforcement Learning pour **piloter vite** dans BeamNG.drive, puis
+**courser** contre un autre agent ou contre un humain.
+
+Une seule voiture (Hirochi Sunburst en configuration course), un seul environnement
+BeamNG, et deux axes de configuration independants :
+
+| Axe | Valeurs | Choisi par |
+|---|---|---|
+| `sensor` (perception) | `lidar` (8 bins) / `adv_lidar` (grille 4x8) / `camera` (16x16) | l'utilisateur |
+| `output` (actions) | `fixed` (table de 7 actions) / `continuous` (throttle, steering, brake) | **derive de l'algorithme** |
+
+`output` n'est pas un champ du menu : une tete DQN ne peut pas emettre de commandes
+continues et DDPG/TD3 n'emettent rien d'autre, donc l'algorithme le determine.
 
 Ajouter un nouvel algorithme = **1 fichier + 1 ligne de registration**. Il apparait automatiquement dans le menu.
 
@@ -77,15 +89,15 @@ L'interface terminal moderne (« command center ») se navigue au clavier :
 
 ```
  ╔════════════════════════════════════════════════════════════╗
- ║ ◢◤ RL PIPELINE   Train › dqn › beamng_lidar       ⠹ running ║
+ ║ ◢◤ RL PIPELINE   Train › dqn › gridmap_v2         ⠹ running ║
  ╚════════════════════════════════════════════════════════════╝
  ┌ Workflows ───────┐┌ Train an agent ─────────────────────────┐
  │ ●  Train         ││ Algorithm    ‹ dqn ›                     │
- │ ○  Evaluate      ││ Environment  ‹ beamng_lidar ›            │
- │ ○  Benchmark     ││ ── hyperparameters ──────────────────────│
- │ ○  Human play    ││ lr 0.001   gamma 0.99   batch 64         │
- │ ○  Trajectories  ││          ▸ ▶ Start training              │
- │ ○  Multi-agent   │└──────────────────────────────────────────┘
+ │ ○  Multi-agent   ││ Sensor       ‹ adv_lidar ›               │
+ │ ○  Human play    ││ ── hyperparameters ──────────────────────│
+ │ ○  Course (race) ││ lr 0.001   gamma 0.99   batch 64         │
+ │ ○  Quit          ││          ▸ ▶ Start training              │
+ │                  │└──────────────────────────────────────────┘
  ├ Status ──────────┤┌ Output · l for full logs ──────────────┐
  │ ⠹ Train ▓▓▓░ 42% ││ ep 210/500  reward 6.4  ε 0.18          │
  └──────────────────┘└──────────────────────────────────────────┘
@@ -99,31 +111,48 @@ un run en cours ou quitter. Le panneau Output est un aperçu compact ; `l` ouvre
 complets (défilables). L'UI intègre une barre de progression live (lue depuis la sortie
 d'entrainement), la validation des champs numeriques et un overlay d'aide clavier.
 
+Le menu expose **quatre modes**.
+
 ### 1. Train an agent
 
-- Choisir un algorithme (`q_learning`, `dqn`, ...)
-- Choisir un environnement compatible
+- Choisir un algorithme (`dqn`, `dqn_per`, `ddpg`, `td3`) — il determine l'axe `output`
+- Choisir le `sensor` (`lidar`, `adv_lidar`, `camera`) — il determine la largeur d'observation
 - Ajuster les hyperparametres (ou garder les defaults)
-- L'entrainement demarre, les modeles et plots sont sauvegardes dans `outputs/`
+- Le chemin de checkpoint est derive de `algo` + `sensor` + options, donc deux configs
+  n'ecrasent jamais le meme fichier : `outputs/dqn_adv_lidar_h2_ori.pth`
+- Pendant le run, la Status box affiche `checkpoints <n>` (checkpoints passes) en direct
 
-### 2. Evaluate an agent
+### 2. Multi-agent training
 
-- Charger un modele sauvegarde
-- Lancer N episodes en mode exploitation (epsilon=0)
+- N voitures dans **une** scene, chacune sur **son propre** chemin (>= 30 m d'ecart),
+  avec un seul pas physique pour tout le monde : c'est le mode "debit", sans contact
+- Chaque voiture choisit son algorithme et son sensor
 
-### 3. Run a benchmark
+### 3. Human play
 
-- Choisir un benchmark (`convergence`, `comparison`, `gridsearch`)
-- Choisir l'algorithme et l'environnement — un env `beamng*` expose ses options (map, vehicule, checkpoint hints, body orientation) comme pour l'entrainement ; les options d'entrainement uniquement (random path, dense warm-up) sont exclues car le meme env sert aussi a l'evaluation greedy
-- Pendant le run, la Status box affiche `checkpoints <n>` (checkpoints passes) en direct pour les envs BeamNG
-- Saisir les **seeds** (defaut `0,1,2,3,4`), le nombre d'**episodes d'evaluation** et le **seuil de succes**
-- Les resultats sont affiches a la fin et exportes dans `outputs/benchmarks/`
+- Conduire manuellement, avec la lecture de l'observation en direct
+- `lidar` / `adv_lidar` affichent les bins par cellule plus les diagnostics de filtrage ;
+  `camera` affiche l'image du dashcam en ASCII, redessinee sur place
 
-Voir la section [Benchmarks](#benchmarks) pour le detail des metriques et des fichiers produits.
+### 4. Course mode (race)
 
-### 4. Human play (BeamNG)
+Deux voitures sur **le meme** trace, avec collisions.
 
-- Conduire manuellement dans BeamNG pour tester le scenario
+- **Adversaire** : `algo` (deux checkpoints s'affrontent) ou `human` (vous conduisez)
+- **Learning** : `false` = politiques gelees, bruit d'exploration a zero, donc la course
+  montre ce que les checkpoints ont vraiment appris. `true` = les agents continuent
+  d'apprendre avec le terme d'ecart, et les checkpoints sont sauves dans `outputs/races/`
+- **Races** : nombre de courses consecutives ; le vainqueur et l'ecart en metres sont
+  rapportes a chaque fois
+- Un adversaire humain force le mode temps reel (personne ne peut conduire en lockstep) ;
+  `algo` contre `algo` tourne en lockstep, donc deterministe et aussi rapide que le sim
+
+> `laps` est reserve et doit valoir 1 : les traces generes sont des routes ouvertes, donc
+> un second tour impliquerait de revenir au depart. Fermer un circuit reste a faire.
+
+Les modes `evaluate`, `benchmark` et `generate trajectories` ont ete retires du menu ;
+leur code reste importable (`core.pipeline_actions`, `benchmarks/`). Les caches de
+trajectoires se generent desormais au premier lancement sur une map.
 
 ---
 
@@ -140,20 +169,28 @@ testRomain/
 │   ├── base_agent.py        # Classe abstraite BaseAgent
 │   ├── base_benchmark.py    # Classe abstraite BaseBenchmark
 │   ├── registry.py          # Registre central (algos, envs, benchmarks)
-│   ├── runner.py            # Boucle train/eval generique
+│   ├── runner.py            # Boucle train/eval generique (une voiture)
+│   ├── multi_runner.py      # N agents, N chemins, un pas partage
+│   ├── race_runner.py       # Course tete-a-tete (exhibition / apprentissage)
 │   └── pipeline_actions.py  # Couche d'actions pilotee par l'UI
 │
 ├── algorithms/
 │   ├── __init__.py           # Registration des algorithmes
-│   ├── q_learning.py         # Q-Learning (Taxi-v3)
-│   └── dqn.py                # Double DQN (BeamNG, Taxi)
+│   ├── dqn.py                # Double DQN + Dueling (+ PER)
+│   ├── ddpg.py               # DDPG
+│   └── td3.py                # TD3
 │
 ├── environments/
-│   ├── __init__.py           # Registration des environnements
-│   ├── taxi.py               # Factory Taxi-v3
-│   └── beamng.py             # BeamNG.drive wrapper
+│   ├── __init__.py           # Registration (un seul env : beamng)
+│   ├── beamng_spec.py        # Les deux axes + toutes les tailles + la voiture
+│   ├── beamng_sensors.py     # Construction / lecture des capteurs beamngpy
+│   ├── beamng_geometry.py    # Math pure (lidar, progression, grille de depart)
+│   ├── beamng_reward.py      # La recompense de course (partagee par les 3 envs)
+│   ├── beamng.py             # L'env, parametre par sensor + output
+│   ├── beamng_multi.py       # N voitures, chemins separes (entrainement)
+│   └── beamng_race.py        # N voitures, meme trace, collisions (course)
 │
-├── benchmarks/
+├── benchmarks/               # Hors menu, toujours importable
 │   ├── __init__.py           # Registration des benchmarks
 │   └── convergence.py        # Benchmark de convergence
 │
@@ -210,9 +247,15 @@ registry.register_algorithm(
     "mon_algo",
     MonAlgoAgent,
     default_config={"lr": 0.1, "gamma": 0.99},
-    compatible_envs=["taxi"],  # ou None pour tous les envs
+    compatible_envs=["beamng"],
 )
 ```
+
+Puis le classer sur l'axe `output` dans `environments/beamng_spec.py` : ajouter son nom
+a `FIXED_ALGOS` (tete discrete) ou `CONTINUOUS_ALGOS` (commandes continues).
+`output_for_algo` leve une erreur sur un algorithme non classe plutot que de deviner —
+un mauvais choix de tete d'action ne se verrait que bien plus tard, sous forme de
+conduite absurde.
 
 C'est tout. L'algorithme apparait dans le menu.
 
@@ -246,7 +289,38 @@ Creer `benchmarks/mon_benchmark.py` en heritant de `BaseBenchmark`, puis enregis
 
 ---
 
+## Recompense de course
+
+Une seule fonction, `environments/beamng_reward.compute_race_reward`, utilisee par les
+trois environnements (solo, multi, course) — une politique est donc recompensee pour le
+meme comportement partout.
+
+| Terme | Role |
+|---|---|
+| progression vers le waypoint (`x3`) | signal dense, telescopique |
+| vitesse projetee sur la direction cible (`x3`) | rouler vers la cible |
+| **penalite par pas** | c'est ce qui fait qu'un tour *rapide* bat un tour propre mais lent |
+| bonus de checkpoint **plat** + bonus de temps de segment | atteindre *chaque* checkpoint plus tot |
+| bonus d'arrivee + budget de pas restant | le plus fort signal "va vite" |
+| penalite de degats (adoucie), fin sur `MAX_DAMAGE` | le contact est tarife, pas fatal |
+| penalite de proximite LiDAR, hors-piste gradue | rester sur la route |
+| **terme d'ecart** (course seulement) | `GAP_COEF x (metres gagnes sur le rival)` |
+
+Le terme d'ecart est telescopique : sa somme sur un episode vaut
+`GAP_COEF x l'ecart final`, donc attaquer et defendre rapportent autant, et il est
+impossible de le farmer en oscillant a cote du rival. Il ne s'active que si la
+progression du rival est fournie ; en solo il ne contribue rien.
+
+> Le bonus de checkpoint est volontairement **plat**. L'ancienne version payait
+> `100 x waypoint_idx`, ce qui rendait la recompense de fin de trace un ordre de
+> grandeur plus grande que celle du debut *pour une conduite identique* — de quoi
+> destabiliser la fonction de valeur.
+
+---
+
 ## Benchmarks
+
+> Retire du menu (voir [Utilisation](#utilisation)) ; le code reste importable.
 
 La suite de benchmarks est **agnostique** : chaque benchmark tourne sur
 n'importe quel couple algorithme + environnement enregistre. Trois principes
@@ -329,7 +403,7 @@ Le projet utilise GitHub Actions pour l'integration continue (`.github/workflows
 Le pipeline se declenche sur chaque push/PR vers `main` ou `romain_test` et execute :
 
 1. **Lint & Format** - `ruff check .` + `ruff format --check .`
-2. **Test** - Smoke tests (imports, registry, entrainement Q-Learning sur Taxi)
+2. **Test** - Smoke tests (imports, registry, entrainement DQN sur un env jouet)
 
 ---
 
@@ -339,7 +413,7 @@ Les waypoints, spawn position et spawn rotation sont desormais generes
 automatiquement pour chaque map a partir du reseau routier (DecalRoads)
 de BeamNG.
 
-- Pre-calcul depuis l'app OpenTUI : `Generate trajectories (BeamNG)`
+- Generes automatiquement au premier lancement sur une map (`load_or_generate`)
 - Cache sur disque : `outputs/trajectories/<map>.json`
 - Pour regenerer : supprimer le fichier JSON ou relancer l'option avec `Overwrite`
 - Pour les maps sans routes (`smallgrid`), une boucle carree de 80 m sert de fallback
@@ -365,17 +439,33 @@ le JSON a la main ou utilisez la procedure decrite dans `scenario_creator.md`.
 
 ## Algorithmes disponibles
 
-| Algorithme   | Description                              | Environnements compatibles |
-| ------------ | ---------------------------------------- | -------------------------- |
-| `q_learning` | Q-Learning tabulaire                     | Taxi-v3                    |
-| `dqn`        | Double DQN + Dueling (PyTorch, CUDA)     | Taxi-v3, BeamNG            |
-| `dqn_per`    | DQN avec Prioritized Experience Replay   | Taxi-v3, BeamNG            |
-| `ddpg`       | DDPG (actions continues)                 | BeamNG                     |
-| `td3`        | TD3 (actions continues)                  | BeamNG                     |
+| Algorithme | Description                            | Axe `output` derive          |
+| ---------- | -------------------------------------- | ---------------------------- |
+| `dqn`      | Double DQN + Dueling (PyTorch, CUDA)   | `fixed` — table de 7 actions |
+| `dqn_per`  | DQN avec Prioritized Experience Replay | `fixed` — table de 7 actions |
+| `ddpg`     | DDPG                                   | `continuous` — 3 sorties     |
+| `td3`      | TD3                                    | `continuous` — 3 sorties     |
 
-## Environnements disponibles
+## Environnement et axes
 
-| Environnement | Description                                           | Type d'etat |
-| ------------- | ----------------------------------------------------- | ----------- |
-| `taxi`        | Gymnasium Taxi-v3 (500 etats discrets)                | Discret     |
-| `beamng`      | BeamNG.drive conduite autonome (5 features continues) | Continu     |
+Un seul environnement enregistre, `beamng`, parametre par les deux axes. Les longueurs
+d'observation sont inchangees par rapport aux anciennes classes par-capteur :
+
+| `sensor`    | Bloc de perception              | `n_states` (sans option) |
+| ----------- | ------------------------------- | ------------------------ |
+| `lidar`     | 8 bins de distance (une rangee) | 14                       |
+| `adv_lidar` | grille 4 x 8 (elevation x azimut) | 38                     |
+| `camera`    | dashcam 16 x 16 en niveaux de gris | 262                   |
+
+```
+kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | [edgeL, edgeR]?
+```
+
+Les tailles viennent toutes de `environments/beamng_spec.py` (`obs_size`,
+`action_size`, `output_for_algo`) — une seule source de verite, au lieu des trois
+copies de la meme arithmetique qui existaient avant.
+
+`adv_lidar` echange de la resolution verticale contre un champ de vision plus etroit :
+ses 4 rangees couvrent ainsi des elevations utiles au lieu de surtout du ciel et
+surtout du bitume, ce qui permet a la politique de distinguer un mur (remplit toutes
+les rangees) d'un obstacle bas (rangee du bas seulement).

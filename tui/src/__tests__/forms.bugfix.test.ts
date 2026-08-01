@@ -1,7 +1,7 @@
 // Regression coverage for three reported TUI bugs:
 //   1. beamng option rows overlapping (long labels / values word-wrapped in a
 //      height-1 row, so the 2nd line painted over the next row).
-//   2. the train/evaluate save path not following the selected algorithm/env.
+//   2. the train save path not following the selected algorithm/sensor.
 //   3. multi-agent training offering no per-vehicle algorithm selection.
 // Driven through a real OpenTUI test renderer so the layout bug is caught by
 // inspecting the actual rendered frame.
@@ -20,31 +20,14 @@ import { makeWelcomeSyntax } from "../welcome.ts";
 
 const catalog: Catalog = {
   algorithms: [
-    { name: "q_learning", default_config: { learning_rate: 0.85, discount_factor: 0.99 }, compatible_envs: ["taxi"] },
-    {
-      name: "dqn",
-      default_config: { lr: 0.001, gamma: 0.99, target_update_freq: 100 },
-      compatible_envs: ["taxi", "beamng_lidar", "beamng_continuous_predicted"],
-    },
-    { name: "ddpg", default_config: { lr: 0.0005, gamma: 0.99 }, compatible_envs: ["beamng_continuous", "beamng_continuous_predicted"] },
+    { name: "dqn", default_config: { lr: 0.001, gamma: 0.99, target_update_freq: 100 }, compatible_envs: ["beamng"] },
+    { name: "ddpg", default_config: { actor_lr: 0.0005, gamma: 0.99 }, compatible_envs: ["beamng"] },
   ],
-  environments: [
-    { name: "taxi", metadata: {} },
-    { name: "beamng_lidar", metadata: {} },
-    { name: "beamng_continuous", metadata: {} },
-    { name: "beamng_continuous_predicted", metadata: {} },
-  ],
-  compatible_envs: {
-    q_learning: ["taxi"],
-    dqn: ["taxi", "beamng_lidar", "beamng_continuous_predicted"],
-    ddpg: ["beamng_continuous", "beamng_continuous_predicted"],
-  },
+  environments: [{ name: "beamng", metadata: {} }],
+  compatible_envs: { dqn: ["beamng"], ddpg: ["beamng"] },
   benchmarks: ["convergence", "comparison", "gridsearch"],
   beamng_maps: ["gridmap_v2", "italy"],
-  beamng_vehicles: [
-    { id: "taxi", label: "Burnside (Taxi)" },
-    { id: "gavril_t_series", label: "Gavril T-Series" },
-  ],
+  beamng_sensors: ["lidar", "adv_lidar", "camera"],
   multi_algos: ["dqn", "ddpg"],
 };
 
@@ -58,7 +41,7 @@ async function makeCtx(width = 120, height = 44): Promise<{ ctx: Ctx; setup: Awa
     state: createState(),
     algoNames: catalog.algorithms.map((a) => a.name),
     benchNames: catalog.benchmarks,
-    vehicleIds: catalog.beamng_vehicles.map((v) => v.id),
+    sensors: catalog.beamng_sensors,
     readme: "# RL Pipeline\n",
     welcomeSyntax: makeWelcomeSyntax(),
     onChoiceChanged: (f) => onChoiceChanged(ctx, f),
@@ -79,11 +62,6 @@ describe("bug 1: beamng option rows must not wrap/overlap", () => {
   test("long option labels each render intact on a single line", async () => {
     const { ctx, setup } = await makeCtx();
     openWorkflow(ctx, "train");
-    focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // q_learning -> dqn (rebuilds; dqn has beamng envs)
-    focusKey(ctx, "env_name");
-    cycleChoice(ctx, 1); // taxi -> beamng_lidar (rebuilds with the beamng fields)
-    expect(fieldVal(ctx, "env_name")).toBe("beamng_lidar");
 
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
@@ -92,51 +70,55 @@ describe("bug 1: beamng option rows must not wrap/overlap", () => {
     // on separate lines, so the contiguous string never appears in the frame.
     expect(frame).toContain("Checkpoint hints");
     expect(frame).toContain("Body orientation");
+    expect(frame).toContain("Warm-up episodes");
   });
 
-  test("a long environment value renders intact (not split across lines)", async () => {
+  test("a long derived save path renders intact (not split across lines)", async () => {
     const { ctx, setup } = await makeCtx();
     openWorkflow(ctx, "train");
-    focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // -> dqn
-    focusKey(ctx, "env_name");
-    cycleChoice(ctx, 2); // taxi -> ... -> beamng_continuous_predicted
-    expect(fieldVal(ctx, "env_name")).toBe("beamng_continuous_predicted");
+    focusKey(ctx, "sensor");
+    cycleChoice(ctx, 1); // lidar -> adv_lidar
+    setInput(ctx, "trajectory_hints", "3");
+    refreshDerivedPaths(ctx);
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_adv_lidar_h3.pth");
 
     await setup.renderOnce();
-    const frame = setup.captureCharFrame();
-    expect(frame).toContain("beamng_continuous_predicted");
+    expect(setup.captureCharFrame()).toContain("outputs/dqn_adv_lidar_h3.pth");
   });
 });
 
-describe("bug 2: save path follows the selected algorithm/env", () => {
+describe("bug 2: save path follows the selected algorithm/sensor", () => {
   test("changing the algorithm updates the default save path", async () => {
     const { ctx } = await makeCtx();
-    openWorkflow(ctx, "train"); // default q_learning / taxi
-    expect(fieldVal(ctx, "save_path")).toBe("outputs/q_learning_taxi.pth");
+    openWorkflow(ctx, "train"); // default dqn / lidar
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_lidar.pth");
 
     focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // q_learning -> dqn
-    expect(fieldVal(ctx, "algo_name")).toBe("dqn");
-    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_taxi.pth");
+    cycleChoice(ctx, 1); // dqn -> ddpg
+    expect(fieldVal(ctx, "algo_name")).toBe("ddpg");
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/ddpg_lidar.pth");
   });
 
-  test("changing the environment updates the default save path", async () => {
+  test("changing the sensor updates the default save path", async () => {
     const { ctx } = await makeCtx();
     openWorkflow(ctx, "train");
-    focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // -> dqn (envs: taxi, beamng_lidar, ...)
-    focusKey(ctx, "env_name");
-    cycleChoice(ctx, 1); // taxi -> beamng_lidar
-    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_beamng_lidar.pth");
+    focusKey(ctx, "sensor");
+    cycleChoice(ctx, 1); // lidar -> adv_lidar
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_adv_lidar.pth");
+    cycleChoice(ctx, 1); // adv_lidar -> camera
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_camera.pth");
   });
 
-  test("evaluate model path also follows the algorithm", async () => {
+  test("each course racer's checkpoint path follows its own selection", async () => {
     const { ctx } = await makeCtx();
-    openWorkflow(ctx, "evaluate");
-    focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // q_learning -> dqn
-    expect(fieldVal(ctx, "model_path")).toBe("outputs/dqn_taxi.pth");
+    openWorkflow(ctx, "course");
+    expect(fieldVal(ctx, "r1_model_path")).toBe("outputs/dqn_lidar.pth");
+
+    focusKey(ctx, "r2_sensor");
+    cycleChoice(ctx, 2); // lidar -> camera
+    expect(fieldVal(ctx, "r2_model_path")).toBe("outputs/ddpg_camera.pth");
+    // Racer 1 must be untouched by racer 2's change.
+    expect(fieldVal(ctx, "r1_model_path")).toBe("outputs/dqn_lidar.pth");
   });
 });
 
@@ -147,12 +129,14 @@ describe("bug 3: multi-agent training can select a per-vehicle algorithm", () =>
     ctx.state.multiSpecs = [];
   });
 
-  test("the form exposes an algorithm + environment + vehicle choice", () => {
+  test("the form exposes an algorithm + sensor choice (and no vehicle)", () => {
     openWorkflow(ctx, "multi_train");
     const keys = ctx.state.fields.map((f) => f.key);
     expect(keys).toContain("multi_algo");
-    expect(keys).toContain("multi_env");
-    expect(keys).toContain("multi_vehicle");
+    expect(keys).toContain("multi_sensor");
+    // The env name is gone (one env), and so is the vehicle (one car).
+    expect(keys).not.toContain("multi_env");
+    expect(keys).not.toContain("multi_vehicle");
   });
 
   test("the algorithm choice offers the catalog's multi_algos", () => {
@@ -161,22 +145,26 @@ describe("bug 3: multi-agent training can select a per-vehicle algorithm", () =>
     expect(algo.options).toEqual(["dqn", "ddpg"]);
   });
 
-  test("changing the algorithm constrains the environment list to its beamng envs", () => {
+  test("the sensor choice offers the full perception axis for any algorithm", () => {
     openWorkflow(ctx, "multi_train");
     focusKey(ctx, "multi_algo");
     cycleChoice(ctx, 1); // dqn -> ddpg
-    const env = ctx.state.fields.find((f) => f.key === "multi_env")!;
-    expect(env.options).toEqual(["beamng_continuous", "beamng_continuous_predicted"]);
+    const sensor = ctx.state.fields.find((f) => f.key === "multi_sensor")!;
+    // Every sensor works with every algorithm now; only the action head differs,
+    // and that is derived rather than chosen.
+    expect(sensor.options).toEqual(["lidar", "adv_lidar", "camera"]);
   });
 
-  test("Add vehicle snapshots the currently selected algorithm into the spec list", () => {
+  test("Add vehicle snapshots the currently selected algorithm + sensor", () => {
     openWorkflow(ctx, "multi_train");
     focusKey(ctx, "multi_algo");
     cycleChoice(ctx, 1); // dqn -> ddpg
+    focusKey(ctx, "multi_sensor");
+    cycleChoice(ctx, 1); // lidar -> adv_lidar
     ctx.state.fields.find((f) => f.key === "add")!.onAction!();
     expect(ctx.state.multiSpecs.length).toBe(1);
     expect(ctx.state.multiSpecs[0].algo).toBe("ddpg");
-    expect(ctx.state.multiSpecs[0].env).toBe("beamng_continuous");
+    expect(ctx.state.multiSpecs[0].sensor).toBe("adv_lidar");
   });
 
   test("the form exposes per-vehicle beamng options and snapshots them", () => {
@@ -201,10 +189,6 @@ describe("wheel_terrain is removed from the beamng menus (it freezes training)",
   test("the train form offers no wheel_terrain choice", async () => {
     const { ctx } = await makeCtx();
     openWorkflow(ctx, "train");
-    focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // -> dqn
-    focusKey(ctx, "env_name");
-    cycleChoice(ctx, 1); // -> beamng_lidar (beamng options present)
     const keys = ctx.state.fields.map((f) => f.key);
     expect(keys).toContain("body_orientation"); // sanity: beamng options are present
     expect(keys).not.toContain("wheel_terrain");
@@ -215,26 +199,18 @@ describe("save path encodes the beamng options (checkpoint hints, body orientati
   test("toggling body orientation appends _ori to the save path", async () => {
     const { ctx } = await makeCtx();
     openWorkflow(ctx, "train");
-    focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // -> dqn
-    focusKey(ctx, "env_name");
-    cycleChoice(ctx, 1); // -> beamng_lidar
-    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_beamng_lidar.pth");
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_lidar.pth");
     focusKey(ctx, "body_orientation");
     cycleChoice(ctx, 1); // false -> true
-    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_beamng_lidar_ori.pth");
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_lidar_ori.pth");
   });
 
   test("checkpoint hints append _h<n> to the save path", async () => {
     const { ctx } = await makeCtx();
     openWorkflow(ctx, "train");
-    focusKey(ctx, "algo_name");
-    cycleChoice(ctx, 1); // -> dqn
-    focusKey(ctx, "env_name");
-    cycleChoice(ctx, 1); // -> beamng_lidar
     setInput(ctx, "trajectory_hints", "3");
     refreshDerivedPaths(ctx); // INPUT event handler does this at runtime
-    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_beamng_lidar_h3.pth");
+    expect(fieldVal(ctx, "save_path")).toBe("outputs/dqn_lidar_h3.pth");
   });
 });
 

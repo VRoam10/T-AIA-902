@@ -1,23 +1,15 @@
-"""Register all algorithms with the pipeline registry."""
+"""Register all algorithms with the pipeline registry.
+
+Every algorithm runs on the one ``beamng`` env; which action head it gets is
+derived from its name by ``beamng_spec.output_for_algo`` (dqn/dqn_per -> the
+discrete action table, ddpg/td3 -> continuous controls), so ``compatible_envs``
+no longer varies between them.
+"""
 
 from algorithms.ddpg import DDPGAgent
 from algorithms.dqn import DQNAgent
-from algorithms.q_learning import QLearningAgent
 from algorithms.td3 import TD3Agent
 from core.registry import registry
-
-registry.register_algorithm(
-    "q_learning",
-    QLearningAgent,
-    default_config={
-        "learning_rate": 0.85,
-        "discount_factor": 0.99,
-        "epsilon": 1.0,
-        "epsilon_min": 0.01,
-        "epsilon_decay": 0.9975,
-    },
-    compatible_envs=["taxi"],
-)
 
 registry.register_algorithm(
     "ddpg",
@@ -37,7 +29,7 @@ registry.register_algorithm(
         "warmup_steps": 128,
         "updates_per_step": 4,
     },
-    compatible_envs=None,
+    compatible_envs=["beamng"],
 )
 
 registry.register_algorithm(
@@ -55,7 +47,7 @@ registry.register_algorithm(
         "hidden": 128,
         "use_per": False,
     },
-    compatible_envs=["taxi", "beamng", "beamng_lidar", "beamng_predicted"],
+    compatible_envs=["beamng"],
 )
 
 registry.register_algorithm(
@@ -76,11 +68,7 @@ registry.register_algorithm(
         "per_beta": 0.4,
         "per_beta_steps": 50_000,
     },
-    compatible_envs=[
-        "taxi",
-        "beamng",
-        "beamng_lidar",
-    ],
+    compatible_envs=["beamng"],
 )
 
 registry.register_algorithm(
@@ -105,5 +93,5 @@ registry.register_algorithm(
         "warmup_steps": 1000,
         "device": "auto",
     },
-    compatible_envs=None,
+    compatible_envs=["beamng"],
 )

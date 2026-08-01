@@ -16,13 +16,16 @@ import threading
 from core.pipeline_actions import (
     BeamNGOptions,
     BenchmarkRequest,
+    CourseRequest,
     EvaluateRequest,
     HumanPlayRequest,
     MultiTrainRequest,
+    RacerSpec,
     TrainRequest,
     TrajectoryRequest,
     catalog,
     run_benchmark,
+    run_course,
     run_evaluate,
     run_human_play,
     run_multi_train,
@@ -30,6 +33,7 @@ from core.pipeline_actions import (
     run_trajectory,
 )
 from core.stop_signal import request_stop
+from environments import beamng_spec
 
 RESULT_PREFIX = "[TUI_RESULT] "
 ERROR_PREFIX = "[TUI_ERROR] "
@@ -94,9 +98,9 @@ def _cmd_benchmark(payload: dict) -> None:
 def _cmd_human_play(payload: dict) -> None:
     req = HumanPlayRequest(
         map_name=payload["map_name"],
-        vehicle_id=payload["vehicle_id"],
-        sensor=payload.get("sensor", "None"),
+        sensor=payload.get("sensor", beamng_spec.DEFAULT_SENSOR),
         random_path=payload.get("random_path", False),
+        track=payload.get("track", ""),
     )
     run_human_play(req)
     _emit_result({"status": "stopped"})
@@ -118,8 +122,22 @@ def _cmd_multi_train(payload: dict) -> None:
         n_episodes=payload["n_episodes"],
         time_limit_minutes=payload.get("time_limit_minutes", 0.0),
         reset_existing=payload.get("reset_existing", False),
+        track=payload.get("track", ""),
     )
     _emit_result(run_multi_train(req))
+
+
+def _cmd_course(payload: dict) -> None:
+    req = CourseRequest(
+        map_name=payload["map_name"],
+        racers=[RacerSpec(**raw) for raw in payload["racers"]],
+        laps=payload.get("laps", 1),
+        races=payload.get("races", 1),
+        learning=payload.get("learning", False),
+        path_idx=payload.get("path_idx", 0),
+        track=payload.get("track", ""),
+    )
+    _emit_result(run_course(req))
 
 
 _COMMANDS = {
@@ -129,6 +147,7 @@ _COMMANDS = {
     "human-play": _cmd_human_play,
     "trajectory": _cmd_trajectory,
     "multi-train": _cmd_multi_train,
+    "course": _cmd_course,
 }
 
 

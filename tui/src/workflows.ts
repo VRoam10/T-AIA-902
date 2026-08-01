@@ -3,26 +3,24 @@
 
 import type { Catalog } from "./backend.ts";
 
-export type WorkflowId =
-  | "train"
-  | "evaluate"
-  | "benchmark"
-  | "human_play"
-  | "trajectory"
-  | "multi_train"
-  | "quit";
+export type WorkflowId = "train" | "multi_train" | "human_play" | "course" | "trajectory" | "quit";
 
 export const MAIN_MENU_OPTIONS: { id: WorkflowId; label: string }[] = [
   { id: "train", label: "Train an agent" },
-  { id: "evaluate", label: "Evaluate an agent" },
-  { id: "benchmark", label: "Run a benchmark" },
-  { id: "human_play", label: "Human play (BeamNG)" },
-  { id: "trajectory", label: "Generate trajectories (BeamNG)" },
-  { id: "multi_train", label: "Multi-agent training (BeamNG)" },
+  { id: "multi_train", label: "Multi-agent training" },
+  { id: "human_play", label: "Human play" },
+  { id: "course", label: "Course mode (race)" },
+  { id: "trajectory", label: "Generate trajectories" },
   { id: "quit", label: "Quit" },
 ];
 
-export const BEAMNG_MAPS = ["gridmap_v2", "italy", "west_coast_usa"] as const;
+export const BEAMNG_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "east_coast_usa"] as const;
+
+// The perception axis. The output axis is NOT offered: the algorithm determines it
+// (dqn/dqn_per drive the discrete action table, ddpg/td3 drive continuous controls),
+// so a second field could only ever disagree with the first.
+export const BEAMNG_SENSORS = ["lidar", "adv_lidar", "camera"] as const;
+export type BeamNGSensor = (typeof BEAMNG_SENSORS)[number];
 
 export const MULTI_COLORS = [
   "Yellow",
@@ -34,27 +32,62 @@ export const MULTI_COLORS = [
   "Black",
 ] as const;
 
+// Two entrants, so two distinct liveries. One car model for everyone — only the
+// paint differs, so a race result reflects the policies and not the machinery.
+export const RACE_COLORS = ["Red", "Blue"] as const;
+
+export type CourseOpponent = "algo" | "human";
+
+// What a run drives: the road-network paths built by "Generate trajectories", or
+// one of the game's own race tracks. The two track kinds are the game's own
+// distinction — a sprint runs point to point, a lap returns to its start.
+export const TRACK_KINDS = ["generated", "sprint", "lap"] as const;
+export type TrackKind = (typeof TRACK_KINDS)[number];
+
 export interface BeamNGFields {
   map_name: string;
-  vehicle_id: string;
+  sensor: string;
   trajectory_hints: number;
   body_orientation: boolean;
   wheel_terrain: boolean;
   random_path?: boolean;
   dense_episodes?: number;
+  // A game-track key, or "" for the generated paths.
+  track?: string;
 }
 
 export const BEAMNG_DEFAULTS: BeamNGFields = {
   map_name: "gridmap_v2",
-  vehicle_id: "taxi",
+  sensor: "lidar",
   trajectory_hints: 0,
   body_orientation: false,
   wheel_terrain: false,
+  track: "",
 };
+
+/** Game-track keys for a map, filtered to one kind, longest first. */
+export function tracksFor(catalog: Catalog, mapName: string, kind: TrackKind): string[] {
+  if (kind === "generated") return [];
+  return (catalog.beamng_tracks?.[mapName] ?? [])
+    .filter((t) => t.kind === kind)
+    .map((t) => t.key);
+}
+
+/** The track a form's two fields resolve to: "" for generated paths. */
+export function resolveTrack(
+  catalog: Catalog,
+  mapName: string,
+  kind: string,
+  selected: string,
+): string {
+  if (kind === "generated") return "";
+  const keys = tracksFor(catalog, mapName, kind as TrackKind);
+  // Guard against a stale selection: the map may have changed under the field.
+  return keys.includes(selected) ? selected : (keys[0] ?? "");
+}
 
 export interface TrainState {
   algo_name: string;
-  env_name: string;
   n_episodes: number;
   save_path?: string;
   agent_params: Record<string, number>;
@@ -62,35 +95,15 @@ export interface TrainState {
   checkpoint_policy: "resume" | "reset";
 }
 
-export interface EvaluateState {
-  algo_name: string;
-  env_name: string;
-  model_path?: string;
-  n_episodes: number;
-  beamng?: BeamNGFields;
-}
-
-export interface BenchmarkState {
-  benchmark_name: string;
-  seeds: number[];
-  eval_episodes: number;
-  success_threshold: number;
-  max_episodes: number;
-  reward_threshold?: number;
-  algo_name?: string;
-  env_name?: string;
-  algos?: string[];
-  param_grid?: Record<string, unknown[]>;
-  beamng?: BeamNGFields;
-}
-
 export interface HumanPlayState {
   map_name: string;
-  vehicle_id: string;
   sensor: string;
   random_path: boolean;
+  track?: string;
 }
 
+// Trajectory generation is a per-map probe, so the only inputs are which map (or
+// "all", expanded by the form) and whether an existing cache is replaced.
 export interface TrajectoryState {
   map_name: string;
   overwrite: boolean;
@@ -98,8 +111,7 @@ export interface TrajectoryState {
 
 export interface MultiSpecState {
   algo: string;
-  env: string;
-  vehicle_id: string;
+  sensor: string;
   color: string;
   save_path: string;
   trajectory_hints: number;
@@ -114,6 +126,27 @@ export interface MultiTrainState {
   time_limit_minutes: number;
   specs: MultiSpecState[];
   checkpoint_policy: "resume" | "reset";
+  track?: string;
+}
+
+export interface RacerState {
+  algo: string;
+  sensor: string;
+  model_path: string;
+  color: string;
+  trajectory_hints: number;
+  body_orientation: boolean;
+  human?: boolean;
+}
+
+export interface CourseState {
+  map_name: string;
+  opponent: CourseOpponent;
+  laps: number;
+  races: number;
+  learning: boolean;
+  racers: RacerState[];
+  track?: string;
 }
 
 // Encode the beamng options that change what a checkpoint represents into the
@@ -127,91 +160,36 @@ export function beamngPathSuffix(beamng?: { trajectory_hints: number; body_orien
   return suffix;
 }
 
+// The sensor replaces the env name in checkpoint paths: it is what determines the
+// observation width, so two sensors must never share a file.
 export function trainSavePath(
   algoName: string,
-  envName: string,
+  sensor: string,
   beamng?: { trajectory_hints: number; body_orientation: boolean },
 ): string {
-  return `outputs/${algoName}_${envName}${beamngPathSuffix(beamng)}.pth`;
+  return `outputs/${algoName}_${sensor}${beamngPathSuffix(beamng)}.pth`;
 }
 
 export function buildTrainPayload(_catalog: Catalog, state: TrainState): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
+  const beamng = { ...BEAMNG_DEFAULTS, random_path: false, ...state.beamng };
+  return {
     algo_name: state.algo_name,
-    env_name: state.env_name,
+    // One registered environment now; the sensor/output axes live in the options.
+    env_name: "beamng",
     n_episodes: state.n_episodes,
-    save_path: state.save_path ?? trainSavePath(state.algo_name, state.env_name, state.beamng),
+    save_path: state.save_path ?? trainSavePath(state.algo_name, beamng.sensor, beamng),
     agent_params: state.agent_params,
     reset_existing: state.checkpoint_policy === "reset",
+    beamng,
   };
-  if (state.env_name.startsWith("beamng")) {
-    payload.beamng = { ...BEAMNG_DEFAULTS, random_path: false, ...state.beamng };
-  }
-  return payload;
-}
-
-export function buildEvaluatePayload(
-  _catalog: Catalog,
-  state: EvaluateState,
-): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    algo_name: state.algo_name,
-    env_name: state.env_name,
-    model_path: state.model_path ?? trainSavePath(state.algo_name, state.env_name, state.beamng),
-    n_episodes: state.n_episodes,
-  };
-  if (state.env_name.startsWith("beamng")) {
-    // Evaluation has no random_path field.
-    const { map_name, vehicle_id, trajectory_hints, body_orientation, wheel_terrain } = {
-      ...BEAMNG_DEFAULTS,
-      ...state.beamng,
-    };
-    payload.beamng = { map_name, vehicle_id, trajectory_hints, body_orientation, wheel_terrain };
-  }
-  return payload;
-}
-
-export function buildBenchmarkPayload(
-  _catalog: Catalog,
-  state: BenchmarkState,
-): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    benchmark_name: state.benchmark_name,
-    seeds: state.seeds,
-    eval_episodes: state.eval_episodes,
-    success_threshold: state.success_threshold,
-    max_episodes: state.max_episodes,
-  };
-  if (state.benchmark_name === "comparison") {
-    payload.algos = state.algos;
-    payload.env_name = state.env_name;
-  } else if (state.benchmark_name === "gridsearch") {
-    payload.algo_name = state.algo_name;
-    payload.env_name = state.env_name;
-    payload.param_grid = state.param_grid;
-  } else {
-    payload.algo_name = state.algo_name;
-    payload.env_name = state.env_name;
-    payload.reward_threshold = state.reward_threshold ?? 7.0;
-  }
-  if (state.env_name?.startsWith("beamng")) {
-    // Benchmarks share one env factory between training and greedy evaluation,
-    // so the training-only options (random_path, dense warm-up) are not sent.
-    const { map_name, vehicle_id, trajectory_hints, body_orientation, wheel_terrain } = {
-      ...BEAMNG_DEFAULTS,
-      ...state.beamng,
-    };
-    payload.beamng = { map_name, vehicle_id, trajectory_hints, body_orientation, wheel_terrain };
-  }
-  return payload;
 }
 
 export function buildHumanPlayPayload(state: HumanPlayState): Record<string, unknown> {
   return {
     map_name: state.map_name,
-    vehicle_id: state.vehicle_id,
     sensor: state.sensor,
     random_path: state.random_path,
+    track: state.track ?? "",
   };
 }
 
@@ -230,5 +208,33 @@ export function buildMultiTrainPayload(
     time_limit_minutes: state.time_limit_minutes,
     reset_existing: state.checkpoint_policy === "reset",
     specs: state.specs,
+    track: state.track ?? "",
+  };
+}
+
+export function buildCoursePayload(state: CourseState): Record<string, unknown> {
+  // A human opponent replaces racer 2 entirely: the player needs no algorithm,
+  // checkpoint or sensor, so only the livery carries over.
+  const racers: Record<string, unknown>[] = state.racers.map((r, i) => {
+    if (state.opponent === "human" && i === 1) {
+      return { human: true, color: r.color };
+    }
+    return {
+      algo: r.algo,
+      sensor: r.sensor,
+      model_path: r.model_path || trainSavePath(r.algo, r.sensor, r),
+      color: r.color,
+      trajectory_hints: r.trajectory_hints,
+      body_orientation: r.body_orientation,
+    };
+  });
+
+  return {
+    map_name: state.map_name,
+    laps: state.laps,
+    races: state.races,
+    learning: state.learning,
+    racers,
+    track: state.track ?? "",
   };
 }

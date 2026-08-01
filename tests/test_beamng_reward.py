@@ -9,6 +9,7 @@ the perception block — not the 6th kin entry, hints, or extras.
 import numpy as np
 import pytest
 
+import environments.beamng_reward as reward_mod
 from environments.beamng import BeamNGDrivingEnv
 from environments.beamng_multi import BeamNGMultiEnv, VehicleSlot
 
@@ -19,7 +20,6 @@ def _single_env():
     env.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
     env._last_dist = 50.0
     env._current_dist = 50.0
-    env._checkpoint_dist = 50.0
     return env
 
 
@@ -32,9 +32,10 @@ def _base_obs(n, *, speed=0.5, dist_norm=1.0):
     return obs
 
 
-# With speed=0.5, alignment=1 and zero progress/damage, the only term left is
-# the speed-alignment reward: 0.5 * 1.0 * SPEED_ALIGN_COEF = 1.5.
-CLEAN_REWARD = 1.5
+# With speed=0.5, alignment=1 and zero progress/damage, the terms left are the
+# speed-alignment reward (0.5 * 1.0 * SPEED_ALIGN_COEF = 1.5) minus the per-step
+# time penalty.
+CLEAN_REWARD = 1.5 - reward_mod.STEP_PENALTY
 
 
 class TestSingleEnvRewardSlicing:
@@ -61,17 +62,13 @@ def _multi_slot(n_states):
     return VehicleSlot(
         name="ego_0",
         color="Red",
-        vehicle_id="taxi",
         agent=_FakeAgent(),
-        reward_mode="default",
-        action_space="discrete",
         save_path="outputs/dqn.pth",
-        perception="lidar",
+        sensor="lidar",
         n_states=n_states,
         waypoints=[(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)],
         last_dist=50.0,
         current_dist=50.0,
-        checkpoint_dist=50.0,
     )
 
 

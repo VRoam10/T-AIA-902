@@ -1,13 +1,13 @@
 // Backend run lifecycle: spinner, progress, and the stdout/stderr/exit handling
-// for a running Python job. Also drives the multi-map trajectory sequence.
+// for a running Python job.
 
 import { runBackend, type BackendCommand, type BackendEvent } from "./backend.ts";
 import { VALUE_WIDTH, type Ctx } from "./context.ts";
 import { parseProgress, progressBar } from "./progress.ts";
 import { COLOR, GLYPH, SPINNER } from "./theme.ts";
-import { buildTrajectoryPayload, type TrajectoryState } from "./workflows.ts";
 import { focusField } from "./form.ts";
 import { appendLog, setBadge, setProgress, setStatus } from "./status.ts";
+import { buildTrajectoryPayload, type TrajectoryState } from "./workflows.ts";
 
 export function stopSpinner(ctx: Ctx): void {
   if (ctx.state.spinnerTimer) {
@@ -30,10 +30,10 @@ function tickSpinner(ctx: Ctx): void {
 
 export function beginRun(ctx: Ctx, label: string): void {
   const { state } = ctx;
-  state.trajectoryCancelled = false;
   state.runState = "running";
   state.runLabel = label;
   state.lastPercent = -1;
+  state.trajectoryCancelled = false;
   ctx.scene.formPanel.borderColor = COLOR.running;
   appendLog(ctx, `\n── ${label} ──`);
   appendLog(ctx, `${GLYPH.dot} press Esc, s, or Ctrl+C to stop this run`);
@@ -156,6 +156,10 @@ export function onBackendEvent(ctx: Ctx, ev: BackendEvent, label: string): void 
   ctx.renderer.requestRender();
 }
 
+// Generate trajectories for `maps` one after another, each in its own backend
+// process (a run loads exactly one map). Recurses on the exit event rather than
+// ending the run, so "all" walks every map back-to-back under a single logical
+// run; a cancel mid-sequence stops instead of advancing.
 export function runTrajectorySequence(
   ctx: Ctx,
   maps: string[],
@@ -191,3 +195,4 @@ export function runTrajectorySequence(
     runTrajectorySequence(ctx, maps, overwrite, index + 1);
   });
 }
+

@@ -111,7 +111,7 @@ export interface Ctx {
   // Catalog-derived, computed once.
   algoNames: string[];
   benchNames: string[];
-  vehicleIds: string[];
+  sensors: string[];
   // Welcome screen.
   readme: string;
   welcomeSyntax: SyntaxStyle;

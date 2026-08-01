@@ -21,16 +21,10 @@ from config import BEAMNG_HOME, BEAMNG_USER, HEADLESS
 from core.multi_runner import MultiAgentRunner
 from core.registry import registry
 from core.runner import PipelineRunner
+from environments import beamng_spec
 from environments.beamng_multi import BeamNGMultiEnv, build_slots, slot_n_states
 
-BEAMNG_MAPS: tuple[str, ...] = ("gridmap_v2", "italy", "west_coast_usa")
-
-BEAMNG_VEHICLES: dict[str, str] = {
-    "taxi": "Burnside (Taxi)",
-    "gavril_t_series": "Gavril T-Series",
-    "ibishu_pigeon": "Ibishu Pigeon",
-    "gavril_d_series": "Gavril D-Series",
-}
+BEAMNG_MAPS: tuple[str, ...] = beamng_spec.AVAILABLE_MAPS
 
 MULTI_ALGOS: tuple[str, ...] = ("dqn", "ddpg", "td3")
 
@@ -88,12 +82,15 @@ def trajectory_cache_path(
 @dataclass
 class BeamNGOptions:
     map_name: str = "gridmap_v2"
-    vehicle_id: str = "taxi"
+    sensor: str = beamng_spec.DEFAULT_SENSOR
     trajectory_hints: int = 0
     body_orientation: bool = False
     wheel_terrain: bool = False
     random_path: bool = False
     dense_episodes: int = 0
+    # One of the game's own race tracks (a core.quickrace key), or "" for the
+    # generated road-network paths.
+    track: str = ""
 
 
 @dataclass
@@ -134,9 +131,9 @@ class BenchmarkRequest:
 @dataclass
 class HumanPlayRequest:
     map_name: str
-    vehicle_id: str
-    sensor: str = "None"
+    sensor: str = beamng_spec.DEFAULT_SENSOR
     random_path: bool = False
+    track: str = ""
 
 
 @dataclass
@@ -153,6 +150,37 @@ class MultiTrainRequest:
     n_episodes: int
     time_limit_minutes: float = 0.0
     reset_existing: bool = False
+    track: str = ""
+
+
+@dataclass
+class RacerSpec:
+    """One entrant in a race.
+
+    A human entrant sets ``human=True`` and needs nothing else: the player drives,
+    so there is no algorithm, checkpoint, sensor or action head to configure.
+    """
+
+    algo: str = ""
+    sensor: str = beamng_spec.DEFAULT_SENSOR
+    model_path: str = ""
+    color: str = "White"
+    trajectory_hints: int = 0
+    body_orientation: bool = False
+    human: bool = False
+
+
+@dataclass
+class CourseRequest:
+    map_name: str
+    racers: list[RacerSpec]
+    laps: int = 1
+    races: int = 1
+    learning: bool = False
+    path_idx: int = 0
+    # One of the game's own race tracks (a core.quickrace key) to race on, or ""
+    # to race generated path `path_idx`.
+    track: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -189,9 +217,39 @@ def catalog() -> dict[str, object]:
         "compatible_envs": compatible,
         "benchmarks": registry.list_benchmarks(),
         "beamng_maps": list(BEAMNG_MAPS),
-        "beamng_vehicles": [{"id": k, "label": v} for k, v in BEAMNG_VEHICLES.items()],
+        "beamng_sensors": list(beamng_spec.SENSORS),
         "multi_algos": list(MULTI_ALGOS),
+        "beamng_tracks": beamng_tracks(),
     }
+
+
+def beamng_tracks() -> dict[str, list[dict[str, object]]]:
+    """The game's race tracks per map, for the TUI's track picker.
+
+    Read from the level archives, so this costs no simulator launch and works with
+    the game closed. Returns ``{map_name: [{key, kind, checkpoints, length_m}]}``,
+    longest track first. A map with no readable tracks maps to an empty list —
+    a missing or moved BeamNG install must not break the catalog, since every other
+    workflow still works without it.
+    """
+    from core import quickrace
+
+    out: dict[str, list[dict[str, object]]] = {}
+    for map_name in BEAMNG_MAPS:
+        try:
+            races = quickrace.load_all(map_name, BEAMNG_HOME)
+        except Exception:  # noqa: BLE001 — an unreadable level costs its tracks only
+            races = []
+        out[map_name] = [
+            {
+                "key": r.key,
+                "kind": r.kind,
+                "checkpoints": len(r.checkpoints),
+                "length_m": round(r.length_m()),
+            }
+            for r in races
+        ]
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -203,62 +261,65 @@ def build_agent(
     agent_params: dict[str, object] | None = None,
     beamng: BeamNGOptions | None = None,
 ):
-    """Instantiate an agent sized to the chosen env + BeamNG observation flags.
+    """Instantiate an agent sized to the chosen sensor, options and algorithm.
 
-    Mirrors the old ``_build_agent`` sizing: env metadata supplies the base
-    observation length, BeamNG flags add extra dims, and ``agent_params`` are
-    merged over the algorithm defaults.
+    Sizes come from :mod:`environments.beamng_spec` rather than registry metadata:
+    the observation length depends on the sensor plus the optional observation
+    flags, and the action count on the output axis the algorithm implies. Explicit
+    ``agent_params`` are merged over the algorithm defaults last.
     """
     algo_info = registry.get_algorithm(algo_name)
     env_metadata = registry.get_environment(env_name)["metadata"]
     cls = algo_info["class"]
     params = dict(algo_info["default_config"])
 
-    extra = _beamng_extra_dims(beamng) if beamng is not None else 0
-
-    params["n_states"] = env_metadata["n_states"] + extra
-    state_type = env_metadata.get("state_type", "continuous")
-    params["state_type"] = state_type
-    if state_type == "discrete":
-        # A discrete env fixes the action count, so it overrides any
-        # continuous-control default (e.g. TD3's n_actions=2).
-        params["n_actions"] = env_metadata.get("n_actions")
-    else:
-        params.setdefault("n_actions", env_metadata.get("n_actions"))
+    options = beamng or BeamNGOptions()
+    params["n_states"] = beamng_spec.obs_size(
+        options.sensor,
+        options.trajectory_hints,
+        options.body_orientation,
+        options.wheel_terrain,
+    )
+    params["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(algo_name))
+    params["state_type"] = env_metadata.get("state_type", "continuous")
 
     if agent_params:
         params.update(agent_params)
 
-    # Only agents whose constructor accepts ``state_type`` (the continuous-control
-    # agents, which switch to discrete one-hot / argmax mode for Taxi) receive it.
+    # Only the continuous-control agents accept ``state_type``; DQN does not.
     if "state_type" not in inspect.signature(cls).parameters:
         params.pop("state_type", None)
     return cls(**params)
 
 
-def _beamng_extra_dims(beamng: BeamNGOptions) -> int:
-    """Extra observation dims added by the optional BeamNG observation flags."""
-    return (
-        beamng.trajectory_hints * 2
-        + (2 if beamng.body_orientation else 0)
-        + (2 if beamng.wheel_terrain else 0)
-    )
+def _beamng_kwargs(
+    beamng: BeamNGOptions | None, algo_name: str | None = None, *, with_random_path: bool
+) -> dict:
+    """Env-factory kwargs for a BeamNG request.
 
-
-def _beamng_kwargs(beamng: BeamNGOptions | None, *, with_random_path: bool) -> dict:
+    ``output`` is derived from the algorithm, so the env's action head can never
+    disagree with the agent's. Pass ``algo_name=None`` to keep the factory default.
+    """
     if beamng is None:
         return {}
     kwargs = {
         "map_name": beamng.map_name,
-        "vehicle_id": beamng.vehicle_id,
+        "sensor": beamng.sensor,
         "trajectory_hints": beamng.trajectory_hints,
         "body_orientation": beamng.body_orientation,
         "wheel_terrain": beamng.wheel_terrain,
     }
+    if beamng.track:
+        # A chosen game track replaces the generated paths entirely, so
+        # random_path (which deals a random generated path per episode) has
+        # nothing to choose from and is left off.
+        kwargs["track"] = beamng.track
+    if algo_name is not None:
+        kwargs["output"] = beamng_spec.output_for_algo(algo_name)
     if with_random_path:
         # Training-only options: evaluation always runs sparse checkpoints so
         # the dense warm-up curriculum never leaks into eval metrics.
-        kwargs["random_path"] = beamng.random_path
+        kwargs["random_path"] = beamng.random_path and not beamng.track
         kwargs["dense_episodes"] = beamng.dense_episodes
     return kwargs
 
@@ -270,17 +331,19 @@ def run_train(request: TrainRequest) -> dict[str, object]:
     agent = build_agent(request.algo_name, request.env_name, request.agent_params, request.beamng)
 
     env_info = registry.get_environment(request.env_name)
-    beamng_kwargs = _beamng_kwargs(request.beamng, with_random_path=True)
-
-    # Continuous-action algorithms get their own reward mode.
-    if request.beamng is not None or request.env_name.startswith("beamng"):
-        reward_mode = request.algo_name if request.algo_name in ("ddpg", "td3") else "default"
-        env = env_info["factory"](reward_mode=reward_mode, **beamng_kwargs)
-    else:
-        env = env_info["factory"]()
+    env = env_info["factory"](
+        **_beamng_kwargs(
+            request.beamng or BeamNGOptions(), request.algo_name, with_random_path=True
+        )
+    )
 
     save_path = request.save_path
-    plot_path = f"outputs/{request.algo_name}_{request.env_name}_training.png"
+    # The plot belongs to the checkpoint it describes, so its name is derived from
+    # ``save_path`` — the only name the caller chose. An independent algo/env stem
+    # cannot match it (the model name carries the sensor and option suffix, and
+    # every env is now "beamng"), which left runs with no plot beside their model
+    # and silently overwrote the plot of whatever model owned that stem.
+    plot_path = f"{os.path.splitext(save_path)[0]}_training.png"
     start_episode = 0
 
     if os.path.exists(save_path):
@@ -290,7 +353,7 @@ def run_train(request: TrainRequest) -> dict[str, object]:
             agent.load(save_path)
             start_episode = getattr(agent, "episode", 0)
 
-    os.makedirs("outputs", exist_ok=True)
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     runner = PipelineRunner()
     try:
         history = runner.train(
@@ -308,6 +371,7 @@ def run_train(request: TrainRequest) -> dict[str, object]:
     return {
         "status": "ok",
         "save_path": save_path,
+        "plot_path": plot_path,
         "start_episode": start_episode,
         "episodes": len(rewards),
         "final_reward": rewards[-1] if rewards else None,
@@ -322,11 +386,11 @@ def run_evaluate(request: EvaluateRequest) -> dict[str, object]:
     agent.load(request.model_path)
 
     env_info = registry.get_environment(request.env_name)
-    beamng_kwargs = _beamng_kwargs(request.beamng, with_random_path=False)
-    if request.beamng is not None or request.env_name.startswith("beamng"):
-        env = env_info["factory"](**beamng_kwargs)
-    else:
-        env = env_info["factory"]()
+    env = env_info["factory"](
+        **_beamng_kwargs(
+            request.beamng or BeamNGOptions(), request.algo_name, with_random_path=False
+        )
+    )
 
     runner = PipelineRunner()
     try:
@@ -370,14 +434,13 @@ def _validate_benchmark(request: BenchmarkRequest) -> None:
 def _benchmark_env(request: BenchmarkRequest, algo_name: str | None = None):
     """Resolve (env_factory, env_metadata) for a benchmark run.
 
-    Benchmarks call ``env_factory()`` with no arguments, so for BeamNG envs the
-    request's options are baked into the factory and the metadata's ``n_states``
-    is widened by the extra observation dims — mirroring ``run_train`` /
-    ``build_agent``. The one factory also feeds ``evaluate_policy``, so the
-    training-only options (``random_path``, ``dense_episodes``) are deliberately
-    left out — eval must stay sparse and on a fixed path (see ``run_evaluate``).
-    Continuous-control algos train with their own reward mode (same rule as
-    ``run_train``); pass ``algo_name=None`` to keep the default.
+    Benchmarks call ``env_factory()`` with no arguments, so the request's options
+    are baked into the factory and the observation/action sizes are written into
+    the metadata the benchmark uses to build agents — mirroring ``build_agent``.
+    The one factory also feeds ``evaluate_policy``, so the training-only options
+    (``random_path``, ``dense_episodes``) are deliberately left out: eval must stay
+    sparse and on a fixed path (see ``run_evaluate``). Pass ``algo_name=None`` to
+    leave the env's output axis at the factory default.
     """
     env_info = registry.get_environment(request.env_name)
     factory = env_info["factory"]
@@ -386,10 +449,12 @@ def _benchmark_env(request: BenchmarkRequest, algo_name: str | None = None):
         return factory, metadata
 
     beamng = request.beamng or BeamNGOptions()
-    kwargs = _beamng_kwargs(beamng, with_random_path=False)
-    if algo_name in ("ddpg", "td3"):
-        kwargs["reward_mode"] = algo_name
-    metadata["n_states"] += _beamng_extra_dims(beamng)
+    kwargs = _beamng_kwargs(beamng, algo_name, with_random_path=False)
+    metadata["n_states"] = beamng_spec.obs_size(
+        beamng.sensor, beamng.trajectory_hints, beamng.body_orientation, beamng.wheel_terrain
+    )
+    if algo_name is not None:
+        metadata["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(algo_name))
     return (lambda: factory(**kwargs)), metadata
 
 
@@ -490,27 +555,22 @@ def _run_gridsearch(bench, request: BenchmarkRequest, common: dict) -> dict[str,
 # Human play
 # --------------------------------------------------------------------------- #
 def run_human_play(request: HumanPlayRequest) -> None:
+    """Drive manually with the chosen sensor's observation shown live.
+
+    One env and one loop for every sensor: ``human_play`` adapts its readout to the
+    sensor (per-cell LiDAR bins plus filtering diagnostics, or the dashcam frame as
+    ASCII art). The output axis is irrelevant here — the human is the policy.
+    """
     env = None
     try:
-        if request.sensor == "Camera":
-            env = registry.get_environment("beamng_camera")["factory"](
-                map_name=request.map_name,
-                vehicle_id=request.vehicle_id,
-                random_path=request.random_path,
-            )
-        else:
-            env = registry.get_environment("beamng")["factory"](
-                map_name=request.map_name,
-                vehicle_id=request.vehicle_id,
-                random_path=request.random_path,
-            )
-
-        if request.sensor == "LiDAR":
-            env.human_play_lidar()
-        elif request.sensor == "Camera":
-            env.human_play_camera()
-        else:
-            env.human_play()
+        env = registry.get_environment("beamng")["factory"](
+            map_name=request.map_name,
+            sensor=request.sensor,
+            # A game track is one fixed line, so there is no random path to deal.
+            random_path=request.random_path and not request.track,
+            track=request.track or None,
+        )
+        env.human_play()
     finally:
         if env is not None:
             env.close(kill_sim=True)
@@ -556,12 +616,17 @@ def run_trajectory(
 # --------------------------------------------------------------------------- #
 # Multi-agent
 # --------------------------------------------------------------------------- #
-def build_multi_session(specs: list[dict], map_name: str, random_path: bool = False):
+def build_multi_session(
+    specs: list[dict], map_name: str, random_path: bool = False, track: str = ""
+):
     """Create the BeamNGMultiEnv and an agent per spec.
 
-    Each spec carries its own ``env`` name; the agent is sized to that env's
-    observation length (``slot_n_states``) and its action dimensionality from
-    the algorithm's registered defaults. Returns (env, slots).
+    Each spec carries its own ``sensor``; the agent is sized to that sensor's
+    observation length (``slot_n_states``) and to the action count the spec's
+    algorithm implies. Returns (env, slots).
+
+    ``track`` names one of the game's race tracks; every vehicle then trains on
+    that shared line from a starting grid instead of getting its own path.
     """
     env = BeamNGMultiEnv(
         slots=[],
@@ -569,7 +634,8 @@ def build_multi_session(specs: list[dict], map_name: str, random_path: bool = Fa
         beamng_user=BEAMNG_USER,
         headless=HEADLESS,
         map_name=map_name,
-        random_path=random_path,
+        random_path=random_path and not track,
+        track=track or None,
     )
 
     enriched = []
@@ -577,29 +643,137 @@ def build_multi_session(specs: list[dict], map_name: str, random_path: bool = Fa
         algo_info = registry.get_algorithm(spec["algo"])
         cls = algo_info["class"]
         cfg = dict(algo_info["default_config"])
-        trajectory_hints = spec.get("trajectory_hints", 0)
-        body_orientation = spec.get("body_orientation", False)
-        wheel_terrain = spec.get("wheel_terrain", False)
         cfg["n_states"] = slot_n_states(
-            spec.get("env", "beamng"), trajectory_hints, body_orientation, wheel_terrain
+            spec.get("sensor", beamng_spec.DEFAULT_SENSOR),
+            spec.get("trajectory_hints", 0),
+            spec.get("body_orientation", False),
+            spec.get("wheel_terrain", False),
         )
-        # Discrete (DQN) uses the 7-action table; continuous algos keep their
-        # configured action dimensionality (n_actions from defaults, else 3).
-        if spec["algo"] == "dqn":
-            cfg["n_actions"] = BeamNGMultiEnv.N_ACTIONS_DISCRETE
-        else:
-            cfg.setdefault("n_actions", 3)
+        cfg["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(spec["algo"]))
         cfg.pop("state_type", None)
-        agent = cls(**cfg)
-        enriched.append({**spec, "agent": agent})
+        enriched.append({**spec, "agent": cls(**cfg)})
 
     slots = build_slots(enriched)
     env.slots = slots
     return env, slots
 
 
+RACE_COLORS: tuple[str, ...] = ("Red", "Blue", "Yellow", "Green", "White", "Black")
+
+# Race checkpoints (race-training writes here) live beside the multi-agent ones.
+RACE_OUTPUT_DIR = os.path.join("outputs", "races")
+
+
+def _validate_course(request: CourseRequest) -> None:
+    """Reject a race that cannot be run, with a reason the user can act on."""
+    if request.laps != 1:
+        raise ValueError(
+            f"laps={request.laps} is not supported yet: the generated paths are open "
+            "roads, so a second lap would mean driving back to the start. Use laps=1."
+        )
+    if len(request.racers) < 2:
+        raise ValueError("a race needs at least two entrants")
+    if sum(1 for r in request.racers if r.human) > 1:
+        raise ValueError("only one human can race at a time — there is one keyboard")
+    for racer in request.racers:
+        if racer.human:
+            continue
+        if not racer.algo:
+            raise ValueError("every non-human entrant needs an algorithm")
+        if not racer.model_path:
+            raise ValueError(f"entrant '{racer.algo}' needs a checkpoint to race")
+        if not os.path.exists(racer.model_path):
+            raise FileNotFoundError(racer.model_path)
+
+
+def build_course_session(request: CourseRequest):
+    """Build the race env and load each entrant's checkpoint. Returns (env, slots).
+
+    A human entrant needs realtime pacing — nobody can drive in lockstep — so the
+    env's mode is derived from the field rather than asked for separately.
+    """
+    from core.race_runner import RaceRunner  # noqa: F401 — import symmetry with callers
+    from environments.beamng_race import BeamNGRaceEnv, build_race_slots
+
+    specs: list[dict] = []
+    for i, racer in enumerate(request.racers):
+        color = racer.color or RACE_COLORS[i % len(RACE_COLORS)]
+        if racer.human:
+            specs.append({"human": True, "color": color})
+            continue
+
+        algo_info = registry.get_algorithm(racer.algo)
+        cfg = dict(algo_info["default_config"])
+        cfg["n_states"] = beamng_spec.obs_size(
+            racer.sensor, racer.trajectory_hints, racer.body_orientation
+        )
+        cfg["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(racer.algo))
+        cfg.pop("state_type", None)
+        agent = algo_info["class"](**cfg)
+        agent.load(racer.model_path)
+
+        # Race-training writes to its own file, so an exhibition race can never
+        # damage the checkpoint that was handed to it.
+        save_path = os.path.join(
+            RACE_OUTPUT_DIR, f"{racer.algo}_{racer.sensor}_race{i}.pth"
+        )
+        specs.append(
+            {
+                "algo": racer.algo,
+                "agent": agent,
+                "color": color,
+                "save_path": save_path,
+                "sensor": racer.sensor,
+                "trajectory_hints": racer.trajectory_hints,
+                "body_orientation": racer.body_orientation,
+            }
+        )
+
+    has_human = any(r.human for r in request.racers)
+    env = BeamNGRaceEnv(
+        slots=[],
+        beamng_home=BEAMNG_HOME,
+        beamng_user=BEAMNG_USER,
+        headless=HEADLESS,
+        map_name=request.map_name,
+        path_idx=request.path_idx,
+        laps=request.laps,
+        realtime=has_human,
+        track=request.track or None,
+    )
+    slots = build_race_slots(specs)
+    env.slots = slots
+    return env, slots
+
+
+def run_course(request: CourseRequest) -> dict[str, object]:
+    """Race the field on one shared track and report the outcome."""
+    _validate_course(request)
+
+    from core.race_runner import RaceRunner
+
+    env, slots = build_course_session(request)
+    if request.learning:
+        os.makedirs(RACE_OUTPUT_DIR, exist_ok=True)
+
+    runner = RaceRunner()
+    try:
+        outcome = runner.run(env, races=request.races, learning=request.learning)
+    finally:
+        env.close()
+
+    return {
+        "status": "ok",
+        "learning": request.learning,
+        "entrants": [s.name for s in slots],
+        **outcome,
+    }
+
+
 def run_multi_train(request: MultiTrainRequest) -> dict[str, object]:
-    env, slots = build_multi_session(request.specs, request.map_name, request.random_path)
+    env, slots = build_multi_session(
+        request.specs, request.map_name, request.random_path, request.track
+    )
 
     for slot in slots:
         if os.path.exists(slot.save_path):

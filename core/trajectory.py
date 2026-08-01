@@ -150,7 +150,13 @@ def heading_to_quat(p0: Vec3, p1: Vec3) -> Quat:
 
 SPARSE_SPACING_M = 25.0
 DENSE_SPACING_M = 8.0
-SPAWN_Z_OFFSET_M = 1.0
+# Height of a spawn above the road centerline it was projected onto. Was 1.0 — an
+# over-estimate on the assumption that the scenario's cling=True would drop the car
+# the rest of the way. Observed in-sim: it does not, so the car spawned a metre up
+# and every teleport (which has no cling at all) dropped it onto stiff race
+# suspension, which BeamNG scores as damage. 0.0 puts the spawn on the road surface;
+# the fine height above it is measured per scenario by environments.beamng_spawn.
+SPAWN_Z_OFFSET_M = 0.0
 FALLBACK_SIDE_M = 80.0
 FALLBACK_GROUND_Z = 1.0
 MIN_PATH_SEPARATION_M = 30.0

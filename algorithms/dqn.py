@@ -116,6 +116,7 @@ class DQNAgent(BaseAgent):
         per_beta: float = 0.4,
         per_beta_steps: int = 50_000,
         per_epsilon: float = 1e-6,
+        device: str = "auto",
     ):
         self.n_states = n_states
         self.n_actions = n_actions
@@ -128,7 +129,13 @@ class DQNAgent(BaseAgent):
         self.train_steps = 0
         self.use_per = use_per
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # "auto" prefers CUDA; an explicit device is honoured. Pinning to "cpu"
+        # matters for reproducibility — several CUDA kernels are non-deterministic,
+        # so identical seeds can still yield bitwise-different weights on GPU.
+        if device == "auto":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
         print(f"[DQNAgent] Using device: {self.device}")
 
         self.q_net = DQNNetwork(n_states, n_actions, hidden).to(self.device)

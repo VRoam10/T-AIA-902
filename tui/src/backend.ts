@@ -14,13 +14,14 @@ export type BackendEvent = {
   result?: unknown;
 };
 
+// The five modes. `evaluate` and `benchmark` still exist in core.tui_backend as
+// importable commands, but no longer have a menu entry.
 export type BackendCommand =
   | "train"
-  | "evaluate"
-  | "benchmark"
+  | "multi-train"
   | "human-play"
-  | "trajectory"
-  | "multi-train";
+  | "course"
+  | "trajectory";
 
 export interface CatalogAlgorithm {
   name: string;
@@ -33,14 +34,26 @@ export interface CatalogEnvironment {
   metadata: Record<string, unknown>;
 }
 
+// One of the game's own race tracks, as read from the level files by
+// core.quickrace. `kind` is "sprint" (point to point) or "lap" (closed circuit).
+export interface CatalogTrack {
+  key: string;
+  kind: string;
+  checkpoints: number;
+  length_m: number;
+}
+
 export interface Catalog {
   algorithms: CatalogAlgorithm[];
   environments: CatalogEnvironment[];
   compatible_envs: Record<string, string[]>;
   benchmarks: string[];
   beamng_maps: string[];
-  beamng_vehicles: { id: string; label: string }[];
+  beamng_sensors: string[];
   multi_algos: string[];
+  // Per map, longest first. Optional so a backend that predates the track picker
+  // (or a level folder we cannot read) degrades to "generated paths only".
+  beamng_tracks?: Record<string, CatalogTrack[]>;
 }
 
 const PYTHON = process.env.T_AIA_PYTHON ?? "python";

@@ -12,96 +12,78 @@ try:
 except ImportError:
     BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
 
-from config import (
-    LIDAR_VISUALISE,
-    LOG_CAMERA,
-    LOG_CHECKPOINT_HIT,
-    LOG_LIDAR,
-)
+from config import LOG_CAMERA, LOG_CHECKPOINT_HIT, LOG_LIDAR
 from core.stop_signal import stop_requested
 from core.trajectory import TrajectoryData, load_or_generate
-from environments.beamng_camera_util import process_camera_frame
-from environments.beamng_geometry import (
-    LidarConfig,
-    body_orientation_features,
-    ego_local_extents_from_bbox,
-    wheel_terrain_features,
-)
-from environments.beamng_reward import compute_merged_reward
+from environments import beamng_sensors, beamng_spec
+from environments.beamng_geometry import body_orientation_features, wheel_terrain_features
+from environments.beamng_reward import compute_race_reward
+from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
 
 class BeamNGDrivingEnv:
     """
     Gymnasium-style environment wrapping BeamNG.drive via beamngpy.
 
-    State  (5 + LIDAR_RAYS floats, all normalized to ~[-1, 1] or [0, 1]):
+    One env, two independent axes (see :mod:`environments.beamng_spec`):
+
+      * ``sensor`` — ``"lidar"`` (8 range bins), ``"adv_lidar"`` (4x8 elevation x
+        azimuth grid, so the policy can tell a wall from a low object) or
+        ``"camera"`` (16x16 grayscale dashcam).
+      * ``output`` — ``"fixed"`` (the 7-entry ``ACTIONS`` table) or
+        ``"continuous"`` (throttle, steering, brake driven directly).
+
+    Observation (all normalized to ~[-1, 1] or [0, 1]):
+
         speed          - wheel speed normalized to 50 m/s
-        steering       - current steering angle (-1 to 1)
+        steering        - current steering angle (-1 to 1)
         heading_error  - angle between vehicle heading and next waypoint direction
         lateral_error  - perpendicular distance from path (normalized to 5 m)
         damage         - cumulative vehicle damage (normalized)
-        lidar[0..N-1]  - nearest obstacle distance in each angular bin (0 = close, 1 = clear)
+        dist           - distance to the target checkpoint
+        perception[..] - the sensor's feature block
+        hints[..]      - optional vehicle-local coords of upcoming waypoints
+        extra[..]      - optional [pitch, roll] and/or [edgeL, edgeR]
 
-    Actions (discrete, 7):
-        0 - idle / coast
-        1 - full throttle straight
-        2 - throttle + slight left
-        3 - throttle + slight right
-        4 - brake
-        5 - throttle + sharp left
-        6 - throttle + sharp right
+    ``n_states`` is always ``beamng_spec.obs_size(...)`` for the active config.
     """
 
+    # Throttle drops sharply as steering rises. The race car is a mid-engine RWD
+    # with far more power than grip, so the old taxi-era table (0.4 throttle at
+    # 0.6 steering) spun it on most corner entries. Seven entries either way, so
+    # the discrete head size is unchanged.
     ACTIONS = [
-        {"throttle": 0.0, "steering": 0.0, "brake": 0.0},  # 0: idle
-        {"throttle": 1.0, "steering": 0.0, "brake": 0.0},  # 1: straight
-        {"throttle": 0.7, "steering": -0.3, "brake": 0.0},  # 2: slight left
-        {"throttle": 0.7, "steering": 0.3, "brake": 0.0},  # 3: slight right
+        {"throttle": 0.0, "steering": 0.0, "brake": 0.0},  # 0: coast
+        {"throttle": 1.0, "steering": 0.0, "brake": 0.0},  # 1: full throttle straight
+        {"throttle": 0.6, "steering": -0.25, "brake": 0.0},  # 2: power-on slight left
+        {"throttle": 0.6, "steering": 0.25, "brake": 0.0},  # 3: power-on slight right
         {"throttle": 0.0, "steering": 0.0, "brake": 1.0},  # 4: brake
-        {"throttle": 0.4, "steering": -0.6, "brake": 0.0},  # 5: sharp left
-        {"throttle": 0.4, "steering": 0.6, "brake": 0.0},  # 6: sharp right
+        {"throttle": 0.15, "steering": -0.55, "brake": 0.0},  # 5: lift + sharp left
+        {"throttle": 0.15, "steering": 0.55, "brake": 0.0},  # 6: lift + sharp right
     ]
 
-    N_ACTIONS = len(ACTIONS)
+    # LiDAR geometry / mount, re-exported from beamng_sensors so subclasses, the
+    # multi env and the tests keep one source of truth.
+    LIDAR_RAYS = beamng_spec.LIDAR_RAYS
+    LIDAR_CHANNELS_PER_RAY = beamng_spec.LIDAR_CHANNELS_PER_RAY
+    LIDAR_FOV_DEG = beamng_sensors.LIDAR_FOV_DEG
+    LIDAR_MAX_DIST = beamng_sensors.LIDAR_MAX_DIST
+    LIDAR_GROUND_CLEARANCE = beamng_sensors.LIDAR_GROUND_CLEARANCE
+    LIDAR_SELF_MARGIN = beamng_sensors.LIDAR_SELF_MARGIN
+    LIDAR_ROOF_CLEARANCE = beamng_sensors.LIDAR_ROOF_CLEARANCE
+    LIDAR_MOUNT_POS = beamng_sensors.LIDAR_MOUNT_POS
+    LIDAR_MOUNT_DIR = beamng_sensors.LIDAR_MOUNT_DIR
+    LIDAR_MOUNT_UP = beamng_sensors.LIDAR_MOUNT_UP
+    BBOX_MAX_HALF_EXTENT = beamng_sensors.BBOX_MAX_HALF_EXTENT
 
-    # Perception kind for this env, consumed by the shared reward to decide
-    # whether obs[5:] is a LiDAR range field (obstacle penalty) or camera pixels.
-    PERCEPTION = "lidar"
+    CAM_OUT_SIZE = beamng_spec.CAM_OUT_SIZE
 
-    # LiDAR configuration
-    LIDAR_RAYS = 8  # number of horizontal angular bins (azimuth)
-    LIDAR_V_BINS = 1  # number of vertical bins (elevation). 1 = single row (legacy).
-    LIDAR_CHANNELS_PER_RAY = 1  # currently: (distance,). Future: (distance, v_rel, ttc, ...)
-    LIDAR_FOV_DEG = 360.0  # total azimuth span used for observation binning; 360.0 = full ring
-    LIDAR_MAX_DIST = 50.0  # metres — normalization range
-    LIDAR_GROUND_CLEARANCE = 0.30  # metres above ego bbox floor before a point counts as obstacle
-    LIDAR_SELF_MARGIN = 0.30  # metres expansion of ego OBB when rejecting self-hits
-    LIDAR_ROOF_CLEARANCE = LIDAR_SELF_MARGIN  # metres above cached bbox roof for mount placement
-
-    # Physical sensor mount/params — overridable per subclass.
-    LIDAR_MOUNT_POS = (
-        0.0,
-        0.0,
-        2.4,
-    )  # vehicle-local center-roof fallback; only used when bbox sampling fails
-    LIDAR_MOUNT_DIR = (0, -1, 0)  # forward in vehicle space
-    LIDAR_MOUNT_UP = (0, 0, 1)
-    LIDAR_VERT_RES = (
-        32  # vertical layers emitted by the sensor (denser cloud, near-obstacle coverage)
-    )
-    LIDAR_VERT_ANGLE = (
-        26.9  # total vertical FOV in degrees (BeamNG default); also elevation-binning range
-    )
-
-    # 5 kinematic + (vertical × horizontal × channels) lidar features.
-    N_STATES = 6 + LIDAR_RAYS * LIDAR_V_BINS * LIDAR_CHANNELS_PER_RAY  # 14 by default
-
-    CHECKPOINT_WARN_DIST = 200.0  # metres — start penalising when this far from checkpoint
-    CHECKPOINT_RESET_DIST = 300.0  # metres — teleport back to spawn and big malus beyond this
-
-    # Plausible ego bbox half-extent (metres) for sanity-checking a captured box;
-    # anything beyond this is world-scale garbage from a bad pose -> discard.
-    BBOX_MAX_HALF_EXTENT = 10.0
+    # Scale for the observation's `dist` feature only: distance to the target
+    # checkpoint is divided by this and clipped to [0, 2]. It no longer gates
+    # anything — the off-track penalty and reset that used it were removed because
+    # the game's own tracks space checkpoints far wider than any fixed threshold
+    # (see environments.beamng_reward).
+    CHECKPOINT_DIST_NORM_M = 200.0
 
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
     MAX_STEPS = 500
@@ -117,34 +99,12 @@ class BeamNGDrivingEnv:
     HUMAN_RESPAWN_DAMAGE = 100.0  # human play: damage above this counts as a crash
     HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
 
-    AVAILABLE_MAPS = ["gridmap_v2", "italy", "west_coast_usa", "smallgrid"]
+    AVAILABLE_MAPS = list(beamng_spec.AVAILABLE_MAPS)
 
-    VEHICLES = {
-        "taxi": {
-            "model": "burnside",
-            "licence": "Taxi",
-            "color": "Yellow",
-            "part_config": "vehicles/burnside/4door_early_v8_3M_taxi.pc",
-        },
-        "gavril_t_series": {
-            "model": "us_semi",
-            "licence": "T-Series",
-            "color": "White",
-            "part_config": "vehicles/us_semi/t83_sleeper.pc",
-        },
-        "ibishu_pigeon": {
-            "model": "pigeon",
-            "licence": "Pigeon",
-            "color": "Red",
-            "part_config": "vehicles/pigeon/base.pc",
-        },
-        "gavril_d_series": {
-            "model": "pickup",
-            "licence": "D-Series",
-            "color": "green",
-            "part_config": "vehicles/pickup/d25_longbed_4wd_lifted_A.pc",
-        },
-    }
+    # One car for everything, so a head-to-head result reflects the policies and not
+    # the machinery. A dict of beamngpy Vehicle kwargs (the shape the multi/race envs
+    # already build from), so only `color` varies per entrant.
+    RACE_CAR = beamng_spec.RACE_CAR
 
     def __init__(
         self,
@@ -153,27 +113,38 @@ class BeamNGDrivingEnv:
         host: str = "localhost",
         port: int = 25252,
         headless: bool = False,
-        reward_mode: str = "default",
-        vehicle_id: str = "taxi",
+        sensor: str = beamng_spec.DEFAULT_SENSOR,
+        output: str = "fixed",
         map_name: str = "gridmap_v2",
         trajectory_hints: int = 0,
         body_orientation: bool = False,
         wheel_terrain: bool = False,
         random_path: bool = False,
         dense_episodes: int = 0,
+        track: str | None = None,
     ):
         """
         Args:
             beamng_home: Path to BeamNG.drive installation directory.
-                         e.g. r'C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive'
             beamng_user: Optional path to BeamNG user folder (where mods/configs live).
             host: BeamNG server host (default localhost).
             port: BeamNG server port (default 25252).
+            sensor: Perception axis — "lidar", "adv_lidar" or "camera".
+            output: Action axis — "fixed" (discrete table) or "continuous".
             dense_episodes: Curriculum warm-up — use dense waypoints (8 m apart,
                             trivially hittable) for this many initial episodes,
                             then switch to sparse (25 m). 0 = sparse from the
                             start (default).
+            track: One of the game's own race tracks (a quickrace key such as
+                   "mixedCircuit1"), driven instead of the generated road-network
+                   paths. None (default) keeps the generated trajectory cache.
+                   See :mod:`core.quickrace`.
         """
+        if sensor not in beamng_spec.SENSORS:
+            raise ValueError(f"unknown sensor {sensor!r}; expected one of {beamng_spec.SENSORS}")
+        if output not in beamng_spec.OUTPUTS:
+            raise ValueError(f"unknown output {output!r}; expected one of {beamng_spec.OUTPUTS}")
+
         self.beamng_home = beamng_home
         self.beamng_user = beamng_user
         self.host = host
@@ -185,10 +156,11 @@ class BeamNGDrivingEnv:
         self.electrics: Electrics = None
         self.damage_sensor: Damage = None
         self.lidar: Lidar = None
+        self.camera: Camera = None
         self.roads_sensor: RoadsSensor = None
 
-        self.reward_mode = reward_mode  # "default" or "ddpg"
-        self.vehicle_id = vehicle_id
+        self.sensor = sensor
+        self.output = output
         self.map_name = map_name
 
         self._waypoint_idx = 0
@@ -196,9 +168,9 @@ class BeamNGDrivingEnv:
         self._last_dist = 0.0
         self._steps = 0
         self._invuln_steps = 0  # damage-immune steps remaining (granted on checkpoint hit)
+        self._steps_since_checkpoint = 0  # drives the segment-time bonus
         self._checkpoint_hit = False
         self._active_marker_id: str | None = None
-        self._checkpoint_dist = 0.0
         self._log_obs = False  # human play enables obs logging; training leaves it off
         self._obs_log_stdout = False  # human play also echoes the obs to the terminal
         self._last_obs_lines: list[str] = []  # most recent formatted obs lines (camera redraw)
@@ -208,13 +180,13 @@ class BeamNGDrivingEnv:
         self.wheel_terrain = wheel_terrain
         self.random_path = random_path
         self.dense_episodes = dense_episodes
+        self.track = track
         self._episode_idx = 0  # incremented on each reset(); drives the waypoint curriculum
-        self.n_states = (
-            self.N_STATES
-            + trajectory_hints * 2
-            + (2 if body_orientation else 0)
-            + (2 if wheel_terrain else 0)
+
+        self.n_states = beamng_spec.obs_size(
+            sensor, trajectory_hints, body_orientation, wheel_terrain
         )
+        self.n_actions = beamng_spec.action_size(output)
 
         # Filled on first _launch() — either read from cache or generated then.
         self.trajectory: TrajectoryData | None = None
@@ -222,12 +194,34 @@ class BeamNGDrivingEnv:
         self.waypoints: list[tuple[float, float, float]] = []
         self._current_pos = (0.0, 0.0, 0.0)
 
-        # Cached ego OBB extents in vehicle-local frame (x_min, x_max, y_min, y_max, z_min, z_max).
-        # Populated once per scenario load; used by _process_lidar to reject self-hits.
+        # Measured once per scenario load: how far the cached spawn heights sit
+        # above where the car actually rests. Teleports add it so a reset places
+        # the car on the road instead of dropping it (see environments.beamng_spawn).
+        self._spawn_z_correction = 0.0
+
+        # Cached ego OBB extents in vehicle-local frame, populated once per scenario
+        # load; used to reject LiDAR self-hits and to place the roof mount.
         self._ego_local_extents: tuple[float, float, float, float, float, float] | None = None
 
         # Last-poll LiDAR filtering breakdown (counts + nearest kept point), for debug.
         self._lidar_debug: dict = {}
+        # Most recent 2-D camera frame, for the human-play ASCII render.
+        self.last_frame: np.ndarray | None = None
+
+    @property
+    def n_perception(self) -> int:
+        """Length of the perception block for this env's sensor."""
+        return beamng_spec.perception_features(self.sensor)
+
+    def _spawn_target(self) -> tuple[float, float, float]:
+        """Where to teleport for the current path — the cached spawn, height-corrected.
+
+        The scenario spawn clings to the surface, so it needs no correction; every
+        teleport does, because ``Vehicle.teleport`` places the reference point at
+        exactly the z it is handed.
+        """
+        assert self.trajectory is not None
+        return corrected_spawn(self.trajectory.spawn_pos, self._spawn_z_correction)
 
     def _select_waypoints(self) -> list[tuple[float, float, float]]:
         assert self.trajectory is not None
@@ -253,7 +247,7 @@ class BeamNGDrivingEnv:
                 # mirrors the multi-agent env's reset_vehicle (teleport, no restart).
                 self._pick_episode_path()
                 self.vehicle.teleport(
-                    self.trajectory.spawn_pos,
+                    self._spawn_target(),
                     rot_quat=self.trajectory.spawn_rot,
                     reset=True,
                 )
@@ -270,6 +264,7 @@ class BeamNGDrivingEnv:
         self._last_dist = 0.0
         self._steps = 0
         self._invuln_steps = 0
+        self._steps_since_checkpoint = 0
         self._checkpoint_hit = False
 
         # Hold still for a moment so physics settle
@@ -281,42 +276,39 @@ class BeamNGDrivingEnv:
         self._last_dist = self._current_dist
         return obs
 
-    def step(self, action):
-        """
-        Apply an action and advance the simulation.
+    def controls_for(self, action) -> tuple[float, float, float]:
+        """Map an action to (throttle, steering, brake) for this env's output axis.
 
-        Accepts either:
-          - int: discrete action index (from ACTIONS table)
-          - np.ndarray of shape (2,): continuous [accel, steering] in [-1, 1]
-            where accel >= 0 -> throttle, accel < 0 -> brake
+        ``fixed`` indexes the ACTIONS table. ``continuous`` accepts either a 2-vector
+        ``[accel, steering]`` (positive accel = throttle, negative = brake) or a
+        3-vector ``[throttle, steering, brake]``, both clipped to [-1, 1]. An int
+        action is always read as a table index, so a discrete agent driving a
+        continuous env still works.
+        """
+        if self.output == "fixed" or isinstance(action, (int, np.integer)):
+            ctrl = self.ACTIONS[int(action)]
+            return ctrl["throttle"], ctrl["steering"], ctrl["brake"]
+
+        action = np.clip(np.asarray(action, dtype=np.float32).ravel(), -1.0, 1.0)
+        if action.shape[0] == 2:
+            accel = float(action[0])
+            return max(0.0, accel), float(action[1]), max(0.0, -accel)
+        return float(max(0.0, action[0])), float(action[1]), float(max(0.0, action[2]))
+
+    def step(self, action):
+        """Apply an action and advance the simulation.
 
         Returns:
             obs (np.ndarray), reward (float), done (bool), info (dict)
         """
-        if isinstance(action, (int, np.integer)):
-            ctrl = self.ACTIONS[action]
-            throttle = ctrl["throttle"]
-            steering = ctrl["steering"]
-            brake = ctrl["brake"]
-        else:
-            action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
-            accel = float(action[0])
-            steering = float(action[1])
-            if accel >= 0:
-                throttle = accel
-                brake = 0.0
-            else:
-                throttle = 0.0
-                brake = -accel
+        throttle, steering, brake = self.controls_for(action)
+        self.vehicle.control(throttle=throttle, steering=steering, brake=brake)
 
-        self.vehicle.control(
-            throttle=throttle,
-            steering=steering,
-            brake=brake,
-        )
-
-        # 10 physics steps ≈ 100 ms of simulation time
-        self.bng.step(10)
+        # In deterministic mode each simulation step lasts
+        # 1/PHYSICS_STEPS_PER_SECOND, so this advances SECONDS_PER_ENV_STEP
+        # (~333 ms) of sim time — a ~3 Hz control rate, not the ~10 Hz a
+        # long-standing comment here claimed. See beamng_spec for the numbers.
+        self.bng.step(beamng_spec.PHYSICS_STEPS_PER_ENV_STEP)
         self._steps += 1
 
         obs = self._observe()
@@ -325,8 +317,14 @@ class BeamNGDrivingEnv:
         return obs, reward, done, info
 
     def human_play(self):
-        """Load the scenario and give control to the human, logging the full
-        observation each tick (Lua console + terminal)."""
+        """Load the scenario and give control to the human.
+
+        Logs the full labeled observation each tick to BeamNG's Lua console and to
+        the terminal, and advances waypoints/markers as the player drives. With the
+        camera sensor the dashcam frame is also rendered as in-place ASCII art; with
+        a LiDAR sensor the filtering diagnostics (which the observation itself does
+        not carry) are printed alongside.
+        """
         if self.bng is None:
             self._launch(human_control=True)
         else:
@@ -335,53 +333,49 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = 0
         self._update_active_marker(0)
         self._log_obs = True
-        self._obs_log_stdout = True
-
-        self.bng.resume()
-        print("[BeamNGDrivingEnv] Human control active — drive in-game. Press Ctrl+C to stop.")
-
-        try:
-            while not stop_requested():
-                # _observe polls sensors, logs the full labeled obs to Lua + stdout,
-                # and advances waypoints/markers as the player drives.
-                self._observe()
-                if not self._maybe_reset_on_completion():
-                    self._maybe_respawn_on_crash()
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            print("[BeamNGDrivingEnv] Human play stopped.")
-
-    def human_play_lidar(self):
-        """Human play logging the full observation each tick (Lua console +
-        terminal), plus the extra LiDAR filtering diagnostics on stdout."""
-        if self.bng is None:
-            self._launch(human_control=True)
-        else:
-            self._load_scenario(human_control=True)
-
-        self._waypoint_idx = 0
-        self._update_active_marker(0)
-        self._log_obs = True
-        self._obs_log_stdout = True
+        # The camera branch redraws the obs lines itself as part of the ASCII block,
+        # so leave the plain stdout echo off there to avoid double printing.
+        camera_view = self.sensor == "camera"
+        self._obs_log_stdout = not camera_view
 
         self.bng.resume()
         print(
-            "[BeamNGDrivingEnv] Human control active (LiDAR) — drive in-game. Press Ctrl+C to stop."
+            f"[BeamNGDrivingEnv] Human control active ({self.sensor}) — "
+            "drive in-game. Press Ctrl+C to stop."
         )
-        if self.lidar is None:
+        if beamng_spec.is_lidar(self.sensor) and self.lidar is None:
             print(
-                "[BeamNGDrivingEnv] Warning: LiDAR sensor not attached — bins will show fallback values."
+                "[BeamNGDrivingEnv] Warning: LiDAR sensor not attached — "
+                "bins will show fallback values."
             )
+
+        ramp = " ░▒▓█"
+        prev_total = 0
+        first = True
 
         try:
             while not stop_requested():
-                # Logs the full labeled obs (incl. the lidar bins) to Lua + stdout.
+                # _observe polls the sensors, logs the full labeled obs, and advances
+                # waypoints/markers as the player drives.
                 self._observe()
                 if not self._maybe_reset_on_completion():
                     self._maybe_respawn_on_crash()
-                # Extra filtering diagnostics not present in the obs vector itself.
-                d = self._lidar_debug
-                if d:
+
+                if camera_view:
+                    frame = self.last_frame
+                    if frame is None:
+                        frame = np.zeros(self.CAM_OUT_SIZE, dtype=np.float32)
+                    rows = ["".join(ramp[min(int(v * 4), 4)] for v in row) for row in frame]
+                    block = rows + self._last_obs_lines
+                    if not first:
+                        sys.stdout.write(f"\033[{prev_total}A")
+                    # \033[K clears each line to its end so a shorter frame leaves no residue.
+                    sys.stdout.write("".join(f"{line}\033[K\n" for line in block))
+                    sys.stdout.flush()
+                    prev_total = len(block)
+                    first = False
+                elif self._lidar_debug:
+                    d = self._lidar_debug
                     print(
                         f"[LiDAR dbg] total={d.get('total', 0)} self={d.get('self', 0)} "
                         f"ground={d.get('ground', 0)} kept={d.get('kept', 0)} "
@@ -406,6 +400,7 @@ class BeamNGDrivingEnv:
         """
         if self.bng is not None:
             self._remove_lidar()
+            self._remove_camera()
             self._remove_roads_sensor()
             close_fn = self.bng.close if kill_sim else self.bng.disconnect
             t = threading.Thread(target=close_fn, daemon=True)
@@ -423,11 +418,10 @@ class BeamNGDrivingEnv:
         on the port before it considers launching a new one, and ``close()``
         above is fire-and-forget (daemon thread, bounded join) while the actual
         shutdown (scenario close, Quit ack, process kill) can take much longer.
-        Without this wait, a back-to-back close -> open — a benchmark's training
-        env close followed by evaluate_policy's fresh env — connects to the
-        dying simulator and raises BNGDisconnectedError once the kill lands,
-        instead of relaunching the game. Bounded by KILL_WAIT_TIMEOUT so a
-        frozen sim still cannot hang the pipeline.
+        Without this wait, a back-to-back close -> open connects to the dying
+        simulator and raises BNGDisconnectedError once the kill lands, instead of
+        relaunching the game. Bounded by KILL_WAIT_TIMEOUT so a frozen sim still
+        cannot hang the pipeline.
         """
         deadline = time.time() + self.KILL_WAIT_TIMEOUT
         while time.time() < deadline:
@@ -444,26 +438,22 @@ class BeamNGDrivingEnv:
 
     def _remove_lidar(self):
         """Detach the current LiDAR before replacing the ego vehicle/scenario."""
-        if self.lidar is None:
-            return
-        t = threading.Thread(target=self.lidar.remove, daemon=True)
-        t.start()
-        t.join(timeout=3.0)
+        beamng_sensors.remove_sensor(getattr(self, "lidar", None))
         self.lidar = None
+
+    def _remove_camera(self):
+        beamng_sensors.remove_sensor(getattr(self, "camera", None))
+        self.camera = None
 
     def _attach_roads_sensor(self):
         """Attach a RoadsSensor when wheel_terrain is on; replace any prior one."""
         if not self.wheel_terrain:
             return
         self._remove_roads_sensor()
-        self.roads_sensor = RoadsSensor("roads", self.bng, self.vehicle)
+        self.roads_sensor = beamng_sensors.create_roads_sensor("roads", self.bng, self.vehicle)
 
     def _remove_roads_sensor(self):
-        if getattr(self, "roads_sensor", None) is None:
-            return
-        t = threading.Thread(target=self.roads_sensor.remove, daemon=True)
-        t.start()
-        t.join(timeout=3.0)
+        beamng_sensors.remove_sensor(getattr(self, "roads_sensor", None))
         self.roads_sensor = None
 
     # ------------------------------------------------------------------
@@ -490,14 +480,25 @@ class BeamNGDrivingEnv:
         self._load_scenario(human_control=human_control)
 
     def _resolve_trajectory(self) -> TrajectoryData:
-        """Load cached trajectories (all paths); default to the longest road."""
+        """Pick the paths to drive: a chosen game track, else the generated cache.
+
+        A ``track`` names one of the game's own race tracks, read from the level
+        files with no simulator involvement — so this branch needs neither a cache
+        nor a probe scenario. Without one, behaviour is unchanged: load the
+        generated cache, or probe the road network to build it.
+        """
         from core.trajectory import CACHE_DIR
+
+        if self.track:
+            self._paths = [self._load_track(self.track)]
+            self.trajectory = self._paths[0]
+            return self.trajectory
 
         cache_path = CACHE_DIR / f"{self.map_name}.json"
         if cache_path.exists():
             self._paths = load_or_generate(self.map_name, bng=None).paths
         else:
-            # No cache → run a probe scenario so we can call get_road_network
+            # No cache -> run a probe scenario so we can call get_road_network
             probe = Scenario(self.map_name, "trajectory_probe", description="Road probe")
             probe_vehicle = Vehicle("probe_vehicle", model="etk800")
             probe.add_vehicle(probe_vehicle, pos=(0.0, 0.0, 100.0), rot_quat=(0.0, 0.0, 0.0, 1.0))
@@ -509,8 +510,16 @@ class BeamNGDrivingEnv:
         self.trajectory = self._paths[0]
         return self.trajectory
 
-    def _randomize_waypoints(self):
-        self.waypoints = random.sample(self.waypoints, len(self.waypoints))
+    def _load_track(self, key: str) -> TrajectoryData:
+        """One of the game's race tracks as a TrajectoryData, read from disk."""
+        from core import quickrace
+
+        race = quickrace.load(self.map_name, key, self.beamng_home)
+        print(
+            f"[track] {self.map_name}/{race.key}: {race.kind}, "
+            f"{len(race.checkpoints)} checkpoints, {race.length_m():.0f} m"
+        )
+        return quickrace.to_trajectory(race)
 
     def _pick_episode_path(self) -> None:
         """When random_path is on, choose a random path for the next episode."""
@@ -528,7 +537,7 @@ class BeamNGDrivingEnv:
         """
         self._pick_episode_path()
         self.vehicle.teleport(
-            self.trajectory.spawn_pos,
+            self._spawn_target(),
             rot_quat=self.trajectory.spawn_rot,
             reset=True,
         )
@@ -567,21 +576,21 @@ class BeamNGDrivingEnv:
         return True
 
     def _load_scenario(self, human_control=False):
-        # self._randomize_waypoints()
-        # A LiDAR is bound to the current BeamNG vehicle. Remove it before
-        # replacing `self.vehicle` so changing vehicle/model cannot leave a
-        # stale sensor attached to the previous ego.
+        # A LiDAR/Camera is bound to the current BeamNG vehicle. Remove them before
+        # replacing `self.vehicle` so changing the scenario cannot leave a stale
+        # sensor attached to the previous ego.
         self._remove_lidar()
+        self._remove_camera()
         self._remove_roads_sensor()
         self._ego_local_extents = None
+
         self.scenario = Scenario(
             self.map_name,
             "rl_driving",
-            description="RL Training Scenario",
+            description="RL Driving Scenario",
         )
 
-        vcfg = self.VEHICLES.get(self.vehicle_id, self.VEHICLES["taxi"])
-        self.vehicle = Vehicle("ego_vehicle", **vcfg)
+        self.vehicle = Vehicle("ego_vehicle", **self.RACE_CAR)
         self.electrics = Electrics()
         self.damage_sensor = Damage()
         self.vehicle.attach_sensor("electrics", self.electrics)
@@ -594,34 +603,79 @@ class BeamNGDrivingEnv:
             cling=True,
         )
 
-        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
+        # Visual checkpoint rings for every waypoint (visible in-game, training and
+        # human play). With random_path on, ring every path's waypoints since the
+        # episode can be dealt any of them.
         checkpoint_wps = (
             [wp for p in self._paths for wp in p.sparse_waypoints]
             if self.random_path
             else self.waypoints
         )
-        scales = [(5.0, 5.0, 1.0)] * len(checkpoint_wps)
-        self.scenario.add_checkpoints(checkpoint_wps, scales)
+        self.scenario.add_checkpoints(checkpoint_wps, [(5.0, 5.0, 1.0)] * len(checkpoint_wps))
 
         self.scenario.make(self.bng)
-        self.bng.set_deterministic(30)  # ensure repeatable physics for same scenario
+        # Repeatable physics for the same scenario, and a known step duration.
+        self.bng.set_deterministic(beamng_spec.PHYSICS_STEPS_PER_SECOND)
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
         time.sleep(1.0)  # let the game settle before polling
 
-        self._cache_ego_local_bbox()
-
-        # Lidar must be created after the scenario starts (it communicates with the sim directly).
-        self.lidar = Lidar(
-            "lidar",
-            self.bng,
-            self.vehicle,
-            **self._lidar_creation_kwargs(),
+        # The car above was spawned with cling=True, so it is now resting at the
+        # true surface height for this spawn. Capture how far that is below the
+        # cached height, so teleports place the car instead of dropping it.
+        self._spawn_z_correction = measure_spawn_z_correction(
+            self.bng, self.vehicle, self.trajectory.spawn_pos[2]
         )
+        if self._spawn_z_correction != 0.0:
+            print(f"[spawn] teleport height corrected by {self._spawn_z_correction:+.2f} m")
+
+        self._create_perception_sensor(human_control=human_control)
 
         # Draw the initial active-waypoint marker
         self._update_active_marker(0)
         self._attach_roads_sensor()
+
+    def _create_perception_sensor(self, human_control: bool = False):
+        """Attach this env's perception sensor. Must run after the scenario starts.
+
+        The camera is visualised only during human play (an on-screen render costs
+        GPU every frame, which training does not need).
+        """
+        if self.sensor == "camera":
+            self.camera = beamng_sensors.create_camera(
+                "dashcam", self.bng, self.vehicle, visualise=human_control
+            )
+            return
+        # The mount is derived from the ego bbox, so cache the box first.
+        self._ego_local_extents = beamng_sensors.cache_ego_local_bbox(self.vehicle)
+        self.lidar = beamng_sensors.create_lidar(
+            "lidar", self.bng, self.vehicle, self.sensor, self._ego_local_extents
+        )
+
+    def _perceive(self, pos, vehicle_heading) -> np.ndarray:
+        """Poll this env's sensor and return its perception feature block."""
+        block, debug, frame = beamng_sensors.perception_block(
+            sensor=self.sensor,
+            lidar=self.lidar,
+            camera=self.camera,
+            pos=pos,
+            heading=vehicle_heading,
+            ego_extents=self._ego_local_extents,
+        )
+        if frame is not None:
+            self.last_frame = frame
+            if LOG_CAMERA and self.bng is not None:
+                self.bng.queue_lua_command(
+                    f"log('I', 'RL', 'Camera: min={block.min():.3f} "
+                    f"max={block.max():.3f} mean={block.mean():.3f}')"
+                )
+        else:
+            self._lidar_debug = debug
+            if LOG_LIDAR and self.bng is not None:
+                self.bng.queue_lua_command(
+                    "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in block))
+                )
+        return block
 
     def _observe(self) -> np.ndarray:
         """Poll sensors and return the normalized observation vector (length n_states)."""
@@ -642,16 +696,9 @@ class BeamNGDrivingEnv:
 
         heading_err, lateral_err, dist = self._path_errors(pos, state)
 
-        lidar_bins = self._process_lidar(
-            self.lidar.poll().get("pointCloud", None) if self.lidar is not None else None,
-            pos,
-            vehicle_heading,
-        )
+        perception = self._perceive(pos, vehicle_heading)
 
         self._current_pos = pos
-        if self.waypoints:
-            target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
-            self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
         waypoint_hints = self._get_waypoint_hints(pos, vehicle_heading)
 
@@ -662,14 +709,14 @@ class BeamNGDrivingEnv:
                 np.clip(heading_err / np.pi, -1.0, 1.0),
                 np.clip(lateral_err / 5.0, -1.0, 1.0),
                 np.clip(damage / 1000.0, 0.0, 1.0),
-                np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
+                np.clip(dist / self.CHECKPOINT_DIST_NORM_M, 0.0, 2.0),
             ],
             dtype=np.float32,
         )
         extra = self._extra_features(state)
-        obs = np.concatenate([kin, lidar_bins, waypoint_hints, extra])
+        obs = np.concatenate([kin, perception, waypoint_hints, extra])
 
-        # self._log_observation(kin, lidar_bins, waypoint_hints, extra)
+        self._log_observation(kin, perception, waypoint_hints, extra)
 
         return obs
 
@@ -707,8 +754,8 @@ class BeamNGDrivingEnv:
             f"lat={kin[3]:+.2f} dmg={kin[4]:+.2f} cpdist={kin[5]:+.2f}"
         )
 
-        # --- perception block (lidar bins here; camera env overrides) ---
-        lines.append(self._perception_line(perception))
+        # --- perception block (per-cell for LiDAR, summarized for camera) ---
+        lines.append(beamng_sensors.block_summary(self.sensor, perception))
 
         # --- waypoint hints (paired forward,left per upcoming waypoint) ---
         hints = np.asarray(waypoint_hints).ravel()
@@ -734,218 +781,31 @@ class BeamNGDrivingEnv:
 
         return lines
 
-    def _perception_line(self, lidar_bins) -> str:
-        """One labeled line for the lidar block (v_bins x rays x channels;
-        index = (v*rays + h)*channels + c)."""
-        lidar = np.asarray(lidar_bins).ravel()
-        h_bins = self.LIDAR_RAYS
-        ch = self.LIDAR_CHANNELS_PER_RAY
-        parts = []
-        for i in range(lidar.size):
-            cell = i // ch
-            v, h, c = cell // h_bins, cell % h_bins, i % ch
-            label = f"h{h}" if self.LIDAR_V_BINS == 1 else f"v{v}_h{h}"
-            if ch > 1:
-                label += f"c{c}"
-            parts.append(f"{label}={lidar[i]:+.2f}")
-        return f"obs lidar | {' '.join(parts)}"
-
-    def _lidar_config(self) -> LidarConfig:
-        return LidarConfig(
-            rays=self.LIDAR_RAYS,
-            v_bins=self.LIDAR_V_BINS,
-            channels=self.LIDAR_CHANNELS_PER_RAY,
-            fov_deg=self.LIDAR_FOV_DEG,
-            vert_angle=self.LIDAR_VERT_ANGLE,
-            max_dist=self.LIDAR_MAX_DIST,
-            self_margin=self.LIDAR_SELF_MARGIN,
-            ground_clearance=self.LIDAR_GROUND_CLEARANCE,
-        )
-
-    def _cache_ego_local_bbox(self):
-        """Sample the ego OBB once and store its extents in vehicle-local frame.
-
-        The bbox is queried in world space but, expressed relative to the vehicle
-        reference node and de-rotated by the current heading, the extents are
-        invariant under rigid motion — so caching once per scenario load is
-        enough. Used by _process_lidar to reject self-hits geometrically.
-        """
-        try:
-            # State must be fresh: get_bbox() returns WORLD coords, so we need the
-            # current world pos/heading to de-rotate them. Without a poll, state is
-            # None at scenario-load time and pos would default to (0,0,0), producing
-            # world-scale garbage extents that disable the LiDAR. Poll first.
-            self.vehicle.poll_sensors()
-            bbox = self.vehicle.get_bbox()
-        except Exception:
-            self._ego_local_extents = None
-            return
-
-        state = self.vehicle.state or {}
-        self._ego_local_extents = ego_local_extents_from_bbox(
-            bbox, state, self.LIDAR_SELF_MARGIN, self.BBOX_MAX_HALF_EXTENT
-        )
-
-    def _lidar_keep_mask(self, local_x, local_y, local_z) -> np.ndarray:
-        """Reject points that are (a) inside the ego OBB or (b) ground returns.
-
-        Ground threshold is relative to the ego bbox floor when available, so it
-        tracks the actual vehicle ride height instead of assuming a ref-node-at-
-        ground convention that varies per Jbeam.
-        """
-        n_total = int(local_x.size)
-        inside_self = np.zeros(n_total, dtype=bool)
-
-        if self._ego_local_extents is not None:
-            x_min, x_max, y_min, y_max, z_min, z_max = self._ego_local_extents
-            inside_self = (
-                (local_x >= x_min)
-                & (local_x <= x_max)
-                & (local_y >= y_min)
-                & (local_y <= y_max)
-                & (local_z >= z_min)
-                & (local_z <= z_max)
-            )
-            # z_min already has -LIDAR_SELF_MARGIN baked in, so add it back to
-            # recover the TRUE bbox floor, then require points to clear it by
-            # LIDAR_GROUND_CLEARANCE. (Using z_min directly cancelled the margin
-            # against the clearance, leaving ~0 real clearance, so ground returns
-            # leaked through and every bin read a spurious mid-range distance.)
-            floor = z_min + self.LIDAR_SELF_MARGIN
-            ground_z = floor + self.LIDAR_GROUND_CLEARANCE
-        else:
-            ground_z = self.LIDAR_GROUND_CLEARANCE
-
-        below_ground = local_z <= ground_z
-        keep = ~inside_self & ~below_ground
-
-        self._lidar_debug = {
-            "total": n_total,
-            "self": int(inside_self.sum()),
-            "ground": int((below_ground & ~inside_self).sum()),
-            "kept": int(keep.sum()),
-            "extents_none": self._ego_local_extents is None,
-            "ground_z": float(ground_z),
-            "z_max_seen": float(local_z.max()) if n_total else float("nan"),
-        }
-        return keep
-
     def _resolve_lidar_mount_pos(self) -> tuple[float, float, float]:
-        """Return a vehicle-local LiDAR mount centered above the cached ego roof.
-
-        Returns a position centered above the cached ego bbox roof (the bbox
-        z_max is already margin-expanded; one more LIDAR_ROOF_CLEARANCE is added
-        above it). Falls back to LIDAR_MOUNT_POS when bbox sampling failed.
-        """
-        if self._ego_local_extents is None:
-            return self.LIDAR_MOUNT_POS
-        _, _, _, _, _, z_max = self._ego_local_extents
-        return (0.0, 0.0, float(z_max + self.LIDAR_ROOF_CLEARANCE))
+        """Vehicle-local LiDAR mount, centred above the cached ego roof."""
+        return beamng_sensors.lidar_mount_pos(self._ego_local_extents)
 
     def _lidar_creation_kwargs(self) -> dict:
-        """Return BeamNGpy LiDAR kwargs shared by scenario creation and tests."""
-        return {
-            "pos": self._resolve_lidar_mount_pos(),
-            "dir": self.LIDAR_MOUNT_DIR,
-            "up": self.LIDAR_MOUNT_UP,
-            "requested_update_time": 0.05,
-            "frequency": 30,
-            "vertical_resolution": self.LIDAR_VERT_RES,
-            "vertical_angle": self.LIDAR_VERT_ANGLE,
-            "horizontal_angle": self.LIDAR_FOV_DEG,
-            "max_distance": self.LIDAR_MAX_DIST,
-            "is_360_mode": True,
-            "is_rotate_mode": False,
-            "is_using_shared_memory": False,
-            "is_visualised": LIDAR_VISUALISE,
-            "is_snapping_desired": False,
-            "is_force_inside_triangle": False,
-        }
+        """BeamNGpy LiDAR kwargs for this env's sensor."""
+        return beamng_sensors.lidar_creation_kwargs(self.sensor, self._ego_local_extents)
 
     def _process_lidar(self, point_cloud, vehicle_pos, vehicle_heading) -> np.ndarray:
-        """Bin a raw LiDAR point cloud into a LIDAR_V_BINS x LIDAR_RAYS grid.
+        """Bin a raw LiDAR point cloud into this sensor's feature block.
 
-        Pipeline: world -> ego-local -> self/ground filter -> forward-FOV mask ->
-        elevation+azimuth binning. Returns a flat float32 array of shape
-        (LIDAR_V_BINS * LIDAR_RAYS * LIDAR_CHANNELS_PER_RAY,) in [0, 1], where 0
-        means an obstacle is right there and 1 means the cell is clear.
-
-        Layout is row-major by vertical bin then horizontal bin then channel:
-        index = (v * LIDAR_RAYS + h) * LIDAR_CHANNELS_PER_RAY + c. With
-        LIDAR_V_BINS == 1 this reduces to the legacy single row of LIDAR_RAYS
-        values (vertical structure collapsed), so existing models stay valid.
+        Thin wrapper over the shared geometry helper that also stores the filtering
+        breakdown for the human-play diagnostics.
         """
-        v_bins = self.LIDAR_V_BINS
-        h_bins = self.LIDAR_RAYS
-        ch = self.LIDAR_CHANNELS_PER_RAY
-        n_out = v_bins * h_bins * ch
-        distances = np.ones(n_out, dtype=np.float32)  # default: clear
+        from environments.beamng_geometry import process_lidar
 
-        if point_cloud is None or len(point_cloud) == 0:
-            if LOG_LIDAR and self.bng is not None:
-                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: no points')")
-            return distances
-
-        pts = np.asarray(point_cloud, dtype=np.float32).reshape(-1, 3)
-
-        rel = pts - np.asarray(vehicle_pos, dtype=np.float32)
-        cos_h = np.cos(-vehicle_heading)
-        sin_h = np.sin(-vehicle_heading)
-        local_x = rel[:, 0] * cos_h - rel[:, 1] * sin_h
-        local_y = rel[:, 0] * sin_h + rel[:, 1] * cos_h
-        local_z = rel[:, 2]
-
-        keep = self._lidar_keep_mask(local_x, local_y, local_z)
-        local_x = local_x[keep]
-        local_y = local_y[keep]
-        local_z = local_z[keep]
-        if local_x.size == 0:
-            if LOG_LIDAR and self.bng is not None:
-                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points filtered')")
-            return distances
-
-        angles = np.arctan2(local_y, local_x)
-        dists = np.hypot(local_x, local_y)
-
-        half_fov = np.radians(self.LIDAR_FOV_DEG / 2.0)
-        in_fov = np.abs(angles) <= half_fov
-        angles = angles[in_fov]
-        dists = dists[in_fov]
-        local_z = local_z[in_fov]
-        if angles.size == 0:
-            if LOG_LIDAR and self.bng is not None:
-                self.bng.queue_lua_command("log('I', 'RL', 'Lidar: all points outside FOV')")
-            return distances
-
-        nearest = int(np.argmin(dists))
-        self._lidar_debug["fov"] = int(angles.size)
-        self._lidar_debug["min_dist_m"] = float(dists[nearest])
-        self._lidar_debug["min_dist_z"] = float(local_z[nearest])
-
-        h_edges = np.linspace(-half_fov, half_fov, h_bins + 1)
-        h_idx = np.clip(np.digitize(angles, h_edges) - 1, 0, h_bins - 1)
-
-        if v_bins == 1:
-            v_idx = np.zeros(angles.shape, dtype=np.intp)
-        else:
-            half_vfov = np.radians(self.LIDAR_VERT_ANGLE / 2.0)
-            elevation = np.arctan2(local_z, dists)
-            v_edges = np.linspace(-half_vfov, half_vfov, v_bins + 1)
-            v_idx = np.clip(np.digitize(elevation, v_edges) - 1, 0, v_bins - 1)
-
-        for v in range(v_bins):
-            for h in range(h_bins):
-                sel = dists[(v_idx == v) & (h_idx == h)]
-                if sel.size:
-                    distances[(v * h_bins + h) * ch] = np.clip(
-                        sel.min() / self.LIDAR_MAX_DIST, 0.0, 1.0
-                    )
-
-        if LOG_LIDAR and self.bng is not None:
-            self.bng.queue_lua_command(
-                "log('I', 'RL', 'Lidar: [{}]')".format(", ".join(f"{v:.3f}" for v in distances))
-            )
-        return distances
+        bins, debug = process_lidar(
+            point_cloud,
+            vehicle_pos,
+            vehicle_heading,
+            self._ego_local_extents,
+            beamng_sensors.lidar_config(self.sensor),
+        )
+        self._lidar_debug = debug
+        return bins
 
     def _get_waypoint_hints(self, pos, vehicle_heading) -> np.ndarray:
         """Return vehicle-local (forward, left) coords for the next trajectory_hints waypoints.
@@ -997,13 +857,13 @@ class BeamNGDrivingEnv:
         return np.concatenate(blocks)
 
     def _path_errors(self, pos, state):
-        """Return (heading_error_rad, lateral_error_m) relative to next waypoint.
+        """Return (heading_error_rad, lateral_error_m, dist) relative to next waypoint.
 
         Also stores self._current_dist for progress reward computation.
         """
         if not self.waypoints or not state:
             self._current_dist = 0.0
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
         target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
         dx = target[0] - pos[0]
@@ -1016,7 +876,7 @@ class BeamNGDrivingEnv:
             self._waypoint_idx += 1
             self._checkpoint_hit = True
             self._update_active_marker(self._waypoint_idx)
-            if LOG_CHECKPOINT_HIT:
+            if LOG_CHECKPOINT_HIT and self.bng is not None:
                 self.bng.queue_lua_command("log('I', 'RL', 'checkpoint hit')")
             if self._waypoint_idx < len(self.waypoints):
                 new_t = self.waypoints[self._waypoint_idx]
@@ -1031,30 +891,33 @@ class BeamNGDrivingEnv:
         return float(heading_err), float(lateral_err), dist
 
     def _compute_reward(self, obs):
-        """Merged reward, shared with the multi-vehicle env via beamng_reward."""
-        outcome = compute_merged_reward(
+        """Racing reward, shared with the multi/race envs via beamng_reward.
+
+        No rival here, so the gap term contributes nothing — a solo run is scored
+        purely on pace.
+        """
+        outcome = compute_race_reward(
             obs,
-            perception=self.PERCEPTION,
-            n_perception=self.N_STATES - 6,
+            perception=self.sensor,
+            n_perception=self.n_perception,
             waypoints_len=len(self.waypoints),
             waypoint_idx=self._waypoint_idx,
             checkpoint_hit=self._checkpoint_hit,
             last_dist=self._last_dist,
             current_dist=self._current_dist,
-            checkpoint_dist=self._checkpoint_dist,
             last_damage=self._last_damage,
             steps=self._steps,
             invuln_steps=self._invuln_steps,
+            steps_since_checkpoint=self._steps_since_checkpoint,
             max_steps=self.MAX_STEPS,
             max_damage=self.MAX_DAMAGE,
-            warn_dist=self.CHECKPOINT_WARN_DIST,
-            reset_dist=self.CHECKPOINT_RESET_DIST,
         )
         self._last_dist = outcome.last_dist
         self._last_damage = outcome.last_damage
         self._invuln_steps = outcome.invuln_steps
         self._checkpoint_hit = outcome.checkpoint_hit
         self._waypoint_idx = outcome.waypoint_idx
+        self._steps_since_checkpoint = outcome.steps_since_checkpoint
         return outcome.reward, outcome.done
 
     def _update_active_marker(self, idx: int):
@@ -1062,7 +925,7 @@ class BeamNGDrivingEnv:
 
         Uses bng.debug (beamngpy >= 1.26).  Silently skipped on older builds.
         """
-        if self.bng is None:
+        if self.bng is None or not self.waypoints:
             return
         try:
             debug = self.bng.debug
@@ -1082,345 +945,3 @@ class BeamNGDrivingEnv:
             self._active_marker_id = ids[0]
         except AttributeError:
             pass
-
-
-class BeamNGLidarEnv(BeamNGDrivingEnv):
-    """
-    Discrete-action BeamNG env exposing the LiDAR as a 2D depth grid
-    (vertical layers x horizontal bins) instead of a single collapsed row.
-
-    Each observation cell holds the nearest-obstacle distance for one
-    (elevation, azimuth) slice, normalized to [0, 1] (0 = obstacle here,
-    1 = clear). The vertical dimension lets the policy reason about obstacle
-    *height* (a wall fills several vertical bins; a low object only the bottom
-    one), which a single row cannot represent.
-
-    Same 7 discrete actions and reward as the base `beamng` env; only the
-    observation's LiDAR block grows from 8 to LIDAR_V_BINS * LIDAR_RAYS values.
-    Self-hit and ground filtering are unchanged, so the ego is still never
-    detected and asphalt does not flood the lower rows.
-    """
-
-    PERCEPTION = "lidar_grid"
-    LIDAR_V_BINS = 4  # vertical elevation bins
-    LIDAR_VERT_RES = 16  # more layers to populate the wider vertical FOV
-    LIDAR_VERT_ANGLE = 20.0  # wider vertical FOV (±10°) so the rows span useful elevations
-
-    # 6 kinematic + (4 vertical × 8 horizontal × 1 channel) = 38
-    N_STATES = (
-        6 + BeamNGDrivingEnv.LIDAR_RAYS * LIDAR_V_BINS * BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
-    )
-
-
-class BeamNGContinuousEnv(BeamNGDrivingEnv):
-    """
-    BeamNG environment with a 3D continuous action space.
-
-    The algorithm directly controls throttle, steering, and brake as separate
-    outputs. The actor produces values in [-1, 1] (Tanh); they are mapped as:
-        action[0] -> throttle in [0, 1]   (negative half is ignored / zeroed)
-        action[1] -> steering in [-1, 1]  (used directly)
-        action[2] -> brake    in [0, 1]   (negative half is ignored / zeroed)
-
-    Uses dense waypoints and the DDPG-style reward by default.
-    """
-
-    N_ACTIONS = 3
-
-    def __init__(
-        self,
-        beamng_home: str,
-        beamng_user: str = None,
-        host: str = "localhost",
-        port: int = 25252,
-        headless: bool = False,
-        vehicle_id: str = "taxi",
-        map_name: str = "gridmap_v2",
-        trajectory_hints: int = 0,
-        body_orientation: bool = False,
-        wheel_terrain: bool = False,
-        random_path: bool = False,
-        dense_episodes: int = 0,
-    ):
-        super().__init__(
-            beamng_home=beamng_home,
-            beamng_user=beamng_user,
-            host=host,
-            port=port,
-            headless=headless,
-            reward_mode="default",
-            vehicle_id=vehicle_id,
-            map_name=map_name,
-            trajectory_hints=trajectory_hints,
-            body_orientation=body_orientation,
-            wheel_terrain=wheel_terrain,
-            random_path=random_path,
-            dense_episodes=dense_episodes,
-        )
-
-    def step(self, action):
-        """
-        Apply a continuous action and advance the simulation.
-
-        action: np.ndarray of shape (2,) in [-1, 1]
-            [acceleration, steering]  — positive acceleration = throttle, negative = brake
-        OR shape (3,) in [-1, 1]
-            [throttle_raw, steering, brake_raw]
-        """
-        action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
-        if action.shape[0] == 2:
-            # 2D: single acceleration channel encodes throttle (+) and brake (-)
-            throttle = float(max(0.0, action[0]))
-            steering = float(action[1])
-            brake = float(max(0.0, -action[0]))
-        else:
-            throttle = float(max(0.0, action[0]))
-            steering = float(action[1])
-            brake = float(max(0.0, action[2]))
-
-        self.vehicle.control(throttle=throttle, steering=steering, brake=brake)
-        self.bng.step(10)
-        self._steps += 1
-
-        obs = self._observe()
-        reward, done = self._compute_reward(obs)
-        info = {"steps": self._steps, "waypoint_idx": self._waypoint_idx}
-        return obs, reward, done, info
-
-
-class BeamNGCameraEnv(BeamNGContinuousEnv):
-    """
-    BeamNG continuous-action environment using a front-facing dashcam
-    instead of LiDAR for perception.
-
-    State (5 + CAM_PIXELS floats):
-        speed, steering, heading_error, lateral_error, damage  — kinematic
-        cam[0..N-1]  — flattened grayscale pixels, normalized to [0, 1]
-
-    Actions: same 3D continuous as BeamNGContinuousEnv
-        action[0] -> throttle [0, 1]  (actor output clipped to positive half)
-        action[1] -> steering [-1, 1]
-        action[2] -> brake    [0, 1]  (actor output clipped to positive half)
-    """
-
-    PERCEPTION = "camera"
-    CAM_RESOLUTION = (84, 84)
-    CAM_OUT_SIZE = (16, 16)
-    N_ACTIONS = 3
-    N_STATES = 6 + CAM_OUT_SIZE[0] * CAM_OUT_SIZE[1]  # 262
-
-    def __init__(
-        self,
-        beamng_home: str,
-        beamng_user: str = None,
-        host: str = "localhost",
-        port: int = 25252,
-        headless: bool = False,
-        vehicle_id: str = "taxi",
-        map_name: str = "gridmap_v2",
-        trajectory_hints: int = 0,
-        body_orientation: bool = False,
-        wheel_terrain: bool = False,
-        random_path: bool = False,
-        dense_episodes: int = 0,
-    ):
-        super().__init__(
-            beamng_home=beamng_home,
-            beamng_user=beamng_user,
-            host=host,
-            port=port,
-            headless=headless,
-            vehicle_id=vehicle_id,
-            map_name=map_name,
-            trajectory_hints=trajectory_hints,
-            body_orientation=body_orientation,
-            wheel_terrain=wheel_terrain,
-            random_path=random_path,
-            dense_episodes=dense_episodes,
-        )
-        self.camera: Camera = None
-        self.last_frame: np.ndarray | None = None  # 2-D grayscale (CAM_OUT_SIZE), updated each step
-
-    # ------------------------------------------------------------------
-    # Overrides
-    # ------------------------------------------------------------------
-
-    def _load_scenario(self, human_control=False):
-        if self.camera is not None:
-            self.camera.remove()
-            self.camera = None
-
-        self.scenario = Scenario(
-            self.map_name, "rl_driving_camera", description="RL Camera Training"
-        )
-        vcfg = self.VEHICLES.get(self.vehicle_id, self.VEHICLES["taxi"])
-        self.vehicle = Vehicle("ego_vehicle", **vcfg)
-        self.electrics = Electrics()
-        self.damage_sensor = Damage()
-        self.vehicle.attach_sensor("electrics", self.electrics)
-        self.vehicle.attach_sensor("damage", self.damage_sensor)
-
-        self.scenario.add_vehicle(
-            self.vehicle, pos=self.trajectory.spawn_pos, rot_quat=self.trajectory.spawn_rot
-        )
-
-        # Visual checkpoint rings for every waypoint (visible in-game as hoops, training and human play).
-        checkpoint_wps = (
-            [wp for p in self._paths for wp in p.sparse_waypoints]
-            if self.random_path
-            else self.waypoints
-        )
-        scales = [(5.0, 5.0, 1.0)] * len(checkpoint_wps)
-        self.scenario.add_checkpoints(checkpoint_wps, scales)
-
-        self.scenario.make(self.bng)
-        self.bng.set_deterministic(30)
-        self.bng.load_scenario(self.scenario)
-        self.bng.start_scenario()
-        time.sleep(1.0)
-
-        self.camera = Camera(
-            "dashcam",
-            self.bng,
-            self.vehicle,
-            pos=(0, -0.5, 1.5),
-            dir=(0, -1, 0),
-            field_of_view_y=70,
-            resolution=self.CAM_RESOLUTION,
-            is_render_colours=True,
-            is_render_depth=False,
-            is_render_annotations=False,
-            is_visualised=True,
-            is_static=False,
-        )
-
-        self._update_active_marker(0)
-        self._attach_roads_sensor()
-
-    def _observe(self) -> np.ndarray:
-        self.vehicle.poll_sensors()
-
-        elec = self.electrics.data or {}
-        dmg = self.damage_sensor.data or {}
-
-        speed = float(elec.get("wheelspeed", 0.0))
-        steering = float(elec.get("steering", 0.0))
-        damage = float(dmg.get("damage", 0.0))
-
-        state = self.vehicle.state or {}
-        pos = state.get("pos", (0.0, 0.0, 0.0))
-        vel = state.get("vel", (1.0, 0.0, 0.0))
-        dir_vec = state.get("dir", vel)
-        vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
-
-        heading_err, lateral_err, dist = self._path_errors(pos, state)
-        cam_pixels = self._process_camera()
-        waypoint_hints = self._get_waypoint_hints(pos, vehicle_heading)
-
-        self._current_pos = pos
-        if self.waypoints:
-            target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
-            self._checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
-
-        kin = np.array(
-            [
-                np.clip(speed / 50.0, -1.0, 1.0),
-                np.clip(steering, -1.0, 1.0),
-                np.clip(heading_err / np.pi, -1.0, 1.0),
-                np.clip(lateral_err / 5.0, -1.0, 1.0),
-                np.clip(damage / 1000.0, 0.0, 1.0),
-                np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
-            ],
-            dtype=np.float32,
-        )
-        extra = self._extra_features(state)
-        obs = np.concatenate([kin, cam_pixels, waypoint_hints, extra])
-
-        self._log_observation(kin, cam_pixels, waypoint_hints, extra)
-
-        return obs
-
-    def _perception_line(self, cam_pixels) -> str:
-        """Summarize the camera block instead of dumping every pixel."""
-        px = np.asarray(cam_pixels).ravel()
-        if px.size == 0:
-            return "obs cam   | (empty)"
-        h, w = self.CAM_OUT_SIZE
-        return (
-            f"obs cam   | min={px.min():+.2f} max={px.max():+.2f} "
-            f"mean={px.mean():+.2f} px={px.size} ({h}x{w})"
-        )
-
-    def close(self, kill_sim: bool = True):
-        if self.camera is not None:
-            t = threading.Thread(target=self.camera.remove, daemon=True)
-            t.start()
-            t.join(timeout=3.0)
-            self.camera = None
-        super().close(kill_sim=kill_sim)
-
-    def human_play_camera(self):
-        """Human play with the 16×16 dashcam frame rendered as ASCII art in-place."""
-        if self.bng is None:
-            self._launch(human_control=True)
-        else:
-            self._load_scenario(human_control=True)
-
-        self._waypoint_idx = 0
-        self._update_active_marker(0)
-        # Enable obs logging (Lua + line cache for the redraw); the ASCII block below
-        # renders the obs lines to stdout itself, so leave _obs_log_stdout off.
-        self._log_obs = True
-
-        self.bng.resume()
-        print(
-            "[BeamNGCameraEnv] Human control active (Camera) — drive in-game. Press Ctrl+C to stop."
-        )
-
-        ramp = " ░▒▓█"
-        prev_total = 0
-        first = True
-
-        try:
-            while not stop_requested():
-                # _observe polls the camera (caches last_frame), logs the full obs to
-                # the Lua console, and advances waypoints. We render the same frame as
-                # ASCII art plus the numeric obs lines, redrawn in place each tick.
-                self._observe()
-                if not self._maybe_reset_on_completion():
-                    self._maybe_respawn_on_crash()
-                frame = self.last_frame
-                if frame is None:
-                    frame = np.zeros(self.CAM_OUT_SIZE, dtype=np.float32)
-                rows = ["".join(ramp[min(int(v * 4), 4)] for v in row) for row in frame]
-                block = rows + self._last_obs_lines
-                if not first:
-                    sys.stdout.write(f"\033[{prev_total}A")
-                # \033[K clears each line to its end so a shorter frame leaves no residue.
-                sys.stdout.write("".join(f"{line}\033[K\n" for line in block))
-                sys.stdout.flush()
-                prev_total = len(block)
-                first = False
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            print("[BeamNGCameraEnv] Human play stopped.")
-
-    # ------------------------------------------------------------------
-    # Camera processing
-    # ------------------------------------------------------------------
-
-    def _process_camera(self) -> np.ndarray:
-        """Poll camera and return a flattened grayscale image normalized to [0, 1].
-
-        Delegates the frame math to the shared `process_camera_frame` helper;
-        keeps the poll, `last_frame` cache, and optional Lua logging here.
-        """
-        colour = self.camera.poll().get("colour", None) if self.camera is not None else None
-        flat = process_camera_frame(colour, self.CAM_OUT_SIZE)
-        self.last_frame = flat.reshape(self.CAM_OUT_SIZE)  # 2-D (CAM_OUT_SIZE), values in [0, 1]
-        if LOG_CAMERA and self.bng is not None:
-            mn, mx, avg = float(flat.min()), float(flat.max()), float(flat.mean())
-            self.bng.queue_lua_command(
-                f"log('I', 'RL', 'Camera: min={mn:.3f} max={mx:.3f} mean={avg:.3f}')"
-            )
-        return flat

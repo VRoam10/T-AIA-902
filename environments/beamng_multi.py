@@ -13,25 +13,20 @@ import numpy as np
 
 try:
     from beamngpy import BeamNGpy, Scenario, Vehicle
-    from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor
+    from beamngpy.sensors import Damage, Electrics
 except ImportError:
-    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
+    BeamNGpy = Scenario = Vehicle = Damage = Electrics = None
 
-from config import (  # noqa: F401  (LOG_LIDAR reserved for future logging parity)
-    LIDAR_VISUALISE,
-    LOG_LIDAR,
-)
 from core.trajectory import MapTrajectories, load_or_generate
+from environments import beamng_sensors, beamng_spec
 from environments.beamng import BeamNGDrivingEnv
-from environments.beamng_camera_util import process_camera_frame
 from environments.beamng_geometry import (
-    LidarConfig,
     body_orientation_features,
-    ego_local_extents_from_bbox,
-    process_lidar,
+    starting_grid,
     wheel_terrain_features,
 )
-from environments.beamng_reward import compute_merged_reward
+from environments.beamng_reward import compute_race_reward
+from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
 
 @dataclass
@@ -45,19 +40,19 @@ class VehicleSlot:
     # Identity / config
     name: str
     color: str
-    vehicle_id: str
     agent: Any
-    reward_mode: str  # "default" (DQN) or "ddpg" (DDPG/TD3)
-    action_space: str  # "discrete" or "continuous"
     save_path: str
 
-    # Environment profile (assigned by build_slots from the chosen env name)
-    env_name: str = "beamng"
-    perception: str = "lidar"  # "lidar" | "lidar_grid" | "camera"
+    # Configuration axes (see environments.beamng_spec)
+    sensor: str = beamng_spec.DEFAULT_SENSOR  # "lidar" | "adv_lidar" | "camera"
+    output: str = "fixed"  # "fixed" | "continuous"
+    # A human entrant (race mode only): the player drives it, so we apply no
+    # controls and it has no agent, observation or action head.
+    human: bool = False
     trajectory_hints: int = 0
     body_orientation: bool = False
     wheel_terrain: bool = False
-    n_states: int = 14  # observation length for this vehicle's env
+    n_states: int = 14  # observation length for this vehicle's config
 
     # Sensors (assigned during scenario load)
     vehicle: Any = None
@@ -70,6 +65,10 @@ class VehicleSlot:
     # Per-vehicle starting-grid pose (assigned during scenario load)
     spawn_pos: tuple = (0.0, 0.0, 0.0)
     spawn_rot: tuple = (0.0, 0.0, 0.0, 1.0)
+    # How far this slot's cached spawn height sits above where its car rests,
+    # measured from the clung scenario spawn (see environments.beamng_spawn).
+    # Teleports add it so a reset places the car instead of dropping it.
+    spawn_z_correction: float = 0.0
     path_idx: int = 0
     waypoints: list = field(default_factory=list)
 
@@ -79,10 +78,15 @@ class VehicleSlot:
     last_dist: float = 0.0
     current_dist: float = 0.0
     current_pos: tuple = (0.0, 0.0, 0.0)
-    checkpoint_dist: float = 0.0
     checkpoint_hit: bool = False
     invuln_steps: int = 0  # damage-immune steps remaining (granted on checkpoint hit)
+    steps_since_checkpoint: int = 0  # drives the segment-time bonus
     steps: int = 0
+    finished: bool = False  # cleared the last checkpoint (the race winner, if first)
+    # Race-mode gap bookkeeping: own and best-rival progress at the previous tick,
+    # so the reward's gap term can telescope. Unused when running solo.
+    last_progress_m: float = 0.0
+    last_rival_progress_m: float = 0.0
     ego_local_extents: tuple | None = None
     last_obs: np.ndarray | None = None
     done: bool = False
@@ -106,61 +110,32 @@ class VehicleSlot:
         self.last_damage = 0.0
         self.last_dist = 0.0
         self.current_dist = 0.0
-        self.checkpoint_dist = 0.0
         self.checkpoint_hit = False
         self.invuln_steps = 0
+        self.steps_since_checkpoint = 0
         self.steps = 0
+        self.finished = False
+        self.last_progress_m = 0.0
+        self.last_rival_progress_m = 0.0
         self.ep_reward = 0.0
         self.ep_losses = []
         self.ep_speeds = []
         self.done = False
 
 
-# Algorithms whose action space is continuous (actor outputs in [-1, 1]).
-_CONTINUOUS_ALGOS = {"ddpg", "td3"}
-
-# Registered BeamNG env name -> perception type.
-# trajectory_hints is now a per-session prompt, not encoded in the env name.
-_ENV_PROFILES = {
-    "beamng": "lidar",
-    "beamng_continuous": "lidar",
-    "beamng_lidar": "lidar_grid",
-    "beamng_camera": "camera",
-}
-
-# Perception type -> number of perception features in the observation vector.
-_PERCEPTION_FEATURES = {"lidar": 8, "lidar_grid": 32, "camera": 256}
-
-# Perception type -> LiDAR sensor params (vertical bins/resolution/FOV). Camera
-# perception has no entry (it uses a Camera sensor instead).
-_LIDAR_PERCEPTION = {
-    "lidar": {"v_bins": 1, "vert_res": 32, "vert_angle": 26.9},
-    "lidar_grid": {"v_bins": 4, "vert_res": 16, "vert_angle": 20.0},
-}
-
-_KINEMATIC_FEATURES = 6  # speed, steering, heading_err, lateral_err, damage, dist
-
-
-def env_profile(env_name: str) -> str:
-    """Return the perception type for a registered BeamNG env name."""
-    return _ENV_PROFILES.get(env_name, "lidar")
-
-
 def slot_n_states(
-    env_name: str,
+    sensor: str,
     trajectory_hints: int = 0,
     body_orientation: bool = False,
     wheel_terrain: bool = False,
 ) -> int:
-    """Observation length for a vehicle running the given env with the given options."""
-    perception = env_profile(env_name)
-    return (
-        _KINEMATIC_FEATURES
-        + _PERCEPTION_FEATURES[perception]
-        + 2 * trajectory_hints
-        + (2 if body_orientation else 0)
-        + (2 if wheel_terrain else 0)
-    )
+    """Observation length for a vehicle running the given sensor and options.
+
+    Kept as a named entry point for the slot-building code; the arithmetic itself
+    lives in :func:`environments.beamng_spec.obs_size`, which the single-vehicle
+    env and the agent-sizing code also use.
+    """
+    return beamng_spec.obs_size(sensor, trajectory_hints, body_orientation, wheel_terrain)
 
 
 # Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
@@ -185,38 +160,33 @@ def _color_rgba(name: str) -> tuple[float, float, float, float]:
 def build_slots(specs: list[dict]) -> list[VehicleSlot]:
     """Turn a list of vehicle specs into VehicleSlots.
 
-    Each spec dict: {"algo", "env", "agent", "vehicle_id", "color", "save_path",
-    "trajectory_hints", "body_orientation", "wheel_terrain"}.
-    trajectory_hints defaults to 0 when absent; body_orientation and
-    wheel_terrain both default to False when absent.
-    reward_mode uses the LiDAR-aware DDPG reward only for continuous algos on a
-    LiDAR perception (camera and discrete DQN fall back to the default reward).
+    Each spec dict: ``{"algo", "agent", "color", "save_path", "sensor",
+    "trajectory_hints", "body_orientation", "wheel_terrain"}``. ``sensor`` defaults
+    to the spec module's default; ``trajectory_hints`` to 0; the two observation
+    flags to False.
+
+    The output axis is derived from the algorithm rather than carried in the spec —
+    a DQN head cannot emit continuous controls and DDPG/TD3 emit nothing else, so
+    letting a spec disagree with its algorithm would only create a way to be wrong.
     """
     slots = []
     for i, spec in enumerate(specs):
-        algo = spec["algo"]
-        env_name = spec.get("env", "beamng")
+        sensor = spec.get("sensor", beamng_spec.DEFAULT_SENSOR)
         trajectory_hints = spec.get("trajectory_hints", 0)
         body_orientation = spec.get("body_orientation", False)
         wheel_terrain = spec.get("wheel_terrain", False)
-        perception = env_profile(env_name)
-        continuous = algo in _CONTINUOUS_ALGOS
-        ddpg_reward = continuous and perception in ("lidar", "lidar_grid")
         slots.append(
             VehicleSlot(
                 name=f"ego_{i}",
                 color=spec["color"],
-                vehicle_id=spec["vehicle_id"],
                 agent=spec["agent"],
-                reward_mode="ddpg" if ddpg_reward else "default",
-                action_space="continuous" if continuous else "discrete",
                 save_path=spec["save_path"],
-                env_name=env_name,
-                perception=perception,
+                sensor=sensor,
+                output=beamng_spec.output_for_algo(spec["algo"]),
                 trajectory_hints=trajectory_hints,
                 body_orientation=body_orientation,
                 wheel_terrain=wheel_terrain,
-                n_states=slot_n_states(env_name, trajectory_hints, body_orientation, wheel_terrain),
+                n_states=slot_n_states(sensor, trajectory_hints, body_orientation, wheel_terrain),
             )
         )
     return slots
@@ -230,41 +200,23 @@ class BeamNGMultiEnv:
     every mutable bit of episode state in per-vehicle VehicleSlots.
     """
 
-    # Reuse the discrete action table and tunables from the single-vehicle env.
+    # Reuse the discrete action table and tunables from the single-vehicle env, so
+    # a vehicle behaves identically whether trained alone or alongside others.
     ACTIONS = BeamNGDrivingEnv.ACTIONS
     N_ACTIONS_DISCRETE = len(BeamNGDrivingEnv.ACTIONS)  # 7
     WAYPOINT_RADIUS = BeamNGDrivingEnv.WAYPOINT_RADIUS
     MAX_STEPS = BeamNGDrivingEnv.MAX_STEPS
     MAX_DAMAGE = BeamNGDrivingEnv.MAX_DAMAGE
-    CHECKPOINT_WARN_DIST = BeamNGDrivingEnv.CHECKPOINT_WARN_DIST
-    CHECKPOINT_RESET_DIST = BeamNGDrivingEnv.CHECKPOINT_RESET_DIST
+    CHECKPOINT_DIST_NORM_M = BeamNGDrivingEnv.CHECKPOINT_DIST_NORM_M
+    HALF_TRACK_WIDTH = BeamNGDrivingEnv.HALF_TRACK_WIDTH
 
-    # LiDAR geometry constants (single forward row, same as base env).
-    LIDAR_RAYS = BeamNGDrivingEnv.LIDAR_RAYS
-    LIDAR_V_BINS = BeamNGDrivingEnv.LIDAR_V_BINS
-    LIDAR_CHANNELS_PER_RAY = BeamNGDrivingEnv.LIDAR_CHANNELS_PER_RAY
-    LIDAR_FOV_DEG = BeamNGDrivingEnv.LIDAR_FOV_DEG
-    LIDAR_VERT_ANGLE = BeamNGDrivingEnv.LIDAR_VERT_ANGLE
-    LIDAR_MAX_DIST = BeamNGDrivingEnv.LIDAR_MAX_DIST
-    LIDAR_GROUND_CLEARANCE = BeamNGDrivingEnv.LIDAR_GROUND_CLEARANCE
-    LIDAR_SELF_MARGIN = BeamNGDrivingEnv.LIDAR_SELF_MARGIN
-    LIDAR_MOUNT_POS = BeamNGDrivingEnv.LIDAR_MOUNT_POS
-    LIDAR_MOUNT_DIR = BeamNGDrivingEnv.LIDAR_MOUNT_DIR
-    LIDAR_MOUNT_UP = BeamNGDrivingEnv.LIDAR_MOUNT_UP
-    LIDAR_VERT_RES = BeamNGDrivingEnv.LIDAR_VERT_RES
-    LIDAR_ROOF_CLEARANCE = BeamNGDrivingEnv.LIDAR_ROOF_CLEARANCE
-    BBOX_MAX_HALF_EXTENT = BeamNGDrivingEnv.BBOX_MAX_HALF_EXTENT
+    RACE_CAR = BeamNGDrivingEnv.RACE_CAR
 
-    VEHICLES = BeamNGDrivingEnv.VEHICLES
-
-    HALF_TRACK_WIDTH = 0.7  # metres — half vehicle track, for per-wheel road-edge projection
-
-    # Dashcam config for camera-perception vehicles (mirrors BeamNGCameraEnv).
-    CAM_RESOLUTION = (84, 84)
-    CAM_OUT_SIZE = (16, 16)
-    CAM_FOV_Y = 70
-    CAM_POS = (0, -0.5, 1.5)
-    CAM_DIR = (0, -1, 0)
+    # Starting-grid geometry, used whenever vehicles share one path (race mode, or
+    # training on a game track). Lateral must clear the car's width and stagger its
+    # length; the race car is ~1.9 m wide and ~4.5 m long.
+    GRID_LATERAL_M = 3.0
+    GRID_STAGGER_M = 6.0
 
     def __init__(
         self,
@@ -276,6 +228,7 @@ class BeamNGMultiEnv:
         headless: bool = False,
         map_name: str = "gridmap_v2",
         random_path: bool = False,
+        track: str | None = None,
     ):
         self.slots = slots
         self.beamng_home = beamng_home
@@ -285,37 +238,29 @@ class BeamNGMultiEnv:
         self.headless = headless
         self.map_name = map_name
         self.random_path = random_path
+        # One of the game's own race tracks (a quickrace key), or None for the
+        # generated road-network paths. See core.quickrace.
+        self.track = track
 
         self.bng: BeamNGpy = None
         self.scenario: Scenario = None
         self.trajectories: MapTrajectories | None = None
 
-    def _lidar_config_for(self, slot: VehicleSlot) -> LidarConfig:
-        """LiDAR binning config for a slot's perception (single-row or 2D grid)."""
-        p = _LIDAR_PERCEPTION[slot.perception]
-        return LidarConfig(
-            rays=self.LIDAR_RAYS,
-            v_bins=p["v_bins"],
-            channels=self.LIDAR_CHANNELS_PER_RAY,
-            fov_deg=self.LIDAR_FOV_DEG,
-            vert_angle=p["vert_angle"],
-            max_dist=self.LIDAR_MAX_DIST,
-            self_margin=self.LIDAR_SELF_MARGIN,
-            ground_clearance=self.LIDAR_GROUND_CLEARANCE,
-        )
-
     def apply_action(self, slot: VehicleSlot, action) -> None:
-        """Map an agent action to vehicle controls. Does not step physics."""
-        if slot.action_space == "discrete" or isinstance(action, (int, np.integer)):
+        """Map an agent action to vehicle controls. Does not step physics.
+
+        Delegates the mapping to the single-vehicle env so the two cannot drift:
+        the same action must produce the same controls whether a policy is trained
+        alone or in a shared scenario.
+        """
+        if slot.output == "fixed" or isinstance(action, (int, np.integer)):
             ctrl = self.ACTIONS[int(action)]
             throttle, steering, brake = ctrl["throttle"], ctrl["steering"], ctrl["brake"]
         else:
-            action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+            action = np.clip(np.asarray(action, dtype=np.float32).ravel(), -1.0, 1.0)
             if action.shape[0] == 2:
                 accel = float(action[0])
-                steering = float(action[1])
-                throttle = max(0.0, accel)
-                brake = max(0.0, -accel)
+                throttle, steering, brake = max(0.0, accel), float(action[1]), max(0.0, -accel)
             else:
                 throttle = float(max(0.0, action[0]))
                 steering = float(action[1])
@@ -352,31 +297,37 @@ class BeamNGMultiEnv:
         lateral_err = dist * np.sin(heading_err)
         return float(heading_err), float(lateral_err), dist
 
-    def compute_reward(self, slot, obs):
-        """Merged reward, shared with the single-vehicle env via beamng_reward."""
-        outcome = compute_merged_reward(
+    def compute_reward(self, slot, obs, **race_kwargs):
+        """Racing reward, shared with the single-vehicle env via beamng_reward.
+
+        Training vehicles run on separate paths and never meet, so no rival
+        arguments are passed and the gap term contributes nothing. The race env
+        forwards its gap/rival keywords through ``race_kwargs``.
+        """
+        outcome = compute_race_reward(
             obs,
-            perception=slot.perception,
-            n_perception=_PERCEPTION_FEATURES[slot.perception],
+            perception=slot.sensor,
+            n_perception=beamng_spec.perception_features(slot.sensor),
             waypoints_len=len(slot.waypoints),
             waypoint_idx=slot.waypoint_idx,
             checkpoint_hit=slot.checkpoint_hit,
             last_dist=slot.last_dist,
             current_dist=slot.current_dist,
-            checkpoint_dist=slot.checkpoint_dist,
             last_damage=slot.last_damage,
             steps=slot.steps,
             invuln_steps=slot.invuln_steps,
+            steps_since_checkpoint=slot.steps_since_checkpoint,
             max_steps=self.MAX_STEPS,
             max_damage=self.MAX_DAMAGE,
-            warn_dist=self.CHECKPOINT_WARN_DIST,
-            reset_dist=self.CHECKPOINT_RESET_DIST,
+            **race_kwargs,
         )
         slot.last_dist = outcome.last_dist
         slot.last_damage = outcome.last_damage
         slot.invuln_steps = outcome.invuln_steps
         slot.checkpoint_hit = outcome.checkpoint_hit
         slot.waypoint_idx = outcome.waypoint_idx
+        slot.steps_since_checkpoint = outcome.steps_since_checkpoint
+        slot.finished = outcome.finished
         return outcome.reward, outcome.done
 
     def observe(self, slot: VehicleSlot) -> np.ndarray:
@@ -400,9 +351,6 @@ class BeamNGMultiEnv:
         perception = self._perceive(slot, pos, vehicle_heading)
 
         slot.current_pos = pos
-        if slot.waypoints:
-            target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
-            slot.checkpoint_dist = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
 
         waypoint_hints = self._waypoint_hints(slot, pos, vehicle_heading)
 
@@ -415,7 +363,7 @@ class BeamNGMultiEnv:
                         np.clip(heading_err / np.pi, -1.0, 1.0),
                         np.clip(lateral_err / 5.0, -1.0, 1.0),
                         np.clip(damage / 1000.0, 0.0, 1.0),
-                        np.clip(dist / self.CHECKPOINT_WARN_DIST, 0.0, 2.0),
+                        np.clip(dist / self.CHECKPOINT_DIST_NORM_M, 0.0, 2.0),
                     ],
                     dtype=np.float32,
                 ),
@@ -427,14 +375,15 @@ class BeamNGMultiEnv:
 
     def _perceive(self, slot: VehicleSlot, pos, vehicle_heading) -> np.ndarray:
         """Return the slot's perception feature block (LiDAR bins or camera pixels)."""
-        if slot.perception == "camera":
-            colour = slot.camera.poll().get("colour", None) if slot.camera is not None else None
-            return process_camera_frame(colour, self.CAM_OUT_SIZE)
-        point_cloud = slot.lidar.poll().get("pointCloud", None) if slot.lidar is not None else None
-        bins, _debug = process_lidar(
-            point_cloud, pos, vehicle_heading, slot.ego_local_extents, self._lidar_config_for(slot)
+        block, _debug, _frame = beamng_sensors.perception_block(
+            sensor=slot.sensor,
+            lidar=slot.lidar,
+            camera=slot.camera,
+            pos=pos,
+            heading=vehicle_heading,
+            ego_extents=slot.ego_local_extents,
         )
-        return bins
+        return block
 
     def _slot_extra_features(self, slot, state) -> np.ndarray:
         """Optional observation tail for a slot (body orientation / wheel terrain).
@@ -492,6 +441,12 @@ class BeamNGMultiEnv:
     def _assign_paths(self):
         """Give each vehicle its own path; error if vehicles outnumber paths."""
         paths = self.trajectories.paths
+        if self.track:
+            # A game track is one authored racing line, so "a path each" cannot
+            # apply: everyone drives it, spread over a starting grid so they do
+            # not spawn inside one another. Same arrangement the race mode uses.
+            self._assign_shared_path(paths[0])
+            return
         if len(self.slots) > len(paths):
             raise ValueError(
                 f"{len(self.slots)} vehicles requested but map '{self.map_name}' has "
@@ -514,16 +469,61 @@ class BeamNGMultiEnv:
         slot.spawn_pos = path.spawn_pos
         slot.spawn_rot = path.spawn_rot
 
+    def _assign_shared_path(self, path, path_idx: int = 0) -> None:
+        """Put every slot on one path, spread across a starting grid.
+
+        Shared by race mode (everyone on the same trace, by definition) and by
+        training on a game track (one authored line, so there is nothing else to
+        put them on).
+        """
+        grid = starting_grid(
+            path.spawn_pos,
+            path.spawn_rot,
+            len(self.slots),
+            lateral_m=self.GRID_LATERAL_M,
+            stagger_m=self.GRID_STAGGER_M,
+        )
+        for slot, pos in zip(self.slots, grid, strict=True):
+            slot.path_idx = path_idx
+            self._apply_path(slot, path)
+            slot.spawn_pos = pos  # the grid slot, not the shared centreline spawn
+
     def _pick_distinct_path_idx(self, slot) -> int:
         """A random path index not currently held by any other slot."""
         taken = {s.path_idx for s in self.slots if s is not slot}
         free = [i for i in range(len(self.trajectories.paths)) if i not in taken]
         return random.choice(free)
 
+    def _load_track(self, key: str) -> MapTrajectories:
+        """One of the game's race tracks, wrapped as this map's single path.
+
+        Every entrant races the same line, which is what the shared-track race
+        mode wants; training on a game track puts all vehicles on it too (there is
+        only one path, so the per-vehicle distinct-path rule cannot apply).
+        """
+        from core import quickrace
+
+        race = quickrace.load(self.map_name, key, self.beamng_home)
+        traj = quickrace.to_trajectory(race)
+        print(
+            f"[track] {self.map_name}/{race.key}: {race.kind}, "
+            f"{len(race.checkpoints)} checkpoints, {race.length_m():.0f} m"
+        )
+        return MapTrajectories(
+            map_name=self.map_name,
+            generated_at=traj.generated_at,
+            paths=[traj],
+        )
+
     def _resolve_trajectory(self):
         import time
 
         from core.trajectory import CACHE_DIR
+
+        if self.track:
+            # A game track is read from the level files, so it needs neither a
+            # cache nor a probe scenario.
+            return self._load_track(self.track)
 
         cache_path = CACHE_DIR / f"{self.map_name}.json"
         if cache_path.exists():
@@ -544,9 +544,9 @@ class BeamNGMultiEnv:
         self.scenario = Scenario(self.map_name, "rl_multi_driving", description="RL Multi-Agent")
 
         for slot in self.slots:
-            vcfg = self.VEHICLES.get(slot.vehicle_id, self.VEHICLES["taxi"])
-            vcfg = {**vcfg, "color": slot.color}
-            slot.vehicle = Vehicle(slot.name, **vcfg)
+            # One car model for everyone; only the paint differs, so a result
+            # reflects the policies rather than the machinery.
+            slot.vehicle = Vehicle(slot.name, **{**self.RACE_CAR, "color": slot.color})
             slot.electrics = Electrics()
             slot.damage_sensor = Damage()
             slot.vehicle.attach_sensor("electrics", slot.electrics)
@@ -566,10 +566,23 @@ class BeamNGMultiEnv:
         self.scenario.add_checkpoints(all_waypoints, scales)
 
         self.scenario.make(self.bng)
-        self.bng.set_deterministic(30)
+        self.bng.set_deterministic(beamng_spec.PHYSICS_STEPS_PER_SECOND)
         self.bng.load_scenario(self.scenario)
         self.bng.start_scenario()
         time.sleep(1.0)
+
+        # Every car above was spawned with cling=True and is now resting at its
+        # own true surface height, so each slot measures its own correction —
+        # grid slots sit metres apart laterally and a cambered road is not flat.
+        for slot in self.slots:
+            slot.spawn_z_correction = measure_spawn_z_correction(
+                self.bng, slot.vehicle, slot.spawn_pos[2]
+            )
+            if slot.spawn_z_correction != 0.0:
+                print(
+                    f"[spawn] {slot.name}: teleport height corrected by "
+                    f"{slot.spawn_z_correction:+.2f} m"
+                )
 
         for slot in self.slots:
             self._create_slot_sensor(slot)
@@ -579,69 +592,23 @@ class BeamNGMultiEnv:
         """Attach the perception sensor (LiDAR or camera) for one slot.
 
         Sensors must be created after the scenario starts. Camera slots get a
-        dashcam; LiDAR/LiDAR-grid slots get a LiDAR sized for their perception
-        plus a cached ego bbox for self-hit filtering.
+        dashcam; LiDAR slots get a LiDAR sized for their sensor plus a cached ego
+        bbox, used both for self-hit filtering and to place the roof mount.
         """
         if slot.wheel_terrain:
-            slot.roads_sensor = RoadsSensor(f"roads_{slot.name}", self.bng, slot.vehicle)
+            slot.roads_sensor = beamng_sensors.create_roads_sensor(
+                f"roads_{slot.name}", self.bng, slot.vehicle
+            )
 
-        if slot.perception == "camera":
-            slot.camera = Camera(
-                f"cam_{slot.name}",
-                self.bng,
-                slot.vehicle,
-                pos=self.CAM_POS,
-                dir=self.CAM_DIR,
-                field_of_view_y=self.CAM_FOV_Y,
-                resolution=self.CAM_RESOLUTION,
-                is_render_colours=True,
-                is_render_depth=False,
-                is_render_annotations=False,
-                is_visualised=False,
-                is_static=False,
+        if slot.sensor == "camera":
+            slot.camera = beamng_sensors.create_camera(
+                f"cam_{slot.name}", self.bng, slot.vehicle, visualise=False
             )
             return
 
-        self._cache_ego_local_bbox(slot)
-        p = _LIDAR_PERCEPTION[slot.perception]
-        slot.lidar = Lidar(
-            f"lidar_{slot.name}",
-            self.bng,
-            slot.vehicle,
-            pos=self._resolve_slot_lidar_mount_pos(slot),
-            dir=self.LIDAR_MOUNT_DIR,
-            up=self.LIDAR_MOUNT_UP,
-            requested_update_time=0.05,
-            frequency=30,
-            vertical_resolution=p["vert_res"],
-            vertical_angle=p["vert_angle"],
-            horizontal_angle=self.LIDAR_FOV_DEG,
-            max_distance=self.LIDAR_MAX_DIST,
-            is_360_mode=True,
-            is_rotate_mode=False,
-            is_using_shared_memory=False,
-            is_visualised=LIDAR_VISUALISE,
-            is_snapping_desired=False,
-            is_force_inside_triangle=False,
-        )
-
-    def _resolve_slot_lidar_mount_pos(self, slot: VehicleSlot) -> tuple[float, float, float]:
-        """Mirror BeamNGDrivingEnv._resolve_lidar_mount_pos using the slot's cached ego box."""
-        if slot.ego_local_extents is None:
-            return self.LIDAR_MOUNT_POS
-        _, _, _, _, _, z_max = slot.ego_local_extents
-        return (0.0, 0.0, float(z_max + self.LIDAR_ROOF_CLEARANCE))
-
-    def _cache_ego_local_bbox(self, slot: VehicleSlot):
-        try:
-            slot.vehicle.poll_sensors()
-            bbox = slot.vehicle.get_bbox()
-        except Exception:
-            slot.ego_local_extents = None
-            return
-        state = slot.vehicle.state or {}
-        slot.ego_local_extents = ego_local_extents_from_bbox(
-            bbox, state, self.LIDAR_SELF_MARGIN, self.BBOX_MAX_HALF_EXTENT
+        slot.ego_local_extents = beamng_sensors.cache_ego_local_bbox(slot.vehicle)
+        slot.lidar = beamng_sensors.create_lidar(
+            f"lidar_{slot.name}", self.bng, slot.vehicle, slot.sensor, slot.ego_local_extents
         )
 
     def _update_slot_marker(self, slot: VehicleSlot):
@@ -677,7 +644,11 @@ class BeamNGMultiEnv:
             self.launch()
         for slot in self.slots:
             slot.reset_episode()
-            slot.vehicle.teleport(slot.spawn_pos, rot_quat=slot.spawn_rot, reset=True)
+            slot.vehicle.teleport(
+                corrected_spawn(slot.spawn_pos, slot.spawn_z_correction),
+                rot_quat=slot.spawn_rot,
+                reset=True,
+            )
             slot.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
         self.bng.step(5)
         for slot in self.slots:
@@ -690,7 +661,11 @@ class BeamNGMultiEnv:
         if self.random_path and self.trajectories is not None:
             slot.path_idx = self._pick_distinct_path_idx(slot)
             self._apply_path(slot, self.trajectories.paths[slot.path_idx])
-        slot.vehicle.teleport(slot.spawn_pos, rot_quat=slot.spawn_rot, reset=True)
+        slot.vehicle.teleport(
+            corrected_spawn(slot.spawn_pos, slot.spawn_z_correction),
+            rot_quat=slot.spawn_rot,
+            reset=True,
+        )
         slot.reset_episode()
         # Let the teleport/repair land before the priming poll: sensors polled
         # with no intervening step still report the pre-teleport pose/damage,
@@ -704,8 +679,12 @@ class BeamNGMultiEnv:
         self._update_slot_marker(slot)
 
     def step_physics(self):
-        """Advance every vehicle by one env step (10 physics ticks)."""
-        self.bng.step(10)
+        """Advance every vehicle by one env step.
+
+        One shared advance for the whole field, so vehicles cannot desynchronise
+        and contact stays symmetric.
+        """
+        self.bng.step(beamng_spec.PHYSICS_STEPS_PER_ENV_STEP)
 
     def close(self):
         if self.bng is None:
@@ -714,12 +693,8 @@ class BeamNGMultiEnv:
 
         for slot in self.slots:
             for sensor_attr in ("lidar", "camera", "roads_sensor"):
-                sensor = getattr(slot, sensor_attr)
-                if sensor is not None:
-                    t = threading.Thread(target=sensor.remove, daemon=True)
-                    t.start()
-                    t.join(timeout=3.0)
-                    setattr(slot, sensor_attr, None)
+                beamng_sensors.remove_sensor(getattr(slot, sensor_attr))
+                setattr(slot, sensor_attr, None)
         t = threading.Thread(target=self.bng.close, daemon=True)
         t.start()
         t.join(timeout=5.0)

@@ -7,9 +7,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.trajectory import (
+    FALLBACK_GROUND_Z,
     MIN_CHECKPOINTS,
     MIN_PATH_SEPARATION_M,
     SPARSE_SPACING_M,
+    SPAWN_Z_OFFSET_M,
     MapTrajectories,
     TrajectoryData,
     _edge_center,
@@ -175,8 +177,10 @@ def test_square_loop_fallback_topology():
     assert len(traj.dense_waypoints) >= 35
     # Spawn coincides with the first square corner (40, -40)
     assert traj.spawn_pos[:2] == (40.0, -40.0)
-    # Spawn is above the road (z offset)
-    assert traj.spawn_pos[2] > 1.0
+    # Spawn sits on the road surface: SPAWN_Z_OFFSET_M is 0 because cling does not
+    # drop the car and a teleport cannot cling at all, so anything above the
+    # surface is a drop onto the suspension.
+    assert traj.spawn_pos[2] == pytest.approx(FALLBACK_GROUND_Z + SPAWN_Z_OFFSET_M)
     # First waypoint is now the next sample along the loop, NOT the spawn
     assert traj.sparse_waypoints[0][:2] != traj.spawn_pos[:2]
 

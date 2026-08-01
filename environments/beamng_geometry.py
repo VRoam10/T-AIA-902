@@ -120,6 +120,10 @@ def lidar_keep_mask(local_x, local_y, local_z, ego_extents, self_margin, ground_
         "kept": int(keep.sum()),
         "extents_none": ego_extents is None,
         "ground_z": float(ground_z),
+        # Highest point seen this poll — tells a "no obstacles" reading apart from
+        # a mis-placed ground threshold that filtered everything. Surfaced by the
+        # human-play LiDAR diagnostics.
+        "z_max_seen": float(local_z.max()) if n_total else float("nan"),
     }
     return keep, debug
 
@@ -187,6 +191,93 @@ def process_lidar(point_cloud, vehicle_pos, vehicle_heading, ego_extents, cfg):
                 distances[(v * h_bins + h) * ch] = np.clip(sel.min() / cfg.max_dist, 0.0, 1.0)
 
     return distances, debug
+
+
+def track_progress_m(waypoints, waypoint_idx: int, pos) -> float:
+    """Distance travelled along the waypoint polyline, in metres.
+
+    Defined as ``(arc length from waypoint 0 to the current target) minus (straight
+    line distance still to cover to that target)``. Two vehicles on the same
+    waypoint list can therefore be ordered along the track by comparing this
+    number, which is what the race reward's gap term needs.
+
+    The subtraction is what makes it usable as a *telescoping* signal: at the
+    instant a checkpoint is reached, the arc term jumps forward by one segment
+    while the remaining term jumps from ~0 to that same segment length, so the
+    result is continuous. A naive "arc length of the last checkpoint" would step
+    discontinuously and inject a spurious one-off gap into the reward.
+
+    Returns the full polyline length once every waypoint is cleared, and 0.0 for an
+    empty waypoint list.
+
+    Assumes ``waypoint_idx`` points at the next *unreached* waypoint — the invariant
+    the envs maintain, since ``_path_errors`` advances the index as soon as the car
+    is within ``WAYPOINT_RADIUS``. Called with a stale index (a position already past
+    its target) the result decreases as the car drives on, because "remaining
+    distance to target" starts growing again.
+    """
+    if not waypoints:
+        return 0.0
+
+    pts = np.asarray(waypoints, dtype=np.float64)[:, :2]
+    if len(pts) == 1:
+        seg_cum = np.zeros(1)
+    else:
+        seg = np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1]))
+        seg_cum = np.concatenate([[0.0], np.cumsum(seg)])
+
+    # Past the final checkpoint the lap is done; report the whole polyline.
+    if waypoint_idx >= len(pts):
+        return float(seg_cum[-1])
+
+    target = pts[waypoint_idx]
+    remaining = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
+    return float(seg_cum[waypoint_idx] - remaining)
+
+
+def starting_grid(
+    spawn_pos,
+    spawn_rot,
+    n: int,
+    lateral_m: float = 3.0,
+    stagger_m: float = 6.0,
+) -> list[tuple[float, float, float]]:
+    """Offset ``n`` grid slots around a single spawn pose, F1-style.
+
+    Racers share one path, so they cannot all use its spawn point — two vehicles
+    at the same coordinates interpenetrate and the physics explodes them apart.
+    Slots alternate left/right of the centreline and step backwards every pair:
+
+        slot 0: front-left    slot 1: front-right
+        slot 2: back-left     slot 3: back-right
+
+    The forward direction is read from ``spawn_rot`` using this project's measured
+    convention (identity quaternion faces South, so nose = ``(-sin yaw, -cos yaw)``
+    with ``qz = sin(yaw/2)`` conjugated). ``lateral_m`` is the half-width offset
+    from the centreline and ``stagger_m`` the gap between rows. Z is left at the
+    spawn height so the existing cling/settle handles the drop.
+    """
+    x, y, z = float(spawn_pos[0]), float(spawn_pos[1]), float(spawn_pos[2])
+    qz, qw = float(spawn_rot[2]), float(spawn_rot[3])
+    # Recover yaw from the (conjugated) z-rotation quaternion, then the nose vector.
+    yaw = 2.0 * np.arctan2(-qz, qw)
+    fwd = (-np.sin(yaw), -np.cos(yaw))
+    left = (-fwd[1], fwd[0])  # +90 deg in the XY plane
+
+    slots = []
+    for i in range(max(0, n)):
+        side = 1.0 if i % 2 == 0 else -1.0
+        row = i // 2
+        lat = side * lateral_m
+        back = -stagger_m * row
+        slots.append(
+            (
+                x + fwd[0] * back + left[0] * lat,
+                y + fwd[1] * back + left[1] * lat,
+                z,
+            )
+        )
+    return slots
 
 
 def body_orientation_features(dir_vec, up_vec) -> np.ndarray:

@@ -40,7 +40,7 @@ const ctx: Ctx = {
   state: createState(),
   algoNames: catalog.algorithms.map((a) => a.name),
   benchNames: catalog.benchmarks,
-  vehicleIds: catalog.beamng_vehicles.map((v) => v.id),
+  sensors: catalog.beamng_sensors,
   readme,
   welcomeSyntax: makeWelcomeSyntax(),
   // Wire the upward hooks the lower modules call (breaks the form↔controller cycle).

@@ -5,13 +5,14 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+import environments.beamng_reward as reward_mod
+from environments import beamng_spec
 from environments.beamng_geometry import body_orientation_features, wheel_terrain_features
 from environments.beamng_multi import (
     BeamNGMultiEnv,
     VehicleSlot,
     _color_rgba,
     build_slots,
-    env_profile,
     slot_n_states,
 )
 
@@ -20,10 +21,7 @@ def _slot(**kw):
     defaults = dict(
         name="ego_0",
         color="Red",
-        vehicle_id="taxi",
         agent=object(),
-        reward_mode="default",
-        action_space="discrete",
         save_path="outputs/dqn.pth",
     )
     defaults.update(kw)
@@ -76,48 +74,44 @@ class _FakeAgent:
 SPECS = [
     {
         "algo": "dqn",
-        "env": "beamng",
+        "sensor": "lidar",
         "agent": _FakeAgent(),
-        "vehicle_id": "taxi",
         "color": "Yellow",
         "save_path": "outputs/dqn.pth",
     },
     {
         "algo": "ddpg",
-        "env": "beamng_continuous",
+        "sensor": "lidar",
         "agent": _FakeAgent(),
-        "vehicle_id": "ibishu_pigeon",
         "color": "Red",
         "save_path": "outputs/ddpg.pth",
     },
     {
         "algo": "td3",
-        "env": "beamng_continuous",
+        "sensor": "adv_lidar",
         "agent": _FakeAgent(),
-        "vehicle_id": "taxi",
         "color": "Blue",
         "save_path": "outputs/td3.pth",
     },
 ]
 
 
-class TestEnvProfiles:
-    def test_env_profile_returns_perception_type(self):
-        assert env_profile("beamng") == "lidar"
-        assert env_profile("beamng_lidar") == "lidar_grid"
-        assert env_profile("beamng_camera") == "camera"
-        assert env_profile("beamng_continuous") == "lidar"
-        assert env_profile("unknown_env") == "lidar"  # fallback
+class TestSlotNStates:
+    def test_matches_the_shared_spec_arithmetic(self):
+        # slot_n_states is a named entry point over beamng_spec.obs_size; a second
+        # implementation here is exactly what the refactor removed.
+        for sensor in beamng_spec.SENSORS:
+            assert slot_n_states(sensor) == beamng_spec.obs_size(sensor)
 
-    def test_slot_n_states_no_hints(self):
-        assert slot_n_states("beamng") == 14  # 6 + 8 lidar
-        assert slot_n_states("beamng_lidar") == 38  # 6 + 32 grid
-        assert slot_n_states("beamng_camera") == 262  # 6 + 256 pixels
+    def test_no_hints(self):
+        assert slot_n_states("lidar") == 14  # 6 + 8 bins
+        assert slot_n_states("adv_lidar") == 38  # 6 + 32 grid
+        assert slot_n_states("camera") == 262  # 6 + 256 pixels
 
-    def test_slot_n_states_with_hints(self):
-        assert slot_n_states("beamng", trajectory_hints=1) == 16  # 14 + 2
-        assert slot_n_states("beamng", trajectory_hints=2) == 18  # 14 + 4
-        assert slot_n_states("beamng_camera", trajectory_hints=1) == 264  # 262 + 2
+    def test_with_hints(self):
+        assert slot_n_states("lidar", trajectory_hints=1) == 16
+        assert slot_n_states("lidar", trajectory_hints=2) == 18
+        assert slot_n_states("camera", trajectory_hints=1) == 264
 
 
 class TestBuildSlots:
@@ -125,45 +119,55 @@ class TestBuildSlots:
         slots = build_slots(SPECS)
         assert [s.name for s in slots] == ["ego_0", "ego_1", "ego_2"]
 
-    def test_reward_mode_and_action_space_derived_from_algo(self):
+    def test_output_is_derived_from_the_algorithm(self):
         slots = build_slots(SPECS)
-        assert slots[0].reward_mode == "default"
-        assert slots[0].action_space == "discrete"
-        assert slots[1].reward_mode == "ddpg"
-        assert slots[1].action_space == "continuous"
-        assert slots[2].reward_mode == "ddpg"
-        assert slots[2].action_space == "continuous"
+        assert slots[0].output == "fixed"  # dqn
+        assert slots[1].output == "continuous"  # ddpg
+        assert slots[2].output == "continuous"  # td3
 
-    def test_perception_and_n_states_from_env(self):
+    def test_sensor_and_n_states_carried_from_the_spec(self):
         slots = build_slots(SPECS)
-        assert slots[0].perception == "lidar"
-        assert slots[0].n_states == 14
-        assert slots[1].env_name == "beamng_continuous"
-        assert slots[1].perception == "lidar"
+        assert (slots[0].sensor, slots[0].n_states) == ("lidar", 14)
+        assert (slots[2].sensor, slots[2].n_states) == ("adv_lidar", 38)
 
-    def test_continuous_algo_on_camera_uses_default_reward(self):
-        # DDPG on a camera env: no LiDAR bins to reason about -> default reward.
+    def test_sensor_defaults_when_absent(self):
+        slots = build_slots(
+            [{"algo": "dqn", "agent": _FakeAgent(), "color": "Red", "save_path": "x.pth"}]
+        )
+        assert slots[0].sensor == beamng_spec.DEFAULT_SENSOR
+
+    def test_camera_slot_is_sized_for_its_pixels(self):
         slots = build_slots(
             [
                 {
                     "algo": "ddpg",
-                    "env": "beamng_camera",
+                    "sensor": "camera",
                     "agent": _FakeAgent(),
-                    "vehicle_id": "taxi",
                     "color": "Red",
                     "save_path": "outputs/x.pth",
                 }
             ]
         )
-        assert slots[0].perception == "camera"
-        assert slots[0].reward_mode == "default"
-        assert slots[0].action_space == "continuous"
+        assert slots[0].sensor == "camera"
+        assert slots[0].output == "continuous"
         assert slots[0].n_states == 262
+
+    def test_unknown_algo_is_rejected(self):
+        # An unclassifiable algorithm has no defensible action head, so fail here
+        # rather than silently pick one.
+        with pytest.raises(ValueError, match="unknown algorithm"):
+            build_slots(
+                [{"algo": "sarsa", "agent": _FakeAgent(), "color": "Red", "save_path": "x.pth"}]
+            )
 
     def test_carries_color_and_save_path(self):
         slots = build_slots(SPECS)
         assert slots[1].color == "Red"
         assert slots[1].save_path == "outputs/ddpg.pth"
+
+    def test_slots_no_longer_carry_a_vehicle_id(self):
+        # One car for everyone: slots differ only by paint.
+        assert not hasattr(build_slots(SPECS)[0], "vehicle_id")
 
 
 def _env(slots=None):
@@ -220,19 +224,37 @@ class TestPathErrorsAndReward:
         assert slot.waypoint_idx == 1
         assert slot.checkpoint_hit is True
 
-    def test_default_reward_gives_checkpoint_bonus(self):
+    def test_reward_gives_a_flat_checkpoint_bonus_plus_segment_time(self):
+        """The bonus no longer scales with the checkpoint index — it is flat, plus a
+        bonus for how quickly the segment was covered."""
         env = _env()
         env.slots[0].waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
-        slot = env.slots[0]  # reward_mode "default"
+        slot = env.slots[0]
         slot.checkpoint_hit = True
         slot.waypoint_idx = 1
-        slot.checkpoint_dist = 0.0
         obs = np.zeros(slot.n_states, dtype=np.float32)
-        obs[0] = 0.5  # moving (speed) so no stationary penalty
+        obs[0] = 0.5  # moving
         obs[5:] = 1.0  # clear LiDAR bins (far); zeros read as an obstacle at 0 m (-5)
         reward, done = env.compute_reward(slot, obs)
-        assert reward >= 100.0
+        assert reward >= reward_mod.CHECKPOINT_BONUS
         assert slot.checkpoint_hit is False  # consumed
+        assert slot.steps_since_checkpoint == 0  # segment timer restarted
+
+    def test_checkpoint_bonus_does_not_grow_with_the_index(self):
+        env = _env()
+
+        def bonus_at(idx: int) -> float:
+            slot = env.slots[0]
+            slot.waypoints = [(float(i) * 100.0, 0.0, 0.0) for i in range(12)]
+            slot.checkpoint_hit = True
+            slot.waypoint_idx = idx
+            slot.steps_since_checkpoint = 5
+            obs = np.zeros(slot.n_states, dtype=np.float32)
+            obs[0] = 0.5
+            obs[5:] = 1.0
+            return env.compute_reward(slot, obs)[0]
+
+        assert bonus_at(1) == pytest.approx(bonus_at(9))
 
     def test_default_reward_terminates_on_max_damage(self):
         env = _env()
@@ -353,7 +375,7 @@ class TestCreateSlotSensor:
             "far_top_right": (2.0, 1.0, 1.6),
         }
 
-        with patch("environments.beamng_multi.Lidar") as MockLidar:
+        with patch("environments.beamng_sensors.Lidar") as MockLidar:
             env._create_slot_sensor(slot)
 
         assert MockLidar.called
@@ -365,14 +387,32 @@ class TestCreateSlotSensor:
         assert kwargs["horizontal_angle"] == 360.0
         assert slot.ego_local_extents is not None
 
+    def test_camera_slot_builds_a_dashcam_and_no_lidar(self):
+        env = _env()
+        env.bng = MagicMock()
+        slot = env.slots[0]
+        slot.sensor = "camera"
+        slot.wheel_terrain = False
+        slot.vehicle = MagicMock()
+
+        with (
+            patch("environments.beamng_sensors.Camera") as MockCamera,
+            patch("environments.beamng_sensors.Lidar") as MockLidar,
+        ):
+            env._create_slot_sensor(slot)
+
+        assert MockCamera.called
+        assert not MockLidar.called
+        assert slot.lidar is None
+
 
 class TestSlotExtraFeatures:
     def test_slot_n_states_with_flags(self):
-        assert slot_n_states("beamng", body_orientation=True) == 16  # 14 + 2
-        assert slot_n_states("beamng", wheel_terrain=True) == 16  # 14 + 2
-        assert slot_n_states("beamng", body_orientation=True, wheel_terrain=True) == 18
+        assert slot_n_states("lidar", body_orientation=True) == 16  # 14 + 2
+        assert slot_n_states("lidar", wheel_terrain=True) == 16  # 14 + 2
+        assert slot_n_states("lidar", body_orientation=True, wheel_terrain=True) == 18
         assert (
-            slot_n_states("beamng", trajectory_hints=1, body_orientation=True, wheel_terrain=True)
+            slot_n_states("lidar", trajectory_hints=1, body_orientation=True, wheel_terrain=True)
             == 14 + 2 + 2 + 2
         )
 
@@ -380,9 +420,8 @@ class TestSlotExtraFeatures:
         specs = [
             {
                 "algo": "dqn",
-                "env": "beamng",
+                "sensor": "lidar",
                 "agent": _FakeAgent(),
-                "vehicle_id": "taxi",
                 "color": "Yellow",
                 "save_path": "outputs/x.pth",
                 "body_orientation": True,
@@ -407,6 +446,34 @@ class TestLifecycle:
         env.bng = MagicMock()
         env.step_physics()
         env.bng.step.assert_called_once_with(10)
+
+    def test_reset_vehicle_teleports_to_the_height_the_car_rests_at(self):
+        # The grid pose comes from the cache, which stores the road surface.
+        # teleport has no cling and places the reference point exactly, so the
+        # measured ride height has to be added or the car drops onto its suspension.
+        env = _env()
+        slot = env.slots[0]
+        slot.vehicle = MagicMock()
+        slot.spawn_pos = (1.0, 2.0, 51.92)
+        slot.spawn_rot = (0.0, 0.0, 0.0, 1.0)
+        slot.spawn_z_correction = 0.36
+        env.reset_vehicle(slot)
+        pos = slot.vehicle.teleport.call_args.args[0]
+        assert pos[2] == pytest.approx(52.28)
+
+    def test_reset_all_teleports_to_the_height_the_car_rests_at(self):
+        env = _env()
+        env.bng = MagicMock()
+        # reset_all primes last_obs from a real poll; stub it out, the teleport
+        # pose is what's under test.
+        env.observe = lambda slot: np.zeros(slot.n_states, dtype=np.float32)
+        for slot in env.slots:
+            slot.vehicle = MagicMock()
+            slot.spawn_pos = (1.0, 2.0, 51.92)
+            slot.spawn_z_correction = 0.36
+        env.reset_all()
+        for slot in env.slots:
+            assert slot.vehicle.teleport.call_args.args[0][2] == pytest.approx(52.28)
 
     def test_reset_vehicle_teleports_to_its_grid_pose_and_resets_state(self):
         env = _env()

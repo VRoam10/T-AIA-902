@@ -14,6 +14,7 @@ from core.pipeline_actions import (
     trajectory_cache_path,
 )
 from core.tui_backend import main
+from environments import beamng_spec
 
 
 def test_catalog_command_emits_expected_keys():
@@ -22,11 +23,16 @@ def test_catalog_command_emits_expected_keys():
         rc = main(["catalog"])
     assert rc == 0
     payload = json.loads(buf.getvalue())
-    for key in ("algorithms", "environments", "benchmarks", "beamng_maps", "beamng_vehicles"):
+    for key in ("algorithms", "environments", "benchmarks", "beamng_maps", "beamng_sensors"):
         assert key in payload
     assert payload["algorithms"]
-    assert payload["beamng_maps"] == ["gridmap_v2", "italy", "west_coast_usa"]
-    assert all("id" in v and "label" in v for v in payload["beamng_vehicles"])
+    assert payload["beamng_maps"] == list(beamng_spec.AVAILABLE_MAPS)
+    assert payload["beamng_sensors"] == list(beamng_spec.SENSORS)
+    # One car now, so the catalog no longer offers a vehicle list.
+    assert "beamng_vehicles" not in payload
+    # One env, and Taxi is gone.
+    assert [e["name"] for e in payload["environments"]] == ["beamng"]
+    assert "q_learning" not in [a["name"] for a in payload["algorithms"]]
 
 
 def test_trajectory_cache_path_builds_under_output_dir(tmp_path):
@@ -56,7 +62,7 @@ def test_run_human_play_forwards_random_path(monkeypatch):
     monkeypatch.setattr(
         pipeline_actions.registry, "get_environment", lambda name: {"factory": fake_factory}
     )
-    run_human_play(HumanPlayRequest(map_name="italy", vehicle_id="taxi", random_path=True))
+    run_human_play(HumanPlayRequest(map_name="italy", sensor="adv_lidar", random_path=True))
     assert captured["random_path"] is True
 
 
@@ -70,7 +76,7 @@ def test_run_human_play_defaults_random_path_off(monkeypatch):
     monkeypatch.setattr(
         pipeline_actions.registry, "get_environment", lambda name: {"factory": fake_factory}
     )
-    run_human_play(HumanPlayRequest(map_name="italy", vehicle_id="taxi"))
+    run_human_play(HumanPlayRequest(map_name="italy"))
     assert captured["random_path"] is False
 
 
@@ -91,10 +97,10 @@ def test_cmd_benchmark_parses_beamng_into_request(monkeypatch):
         "max_episodes": 3,
         "reward_threshold": 7.0,
         "algo_name": "dqn",
-        "env_name": "beamng_lidar",
+        "env_name": "beamng",
         "beamng": {
             "map_name": "italy",
-            "vehicle_id": "super",
+            "sensor": "adv_lidar",
             "trajectory_hints": 2,
             "body_orientation": True,
             "wheel_terrain": True,
@@ -107,7 +113,7 @@ def test_cmd_benchmark_parses_beamng_into_request(monkeypatch):
     req = captured["request"]
     assert req.beamng is not None
     assert req.beamng.map_name == "italy"
-    assert req.beamng.vehicle_id == "super"
+    assert req.beamng.sensor == "adv_lidar"
     assert req.beamng.trajectory_hints == 2
     assert req.beamng.body_orientation is True
     assert req.beamng.wheel_terrain is True

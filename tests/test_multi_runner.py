@@ -40,10 +40,7 @@ class FakeEnv:
                 VehicleSlot(
                     name=f"ego_{i}",
                     color="Red",
-                    vehicle_id="taxi",
                     agent=agent,
-                    reward_mode="default",
-                    action_space="discrete",
                     save_path=f"outputs/a{i}.pth",
                 )
             )

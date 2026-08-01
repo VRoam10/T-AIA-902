@@ -15,7 +15,7 @@ import {
   syncValidation,
   validateField,
 } from "./form.ts";
-import { buildForm, refreshDerivedPaths } from "./forms.ts";
+import { buildForm, refreshDerivedPaths, refreshRacerPaths } from "./forms.ts";
 import { BREADCRUMB_KEYS, labelFor, setBadge, setProgress, setStatus, updateBreadcrumb } from "./status.ts";
 import { buildWelcome } from "./welcome.ts";
 
@@ -37,7 +37,9 @@ export function openWorkflow(ctx: Ctx, id: WorkflowId, focusKey?: string): void 
   buildForm(ctx, id);
   state.pendingPreset = null;
   if (preset) applyPreset(ctx, preset);
-  refreshDerivedPaths(ctx); // make the save/model path reflect the resolved algo+env+beamng options
+  // Make the derived checkpoint paths reflect the resolved algo + sensor + options.
+  refreshDerivedPaths(ctx);
+  refreshRacerPaths(ctx);
   addFormHint(ctx, `⇥ / ↑↓ field   ⏎ run the focused button   esc back`);
   for (const f of state.fields) if (f.kind === "input" && f.validate) validateField(ctx, f);
   setProgress(ctx, "", "", COLOR.muted);
@@ -56,26 +58,37 @@ export function rebuildActiveForm(ctx: Ctx, focusKey?: string): void {
   }
 }
 
-// A focused choice changed: rebuild train/evaluate/benchmark when algo/env
-// changes (their dependent fields differ), and always refresh the breadcrumb.
+// A focused choice changed. Rebuild only when the *field set* depends on it;
+// otherwise update the derived paths in place. Always refresh the breadcrumb.
 export function onChoiceChanged(ctx: Ctx, f: Field): void {
   const wf = ctx.state.activeWorkflow;
-  if (
-    (wf === "train" || wf === "evaluate" || wf === "benchmark") &&
-    (f.key === "algo_name" || f.key === "env_name")
-  ) {
+
+  // Train: the algorithm decides which hyperparameter inputs exist, so the form
+  // must be rebuilt around it.
+  if (wf === "train" && f.key === "algo_name") {
     rebuildActiveForm(ctx, f.key); // openWorkflow refreshes the breadcrumb itself
     return;
   }
-  // Multi-agent: changing the per-vehicle algorithm refreshes its compatible env list.
-  if (wf === "multi_train" && f.key === "multi_algo") {
+  // Course: a human opponent removes racer 2's whole block, so the field set changes.
+  if (wf === "course" && f.key === "opponent") {
     rebuildActiveForm(ctx, f.key);
     return;
   }
-  // body orientation feeds the derived save/model path but doesn't change the
-  // field set, so update the path in place rather than rebuilding.
-  if ((wf === "train" || wf === "evaluate") && f.key === "body_orientation") {
+  // The track picker: "generated" has no name field, and the list of available
+  // names is per-map — so both keys change which fields exist.
+  if (f.key === "track_kind" || f.key === "map_name") {
+    rebuildActiveForm(ctx, f.key);
+    return;
+  }
+  // Sensor and body orientation feed the derived checkpoint path but leave the
+  // field set alone, so update the path in place rather than rebuilding.
+  if (wf === "train" && (f.key === "sensor" || f.key === "body_orientation")) {
     refreshDerivedPaths(ctx);
+    updateBreadcrumb(ctx);
+    return;
+  }
+  if (wf === "course" && (f.key.endsWith("_algo") || f.key.endsWith("_sensor") || f.key.endsWith("_body_orientation"))) {
+    refreshRacerPaths(ctx);
     return;
   }
   if ((BREADCRUMB_KEYS as readonly string[]).includes(f.key)) updateBreadcrumb(ctx);
