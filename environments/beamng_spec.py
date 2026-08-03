@@ -63,14 +63,15 @@ CONTINUOUS_ALGOS: tuple[str, ...] = ("ddpg", "td3")
 FIXED_N_ACTIONS = 7
 CONTINUOUS_N_ACTIONS = 3  # throttle, steering, brake
 
-# The one car. Everything races the same machine, so a head-to-head result reflects
-# the policies and not the hardware. Kept as a dict of beamngpy Vehicle kwargs (the
-# shape the multi/race envs already expect) so only `color` varies per entrant.
+# The one car: the Cherrier Vivace Hillclimb (Sequential) — 682 hp, 1420 kg, AWD.
+# Everything races the same machine, so a head-to-head result reflects the policies and
+# not the hardware. Kept as a dict of beamngpy Vehicle kwargs (the shape the multi/race
+# envs already expect) so only `color` varies per entrant.
 RACE_CAR: dict[str, str] = {
-    "model": "sunburst2",
+    "model": "vivace",
     "licence": "RACE",
     "color": "White",
-    "part_config": "vehicles/sunburst2/trackday_M.pc",
+    "part_config": "vehicles/vivace/hillclimb_SQ.pc",
 }
 
 AVAILABLE_MAPS: tuple[str, ...] = (

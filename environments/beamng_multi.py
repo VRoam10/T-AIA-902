@@ -214,7 +214,7 @@ class BeamNGMultiEnv:
 
     # Starting-grid geometry, used whenever vehicles share one path (race mode, or
     # training on a game track). Lateral must clear the car's width and stagger its
-    # length; the race car is ~1.9 m wide and ~4.5 m long.
+    # length; the race car is ~1.96 m wide and ~4.58 m long.
     GRID_LATERAL_M = 3.0
     GRID_STAGGER_M = 6.0
 

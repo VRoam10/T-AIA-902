@@ -3,9 +3,10 @@
 `environments/beamng.py` — `BeamNGDrivingEnv`
 
 Gymnasium-style RL environment wrapping BeamNG.drive via beamngpy. One environment,
-parameterized by two independent axes. Vehicle: **Hirochi Sunburst**, race config
-(`vehicles/sunburst2/trackday_M.pc`) — the same car for every entrant, so a head-to-head
-result reflects the policies and not the machinery.
+parameterized by two independent axes. Vehicle: **Cherrier Vivace Hillclimb**
+(`vehicles/vivace/hillclimb_SQ.pc`) — 682 hp, 1420 kg, AWD, sequential gearbox; the same
+car for every entrant, so a head-to-head result reflects the policies and not the
+machinery.
 
 ---
 

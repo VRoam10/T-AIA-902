@@ -323,7 +323,7 @@ class TestControlsFor:
 class TestRaceCar:
     def test_single_car_replaces_the_vehicle_table(self):
         assert not hasattr(BeamNGDrivingEnv, "VEHICLES")
-        assert BeamNGDrivingEnv.RACE_CAR["model"] == "sunburst2"
+        assert BeamNGDrivingEnv.RACE_CAR["model"] == "vivace"
 
     def test_env_no_longer_takes_a_vehicle_id(self):
         import inspect
@@ -332,8 +332,9 @@ class TestRaceCar:
 
 
 class TestActionTableTunedForTheRaceCar:
-    """The car is a mid-engine RWD: full throttle mid-corner spins it. Steering and
-    throttle must trade off, or the discrete policy has no usable cornering action."""
+    """The car is a 682 hp AWD hillclimb build: full throttle mid-corner overwhelms the
+    tyres. Steering and throttle must trade off, or the discrete policy has no usable
+    cornering action."""
 
     def test_best_available_throttle_decreases_as_steering_increases(self):
         # Compare the *most* throttle the table offers at each steering magnitude:

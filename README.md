@@ -3,7 +3,7 @@
 Pipeline de Reinforcement Learning pour **piloter vite** dans BeamNG.drive, puis
 **courser** contre un autre agent ou contre un humain.
 
-Une seule voiture (Hirochi Sunburst en configuration course), un seul environnement
+Une seule voiture (Cherrier Vivace Hillclimb, 682 ch AWD), un seul environnement
 BeamNG, et deux axes de configuration independants :
 
 | Axe | Valeurs | Choisi par |

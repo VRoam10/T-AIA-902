@@ -86,7 +86,7 @@ class BeamNGDrivingEnv:
     CHECKPOINT_DIST_NORM_M = 200.0
 
     WAYPOINT_RADIUS = 8.0  # metres — how close before advancing to next waypoint
-    MAX_STEPS = 500
+    MAX_STEPS = 5000
 
     # close() shutdown timing: BeamNGpy close runs in a daemon thread bounded by
     # CLOSE_JOIN_TIMEOUT so a frozen sim cannot hang the pipeline; with kill_sim

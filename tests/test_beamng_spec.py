@@ -119,6 +119,6 @@ class TestRaceCar:
         # The multi/race envs build Vehicle(name, **RACE_CAR | {"color": ...}).
         assert {"model", "licence", "color", "part_config"} == set(RACE_CAR)
 
-    def test_is_the_sunburst2_race_config(self):
-        assert RACE_CAR["model"] == "sunburst2"
-        assert RACE_CAR["part_config"] == "vehicles/sunburst2/trackday_M.pc"
+    def test_is_the_vivace_hillclimb_config(self):
+        assert RACE_CAR["model"] == "vivace"
+        assert RACE_CAR["part_config"] == "vehicles/vivace/hillclimb_SQ.pc"
