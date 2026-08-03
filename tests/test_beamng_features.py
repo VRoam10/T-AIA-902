@@ -225,3 +225,11 @@ class TestWheelInfoBlock:
     def test_missing_gforces_is_zero(self):
         out = wheel_info_features({"wheelspeed": 10.0}, None, (10.0, 0.0, 0.0), (1.0, 0.0, 0.0))
         assert out[3] == pytest.approx(0.0)
+
+    def test_a_non_finite_velocity_component_cannot_leak_a_nan(self):
+        # np.clip does not clip NaN, so an unguarded atan2 would put one straight
+        # into the observation vector.
+        out = wheel_info_features(
+            {"wheelspeed": 20.0}, {}, (float("nan"), 20.0, 0.0), (1.0, 0.0, 0.0)
+        )
+        assert np.all(np.isfinite(out))

@@ -204,7 +204,7 @@ def wheel_info_features(electrics, gforces, vel, dir_vec) -> np.ndarray:
     slip_angle = 0.0
     if ground >= SLIP_ANGLE_MIN_SPEED_MS:
         heading = math.atan2(_finite(dir_vec[1], 0.0), _finite(dir_vec[0], 1.0))
-        course = math.atan2(vel[1], vel[0])
+        course = math.atan2(_finite(vel[1], 0.0), _finite(vel[0], 1.0))
         delta = (course - heading + math.pi) % (2.0 * math.pi) - math.pi
         slip_angle = float(np.clip(delta / (math.pi / 2.0), -1.0, 1.0))
 
