@@ -126,18 +126,40 @@ class TestSharedPathAndGrid:
             for b in positions[i + 1 :]:
                 assert np.hypot(a[0] - b[0], a[1] - b[1]) > 2.0
 
-    def test_guide_line_starts_at_each_slots_own_grid_spawn(self):
-        # _assign_shared_path overrides spawn_pos with the grid slot *after*
-        # _apply_path already built a guide line from the shared centreline spawn,
-        # so the guide line must be rebuilt again — each slot's own spawn, not the
-        # shared one, or a dropped rebuild here would still pass every other test.
+    def test_every_entrant_shares_the_guide_lines_origin(self):
+        # _assign_shared_path must NOT re-base the guide line on each slot's own
+        # grid spawn: progress_of is arc length along a slot's own guide_line, and
+        # the starting grid staggers rows by GRID_STAGGER_M, so a re-based guide
+        # line would make a back-row car's first segment longer and report more
+        # progress than a front-row car at the same physical position (see
+        # test_progress_of_is_identical_across_grid_rows_at_the_same_position
+        # below). Every entrant on a shared track must share one origin: the
+        # shared path's own spawn, which _apply_path already used to build
+        # guide_line before spawn_pos is overwritten with the grid slot.
         env = _env(3)
         env._assign_paths()
+        shared_origin = tuple(env.trajectories.paths[0].spawn_pos)
         for slot in env.slots:
-            assert slot.guide_line[0] == slot.spawn_pos
-            assert slot.guide_line == [slot.spawn_pos, *slot.waypoints]
-        # And the grid gave each slot a distinct spawn, so the guide lines differ.
-        assert len({tuple(s.guide_line[0]) for s in env.slots}) == 3
+            assert tuple(slot.guide_line[0]) == shared_origin
+            assert slot.guide_line == [shared_origin, *slot.waypoints]
+        # The grid still gave each slot a distinct spawn (for teleporting)...
+        assert len({tuple(s.spawn_pos) for s in env.slots}) == 3
+        # ...but every guide line starts at the one shared origin, not that spawn.
+        assert len({tuple(s.guide_line[0]) for s in env.slots}) == 1
+
+    def test_progress_of_is_identical_across_grid_rows_at_the_same_position(self):
+        # Regression for the bug the fix above removes: two slots on different
+        # starting-grid rows, standing at the same physical position, must report
+        # the same progress_of. Built through _assign_shared_path (not by hand)
+        # so the production path is what is under test.
+        env = _env(4)
+        env._assign_paths()
+        row0, row1 = env.slots[0], env.slots[2]  # starting_grid: 0,1 row 0; 2,3 row 1
+        assert row0.spawn_pos != row1.spawn_pos  # distinct grid rows, as intended
+        same_pos = (10.0, 0.0, 10.0)
+        row0.current_pos = same_pos
+        row1.current_pos = same_pos
+        assert env.progress_of(row0) == pytest.approx(env.progress_of(row1))
 
     def test_all_entrants_face_the_same_way(self):
         env = _env(2)

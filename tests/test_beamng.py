@@ -180,6 +180,42 @@ class TestObserveCrossTrack:
         assert obs[3] == pytest.approx(3.0 / 5.0)
 
 
+class TestPathAlignmentGuardsOnARealSegment:
+    """A one-point guide line (trajectory present, no waypoints) is truthy, so a
+    guard on ``if self._guide_line:`` alone would still compute an alignment —
+    against project_onto_path's NEUTRAL tangent_rad=0.0, an arbitrary value, not
+    "no data". Guarding on segment_len_m > 0.0 catches this case."""
+
+    def test_path_alignment_stays_none_with_no_real_segment(self):
+        env = _bare_env()
+        env.trajectory = TrajectoryData(
+            spawn_pos=(0.0, 0.0, 0.0),
+            spawn_rot=(0.0, 0.0, 0.0, 1.0),
+            sparse_waypoints=[],
+            dense_waypoints=[],
+            map_name="gridmap_v2",
+            generated_at="2026-08-04T00:00:00+00:00",
+            source="test",
+        )
+        env.waypoints = []
+        env._rebuild_guide_line()
+        assert len(env._guide_line) == 1  # spawn only — no real segment to project onto
+
+        env.vehicle = MagicMock()
+        env.vehicle.state = {
+            "pos": (5.0, 0.0, 0.0),
+            "vel": (1.0, 0.0, 0.0),
+            "dir": (1.0, 0.0, 0.0),
+        }
+        env.electrics = MagicMock()
+        env.electrics.data = {"wheelspeed": 10.0, "steering": 0.0}
+        env.damage_sensor = MagicMock()
+        env.damage_sensor.data = {"damage": 0.0}
+
+        env._observe()
+        assert env._path_alignment is None
+
+
 class TestExtraFeatures:
     def test_flags_default_off_no_extra(self):
         env = BeamNGDrivingEnv(beamng_home="unused")

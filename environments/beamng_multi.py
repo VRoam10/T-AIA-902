@@ -393,10 +393,12 @@ class BeamNGMultiEnv:
         # heading the fallback's heading_err uses (not vehicle_heading above,
         # which is the nose direction) — so this is exactly the signed velocity
         # component along the path, matching "speed projected onto the
-        # direction we want to be going". None without a guide line, so a slot
-        # that never got one falls back to the checkpoint bearing instead of
-        # reading cos(nose heading) against an arbitrary tangent_rad=0.
-        if slot.guide_line:
+        # direction we want to be going". None without a real segment to
+        # project onto — a one-point guide_line (trajectory but no waypoints)
+        # is truthy but project_onto_path returns NEUTRAL (tangent_rad=0.0),
+        # and reading cos(nose heading) against that arbitrary tangent is
+        # exactly what this fallback exists to prevent.
+        if slot.path_pos.segment_len_m > 0.0:
             vel_heading = float(np.arctan2(vel[1], vel[0]))
             slot.path_alignment = float(np.cos(vel_heading - slot.path_pos.tangent_rad))
         else:
@@ -568,8 +570,15 @@ class BeamNGMultiEnv:
         for slot, pos in zip(self.slots, grid, strict=True):
             slot.path_idx = path_idx
             self._apply_path(slot, path)
-            slot.spawn_pos = pos  # the grid slot, not the shared centreline spawn
-            slot.guide_line = [tuple(slot.spawn_pos), *slot.waypoints]
+            # Physical grid pose (for teleporting) only — do NOT rebuild guide_line
+            # from it. _apply_path already built guide_line from the shared
+            # path.spawn_pos, and every entrant on a shared track must measure
+            # progress_of from that same origin: re-basing per grid slot would
+            # make a back-row car's first segment ~GRID_STAGGER_M longer, so at
+            # an identical physical position it reports more progress than a
+            # front-row car — biasing leader()/standings()/winner() and the gap
+            # term. See docs/superpowers/specs/2026-08-04-beamng-road-wheel-observations-design.md.
+            slot.spawn_pos = pos
 
     def _pick_distinct_path_idx(self, slot) -> int:
         """A random path index not currently held by any other slot."""

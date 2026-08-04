@@ -125,6 +125,48 @@ class TestBuildCourseSession:
         assert slots[0].n_states == 14  # lidar
         assert slots[1].n_states == 38  # adv_lidar
 
+    def test_agent_and_slot_are_both_sized_with_flags_on(self, checkpoints, tmp_path):
+        # Body orientation + road info on a lidar racer -> 14 + 2 + 6 = 22 states.
+        # Regression: build_course_session sizes the agent from racer.road_info/
+        # wheel_info AND puts those same flags into the specs dict build_race_slots
+        # sizes the VehicleSlot from. Dropping either forward gives the agent a
+        # different width than the slot observes -- a torch shape error on the
+        # first tick of a race, after the simulator has already launched. Mirrors
+        # test_build_multi_session_sizes_agent_with_flags for the multi-train path.
+        import algorithms  # noqa: F401 — registers the algorithms
+        from core.registry import registry
+        from environments import beamng_spec
+
+        _, b = checkpoints
+        info = registry.get_algorithm("dqn")
+        cfg = dict(info["default_config"])
+        cfg["n_states"] = beamng_spec.obs_size("lidar", body_orientation=True, road_info=True)
+        cfg["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo("dqn"))
+        cfg.pop("state_type", None)
+        flagged_path = tmp_path / "flagged.pth"
+        info["class"](**cfg).save(str(flagged_path))
+
+        req = CourseRequest(
+            map_name="gridmap_v2",
+            racers=[
+                RacerSpec(
+                    algo="dqn",
+                    sensor="lidar",
+                    model_path=str(flagged_path),
+                    color="Red",
+                    body_orientation=True,
+                    road_info=True,
+                ),
+                RacerSpec(algo="td3", sensor="adv_lidar", model_path=b, color="Blue"),
+            ],
+        )
+        (env, slots), _ = self._build(req)
+        assert slots[0].n_states == 22
+        assert slots[0].body_orientation is True
+        assert slots[0].road_info is True
+        # The built DQN agent's network must also be sized to 22 inputs.
+        assert slots[0].agent.q_net.feature[0].in_features == 22
+
     def test_output_is_derived_per_entrant(self, checkpoints):
         (env, slots), _ = self._build(_request(checkpoints))
         assert slots[0].output == "fixed"  # dqn

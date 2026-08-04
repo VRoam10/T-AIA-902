@@ -352,6 +352,28 @@ class TestObserve:
         obs2 = env.observe(slot2)
         assert obs2[3] == pytest.approx(-3.0 / 5.0)
 
+    def test_path_alignment_stays_none_with_a_single_point_guide_line(self):
+        # A one-point guide line (spawn only, no waypoints) is truthy, so a guard
+        # on ``if slot.guide_line:`` alone would still compute an alignment
+        # against project_onto_path's NEUTRAL tangent_rad=0.0 -- an arbitrary
+        # value, not "no data". Guarding on segment_len_m > 0.0 catches this case.
+        env = _env()
+        slot = env.slots[0]
+        slot.waypoints = []
+        slot.spawn_pos = (0.0, 0.0, 0.0)
+        slot.guide_line = [(0.0, 0.0, 0.0)]
+        self._wire_slot_sensors(
+            slot,
+            speed=10.0,
+            steering=0.0,
+            damage=0.0,
+            pos=(5.0, 0.0, 0.0),
+            vel=(1.0, 0.0, 0.0),
+            lidar_points=None,
+        )
+        env.observe(slot)
+        assert slot.path_alignment is None
+
     def test_observe_polls_each_slot_sensor(self):
         env = _env()
         slot = env.slots[0]
@@ -392,11 +414,22 @@ class TestObserve:
             "up": (0.0, 0.0, 1.0),
         }
         slot.roads_sensor = MagicMock()
+        # Every field distinguishable and non-zero: dist2Left/dist2Right == the
+        # HALF_TRACK_WIDTH constant (and no heading/radius/centerline keys) makes
+        # road_info_features return six zeros -- bit-identical to the neutral
+        # block a missing or gate-blocked sensor produces, so the assertion below
+        # would pass whether the sensor was actually polled or not.
         slot.roads_sensor.poll.return_value = {
-            "halfWidth": 3.0,
-            "dist2Left": 0.7,
-            "dist2Right": 0.7,
+            "halfWidth": 4.0,
+            "dist2Left": 3.0,
+            "dist2Right": 1.5,
+            "headingAngle": 0.3,
+            "roadRadius": 100.0,
+            "xP0onCL": 10.0, "yP0onCL": 1.0,
+            "xP1onCL": 20.0, "yP1onCL": 2.0,
+            "xP2onCL": 30.0, "yP2onCL": 2.5,
         }
+        env._road_pollable = True  # the gate must be open for the poll to reach obs
         obs = env.observe(slot)
         assert obs.shape == (22,)
         expected_body = body_orientation_features((1.0, 0.0, 0.0), (0.0, 0.0, 1.0))

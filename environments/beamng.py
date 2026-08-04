@@ -52,10 +52,10 @@ class BeamNGDrivingEnv:
     ``n_states`` is always ``beamng_spec.obs_size(...)`` for the active config.
     """
 
-    # Throttle drops sharply as steering rises. The race car is a mid-engine RWD
-    # with far more power than grip, so the old taxi-era table (0.4 throttle at
-    # 0.6 steering) spun it on most corner entries. Seven entries either way, so
-    # the discrete head size is unchanged.
+    # Throttle drops sharply as steering rises. The race car is the AWD Cherrier
+    # Vivace Hillclimb, which still has far more power than grip, so the old
+    # taxi-era table (0.4 throttle at 0.6 steering) spun it on most corner
+    # entries. Seven entries either way, so the discrete head size is unchanged.
     ACTIONS = [
         {"throttle": 0.0, "steering": 0.0, "brake": 0.0},  # 0: coast
         {"throttle": 1.0, "steering": 0.0, "brake": 0.0},  # 1: full throttle straight
@@ -786,10 +786,12 @@ class BeamNGDrivingEnv:
         # heading the fallback's heading_err uses (not vehicle_heading above,
         # which is the nose direction) — so this is exactly the signed velocity
         # component along the path, matching "speed projected onto the
-        # direction we want to be going". None without a guide line, so a slot
-        # that never got one falls back to the checkpoint bearing instead of
-        # reading cos(nose heading) against an arbitrary tangent_rad=0.
-        if self._guide_line:
+        # direction we want to be going". None without a real segment to
+        # project onto — a one-point guide line (trajectory but no waypoints)
+        # is truthy but project_onto_path returns NEUTRAL (tangent_rad=0.0),
+        # and reading cos(nose heading) against that arbitrary tangent is
+        # exactly what this fallback exists to prevent.
+        if self._path_pos.segment_len_m > 0.0:
             vel_heading = float(np.arctan2(vel[1], vel[0]))
             self._path_alignment = float(np.cos(vel_heading - self._path_pos.tangent_rad))
         else:

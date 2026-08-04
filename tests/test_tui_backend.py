@@ -1,13 +1,18 @@
 """Tests for the TUI backend bridge and trajectory cache helpers."""
 
+import dataclasses
 import io
 import json
+import re
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import core.pipeline_actions as pipeline_actions
 from core.pipeline_actions import (
+    BeamNGOptions,
     HumanPlayRequest,
+    RacerSpec,
     TrajectoryRequest,
     run_human_play,
     run_trajectory,
@@ -62,8 +67,18 @@ def test_run_human_play_forwards_random_path(monkeypatch):
     monkeypatch.setattr(
         pipeline_actions.registry, "get_environment", lambda name: {"factory": fake_factory}
     )
-    run_human_play(HumanPlayRequest(map_name="italy", sensor="adv_lidar", random_path=True))
+    run_human_play(
+        HumanPlayRequest(
+            map_name="italy",
+            sensor="adv_lidar",
+            random_path=True,
+            road_info=True,
+            wheel_info=True,
+        )
+    )
     assert captured["random_path"] is True
+    assert captured["road_info"] is True
+    assert captured["wheel_info"] is True
 
 
 def test_run_human_play_defaults_random_path_off(monkeypatch):
@@ -119,3 +134,86 @@ def test_cmd_benchmark_parses_beamng_into_request(monkeypatch):
     assert req.beamng.road_info is True
     assert req.beamng.random_path is True
     assert req.beamng.dense_episodes == 5
+
+
+# --------------------------------------------------------------------------- #
+# TS <-> Python payload key contract
+# --------------------------------------------------------------------------- #
+_WORKFLOWS_TS = (Path(__file__).resolve().parents[1] / "tui" / "src" / "workflows.ts").read_text(
+    encoding="utf-8"
+)
+
+
+def _keys_after(marker: str) -> set[str]:
+    """Key names of the object literal that opens right after ``marker``.
+
+    A regex over the literal's own ``key:`` lines, not a real TS parser -- this
+    is a guard against a stray rename, not a general-purpose tool.
+    """
+    start = _WORKFLOWS_TS.index("{", _WORKFLOWS_TS.index(marker))
+    end = _WORKFLOWS_TS.index("};", start)
+    return set(re.findall(r"^\s*(\w+):", _WORKFLOWS_TS[start:end], re.MULTILINE))
+
+
+def _keys_around(marker: str) -> set[str]:
+    """Key names of the object literal enclosing the line containing ``marker``."""
+    idx = _WORKFLOWS_TS.index(marker)
+    start = _WORKFLOWS_TS.rindex("{", 0, idx)
+    end = _WORKFLOWS_TS.index("};", idx)
+    return set(re.findall(r"^\s*(\w+):", _WORKFLOWS_TS[start:end], re.MULTILINE))
+
+
+def test_beamng_options_ts_keys_match_python_dataclass_fields():
+    """Guard the boundary a Python-side rename actually breaks.
+
+    ``core/tui_backend.py`` does ``BeamNGOptions(**raw)`` on whatever JSON the
+    TUI sends, so a field renamed on either side is a ``TypeError`` at run
+    launch -- not hypothetical: mid-plan the TypeScript kept sending
+    ``wheel_terrain`` after Python dropped the field, and every TUI-launched
+    BeamNG run raised until the UI task landed.
+    ``tui/src/__tests__/workflows.test.ts`` already pins the TS-side key set
+    against a literal, which catches a stray key added in TypeScript, but not a
+    Python-side rename. This test closes the loop from the side that actually
+    crashes, by comparing ``tui/src/workflows.ts``'s object-literal keys against
+    ``dataclasses.fields`` on the Python side.
+    """
+    beamng_defaults_keys = _keys_after("BEAMNG_DEFAULTS: BeamNGFields = ")
+    python_beamng_keys = {f.name for f in dataclasses.fields(BeamNGOptions)}
+
+    # Legitimately Python-only: not part of BEAMNG_DEFAULTS because each is set
+    # directly by its own form field rather than defaulted here (forms.ts sets
+    # `random_path`/`dense_episodes`; buildTrainPayload also overrides
+    # `random_path` explicitly before spreading `state.beamng` over it).
+    beamng_python_only = {"random_path", "dense_episodes"}
+
+    missing_in_ts = python_beamng_keys - beamng_defaults_keys - beamng_python_only
+    extra_in_ts = beamng_defaults_keys - python_beamng_keys
+    assert not missing_in_ts and not extra_in_ts, (
+        "BeamNGOptions fields vs tui/src/workflows.ts BEAMNG_DEFAULTS keys diverged "
+        f"(fix whichever side is wrong): in BeamNGOptions but missing from "
+        f"BEAMNG_DEFAULTS and not exempted={sorted(missing_in_ts)}; in BEAMNG_DEFAULTS "
+        f"but not a BeamNGOptions field={sorted(extra_in_ts)}"
+    )
+
+
+def test_racer_spec_ts_keys_match_python_dataclass_fields():
+    """Same guard as above, for the course-racer payload / ``RacerSpec``.
+
+    ``core/tui_backend.py``'s ``_cmd_course`` does ``RacerSpec(**raw)`` per
+    racer, so this boundary can break the same way.
+    """
+    racer_keys = _keys_around("algo: r.algo,")
+    python_racer_keys = {f.name for f in dataclasses.fields(RacerSpec)}
+
+    # Legitimately Python-only: a human entrant takes buildCoursePayload's other
+    # branch (`{ human: true, color }`), never the full racer object this reads.
+    racer_python_only = {"human"}
+
+    missing_in_ts = python_racer_keys - racer_keys - racer_python_only
+    extra_in_ts = racer_keys - python_racer_keys
+    assert not missing_in_ts and not extra_in_ts, (
+        "RacerSpec fields vs tui/src/workflows.ts's course-racer payload keys "
+        f"diverged (fix whichever side is wrong): in RacerSpec but missing from "
+        f"the TS racer object and not exempted={sorted(missing_in_ts)}; in the TS "
+        f"racer object but not a RacerSpec field={sorted(extra_in_ts)}"
+    )

@@ -73,7 +73,7 @@ kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | road(6)? | wheel(4)
 | 2 | `heading_error` | angle between heading and next waypoint (rad) | `/ π`, clipped |
 | 3 | `lateral_error` | signed cross-track distance from the guide polyline (m), + = left of travel | `/ 5.0`, clipped |
 | 4 | `damage` | `damage_sensor.damage` (cumulative) | `/ 1000.0`, clipped to `[0, 1]` |
-| 5 | `dist` | distance to the target checkpoint (m) | `/ CHECKPOINT_WARN_DIST`, clipped to `[0, 2]` |
+| 5 | `dist` | distance to the target checkpoint (m) | `/ CHECKPOINT_DIST_NORM_M`, clipped to `[0, 2]` |
 | 6.. | perception | the sensor's block | see the table above |
 
 The guide polyline is the spawn point followed by every checkpoint. Its projection
@@ -169,8 +169,6 @@ track — 30 of the 44 shipped sprint/lap tracks have a gap over 300 m, and ital
 | Hard hit (> `HARD_HIT_DAMAGE` in one step) | `-HARD_HIT_PENALTY` | **No** — rubbing wheels mid-overtake must not end a race |
 | Cumulative damage ≥ `MAX_DAMAGE` | `-CRASH_PENALTY` | **Yes** |
 | Nearest LiDAR bin < 0.2 / < 0.4 | graded proximity penalty | No |
-| Beyond `CHECKPOINT_WARN_DIST` from the target | graded, up to `OFF_TRACK_WARN_PENALTY` | No |
-| Beyond `CHECKPOINT_RESET_DIST` | `-OFF_TRACK_RESET_PENALTY` | **Yes** |
 | Step limit (`MAX_STEPS`) | — | **Yes** |
 
 Reaching a checkpoint grants `INVULN_GRACE_STEPS` damage-immune steps, so brushing or
