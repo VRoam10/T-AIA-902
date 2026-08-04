@@ -103,7 +103,7 @@ def test_cmd_benchmark_parses_beamng_into_request(monkeypatch):
             "sensor": "adv_lidar",
             "trajectory_hints": 2,
             "body_orientation": True,
-            "wheel_terrain": True,
+            "road_info": True,
             "random_path": True,
             "dense_episodes": 5,
         },
@@ -116,6 +116,6 @@ def test_cmd_benchmark_parses_beamng_into_request(monkeypatch):
     assert req.beamng.sensor == "adv_lidar"
     assert req.beamng.trajectory_hints == 2
     assert req.beamng.body_orientation is True
-    assert req.beamng.wheel_terrain is True
+    assert req.beamng.road_info is True
     assert req.beamng.random_path is True
     assert req.beamng.dense_episodes == 5

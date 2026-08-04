@@ -99,7 +99,7 @@ def test_factory_forwards_every_beamng_option_it_accepts():
         "sensor": "adv_lidar",
         "trajectory_hints": 3,
         "body_orientation": True,
-        "wheel_terrain": True,
+        "road_info": True,
         "random_path": True,
         "dense_episodes": 7,
         "track": "mixedCircuit1",

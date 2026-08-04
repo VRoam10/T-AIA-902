@@ -100,7 +100,7 @@ def test_build_multi_session_sizes_agent_to_each_sensor():
 
 
 def test_build_multi_session_sizes_agent_with_flags():
-    # Body orientation + wheel terrain on a lidar slot -> 14 + 2 + 2 = 18 states.
+    # Body orientation + road info on a lidar slot -> 14 + 2 + 6 = 22 states.
     specs = [
         {
             "algo": "dqn",
@@ -108,14 +108,14 @@ def test_build_multi_session_sizes_agent_with_flags():
             "color": "Yellow",
             "save_path": "outputs/multi-agents/dqn.pth",
             "body_orientation": True,
-            "wheel_terrain": True,
+            "road_info": True,
         },
     ]
     with patch("core.pipeline_actions.BeamNGMultiEnv") as EnvCls:
         EnvCls.return_value = MagicMock()
         _, slots = build_multi_session(specs, map_name="gridmap_v2")
-    assert slots[0].n_states == 18
+    assert slots[0].n_states == 22
     assert slots[0].body_orientation is True
-    assert slots[0].wheel_terrain is True
-    # The built DQN agent's network must also be sized to 18 inputs.
-    assert slots[0].agent.q_net.feature[0].in_features == 18
+    assert slots[0].road_info is True
+    # The built DQN agent's network must also be sized to 22 inputs.
+    assert slots[0].agent.q_net.feature[0].in_features == 22

@@ -150,39 +150,40 @@ class TestExtraFeatures:
     def test_flags_default_off_no_extra(self):
         env = BeamNGDrivingEnv(beamng_home="unused")
         assert env.body_orientation is False
-        assert env.wheel_terrain is False
-        assert env._extra_features({}).shape == (0,)
+        assert env.road_info is False
+        assert env._extra_features({}, (0.0, 0.0, 0.0), 0.0).shape == (0,)
         assert env.n_states == beamng_spec.obs_size("lidar")  # 14
 
     def test_n_states_accounts_for_flags(self):
         base = beamng_spec.obs_size("lidar")
         assert BeamNGDrivingEnv(beamng_home="x", body_orientation=True).n_states == base + 2
-        assert BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True).n_states == base + 2
-        both = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, wheel_terrain=True)
-        assert both.n_states == base + 4
+        assert BeamNGDrivingEnv(beamng_home="x", road_info=True).n_states == base + 6
+        both = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, road_info=True)
+        assert both.n_states == base + 8
 
     def test_n_states_combines_flags_and_hints(self):
         env = BeamNGDrivingEnv(
-            beamng_home="x", trajectory_hints=2, body_orientation=True, wheel_terrain=True
+            beamng_home="x", trajectory_hints=2, body_orientation=True, road_info=True
         )
-        assert env.n_states == beamng_spec.obs_size("lidar") + 4 + 2 + 2
+        assert env.n_states == beamng_spec.obs_size("lidar") + 4 + 2 + 6
 
-    def test_extra_features_order_is_orientation_then_terrain(self):
-        env = BeamNGDrivingEnv(beamng_home="x", body_orientation=True, wheel_terrain=True)
-        env.roads_sensor = None
-        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, -0.3, 0.95)}
-        out = env._extra_features(state)
-        assert out.shape == (4,)
-        assert out[0] > 0.0  # pitch (nose up) first
-        assert out[2] == pytest.approx(0.0, abs=1e-6)  # left terrain (neutral) after
+    def test_extra_features_order_is_orientation_then_road(self):
+        env = _bare_env(body_orientation=True, road_info=True)
+        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, 0.0, 1.0)}
+        out = env._extra_features(state, (0.0, 0.0, 0.0), 0.0)
+        assert out.shape == (8,)
+        # No RoadsSensor attached, so the road block is neutral and identifiable.
+        np.testing.assert_allclose(out[2:], [0.0] * 6, atol=1e-6)
 
-    def test_wheel_terrain_wrapper_reads_sensor(self):
-        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
-        env.roads_sensor = MagicMock()
-        env.roads_sensor.poll.return_value = {"halfWidth": 3.0, "dist2Left": 3.7, "dist2Right": 0.7}
-        left, right = env._wheel_terrain_features()
-        assert left == pytest.approx(1.0, abs=1e-6)
-        assert right == pytest.approx(0.0, abs=1e-6)
+    def test_road_block_is_neutral_without_a_sensor(self):
+        env = _bare_env(road_info=True)
+        out = env._road_info_features((0.0, 0.0, 0.0), 0.0)
+        assert out.shape == (6,)
+        np.testing.assert_allclose(out, [0.0] * 6, atol=1e-6)
+
+    def test_n_states_counts_the_road_block(self):
+        base = _bare_env().n_states
+        assert _bare_env(road_info=True).n_states == base + 6
 
 
 class TestCloseWaitsForSimShutdown:
@@ -236,14 +237,14 @@ class TestCloseWaitsForSimShutdown:
 
 class TestRoadsSensorLifecycle:
     def test_attach_roads_sensor_noop_when_flag_off(self):
-        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=False)
+        env = BeamNGDrivingEnv(beamng_home="x", road_info=False)
         env.bng = MagicMock()
         env.vehicle = MagicMock()
         env._attach_roads_sensor()
         assert env.roads_sensor is None
 
     def test_remove_roads_sensor_clears_handle(self):
-        env = BeamNGDrivingEnv(beamng_home="x", wheel_terrain=True)
+        env = BeamNGDrivingEnv(beamng_home="x", road_info=True)
         env.roads_sensor = MagicMock()
         env._remove_roads_sensor()
         assert env.roads_sensor is None

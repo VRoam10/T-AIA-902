@@ -135,7 +135,7 @@ def test_benchmark_env_beamng_forwards_options(fake_beamng_registry):
             sensor="adv_lidar",
             trajectory_hints=3,
             body_orientation=True,
-            wheel_terrain=True,
+            road_info=True,
             random_path=True,
             dense_episodes=5,
         ),
@@ -146,7 +146,7 @@ def test_benchmark_env_beamng_forwards_options(fake_beamng_registry):
     assert captured["sensor"] == "adv_lidar"
     assert captured["trajectory_hints"] == 3
     assert captured["body_orientation"] is True
-    assert captured["wheel_terrain"] is True
+    assert captured["road_info"] is True
 
 
 def test_benchmark_env_beamng_excludes_training_only_options(fake_beamng_registry):
@@ -216,12 +216,12 @@ def test_benchmark_env_beamng_sizes_n_states_from_sensor_and_flags(fake_beamng_r
         algo_name="ddpg",
         env_name="beamng",
         beamng=BeamNGOptions(
-            sensor="adv_lidar", trajectory_hints=2, body_orientation=True, wheel_terrain=True
+            sensor="adv_lidar", trajectory_hints=2, body_orientation=True, road_info=True
         ),
     )
     factory, metadata = _benchmark_env(req, algo_name="ddpg")
-    # The size comes from the spec, not from the registry metadata: 38 + 4 + 2 + 2.
-    assert metadata["n_states"] == 46
+    # The size comes from the spec, not from the registry metadata: 38 + 4 + 2 + 6.
+    assert metadata["n_states"] == 50
     assert metadata["n_actions"] == 3  # continuous head
 
 

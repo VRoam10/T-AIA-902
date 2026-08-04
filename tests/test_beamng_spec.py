@@ -52,15 +52,6 @@ class TestObsSize:
     def test_body_orientation_adds_two(self):
         assert obs_size("lidar", body_orientation=True) == 16
 
-    def test_wheel_terrain_adds_two(self):
-        assert obs_size("lidar", wheel_terrain=True) == 16
-
-    def test_options_stack(self):
-        assert (
-            obs_size("adv_lidar", trajectory_hints=2, body_orientation=True, wheel_terrain=True)
-            == 38 + 4 + 2 + 2
-        )
-
     def test_flags_off_matches_bare_call(self):
         for sensor in SENSORS:
             assert (
@@ -70,6 +61,19 @@ class TestObsSize:
     def test_unknown_sensor_raises(self):
         with pytest.raises(ValueError, match="unknown sensor"):
             obs_size("radar")
+
+
+class TestRoadInfoSizing:
+    def test_road_info_adds_six(self):
+        base = obs_size("lidar")
+        assert obs_size("lidar", road_info=True) == base + 6
+
+    def test_road_info_stacks_with_the_other_tails(self):
+        assert obs_size("lidar", 2, True, True) == 14 + 4 + 2 + 6
+
+    def test_wheel_terrain_is_gone(self):
+        with pytest.raises(TypeError):
+            obs_size("lidar", wheel_terrain=True)
 
 
 class TestPerceptionFeatures:

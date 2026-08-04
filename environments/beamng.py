@@ -16,7 +16,8 @@ from config import LOG_CAMERA, LOG_CHECKPOINT_HIT, LOG_LIDAR
 from core.stop_signal import stop_requested
 from core.trajectory import TrajectoryData, load_or_generate
 from environments import beamng_sensors, beamng_spec
-from environments.beamng_geometry import body_orientation_features, wheel_terrain_features
+from environments.beamng_features import road_info_features
+from environments.beamng_geometry import body_orientation_features
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
@@ -118,7 +119,7 @@ class BeamNGDrivingEnv:
         map_name: str = "gridmap_v2",
         trajectory_hints: int = 0,
         body_orientation: bool = False,
-        wheel_terrain: bool = False,
+        road_info: bool = False,
         random_path: bool = False,
         dense_episodes: int = 0,
         track: str | None = None,
@@ -177,14 +178,14 @@ class BeamNGDrivingEnv:
         self.headless = headless
         self.trajectory_hints = trajectory_hints
         self.body_orientation = body_orientation
-        self.wheel_terrain = wheel_terrain
+        self.road_info = road_info
         self.random_path = random_path
         self.dense_episodes = dense_episodes
         self.track = track
         self._episode_idx = 0  # incremented on each reset(); drives the waypoint curriculum
 
         self.n_states = beamng_spec.obs_size(
-            sensor, trajectory_hints, body_orientation, wheel_terrain
+            sensor, trajectory_hints, body_orientation, road_info
         )
         self.n_actions = beamng_spec.action_size(output)
 
@@ -446,8 +447,8 @@ class BeamNGDrivingEnv:
         self.camera = None
 
     def _attach_roads_sensor(self):
-        """Attach a RoadsSensor when wheel_terrain is on; replace any prior one."""
-        if not self.wheel_terrain:
+        """Attach a RoadsSensor when road_info is on; replace any prior one."""
+        if not self.road_info:
             return
         self._remove_roads_sensor()
         self.roads_sensor = beamng_sensors.create_roads_sensor("roads", self.bng, self.vehicle)
@@ -713,7 +714,7 @@ class BeamNGDrivingEnv:
             ],
             dtype=np.float32,
         )
-        extra = self._extra_features(state)
+        extra = self._extra_features(state, pos, vehicle_heading)
         obs = np.concatenate([kin, perception, waypoint_hints, extra])
 
         self._log_observation(kin, perception, waypoint_hints, extra)
@@ -772,8 +773,8 @@ class BeamNGDrivingEnv:
             labels = []
             if self.body_orientation:
                 labels += ["pitch", "roll"]
-            if self.wheel_terrain:
-                labels += ["edgeL", "edgeR"]
+            if self.road_info:
+                labels += ["edgeL", "edgeR", "rdhead", "curv", "aheadF", "aheadL"]
             while len(labels) < extra.size:
                 labels.append(f"x{len(labels)}")
             body = " ".join(f"{labels[k]}={extra[k]:+.2f}" for k in range(extra.size))
@@ -836,22 +837,22 @@ class BeamNGDrivingEnv:
             state.get("dir", (0.0, 1.0, 0.0)), state.get("up", (0.0, 0.0, 1.0))
         )
 
-    def _wheel_terrain_features(self) -> np.ndarray:
-        """[left, right] road-edge position from the RoadsSensor (neutral without one)."""
+    def _road_info_features(self, pos, heading) -> np.ndarray:
+        """The six road-relative features (neutral without a RoadsSensor)."""
         payload = self.roads_sensor.poll() if self.roads_sensor is not None else None
-        return wheel_terrain_features(payload, self.HALF_TRACK_WIDTH)
+        return road_info_features(payload, self.HALF_TRACK_WIDTH, pos, heading)
 
-    def _extra_features(self, state) -> np.ndarray:
-        """Optional observation tail: body orientation and/or wheel terrain.
+    def _extra_features(self, state, pos, heading) -> np.ndarray:
+        """Optional observation tail: body orientation and/or road position.
 
-        Appended after the waypoint hints. Empty array when both flags are off,
-        so flag-off observations are unchanged.
+        Appended after the waypoint hints. Empty array when both flags are off, so
+        a flag-off observation is byte-for-byte what it was.
         """
         blocks = []
         if self.body_orientation:
             blocks.append(self._body_orientation_features(state))
-        if self.wheel_terrain:
-            blocks.append(self._wheel_terrain_features())
+        if self.road_info:
+            blocks.append(self._road_info_features(pos, heading))
         if not blocks:
             return np.empty(0, dtype=np.float32)
         return np.concatenate(blocks)

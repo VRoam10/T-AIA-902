@@ -7,7 +7,8 @@ import pytest
 
 import environments.beamng_reward as reward_mod
 from environments import beamng_spec
-from environments.beamng_geometry import body_orientation_features, wheel_terrain_features
+from environments.beamng_features import road_info_features
+from environments.beamng_geometry import body_orientation_features
 from environments.beamng_multi import (
     BeamNGMultiEnv,
     VehicleSlot,
@@ -329,8 +330,8 @@ class TestObserve:
         slot = env.slots[0]
         slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
         slot.body_orientation = True
-        slot.wheel_terrain = True
-        slot.n_states = 18
+        slot.road_info = True
+        slot.n_states = 22
         self._wire_slot_sensors(
             slot,
             speed=10.0,
@@ -353,13 +354,13 @@ class TestObserve:
             "dist2Right": 0.7,
         }
         obs = env.observe(slot)
-        assert obs.shape == (18,)
+        assert obs.shape == (22,)
         expected_body = body_orientation_features((1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
-        expected_wheel = wheel_terrain_features(
-            {"halfWidth": 3.0, "dist2Left": 0.7, "dist2Right": 0.7}, 0.7
+        expected_road = road_info_features(
+            slot.roads_sensor.poll(), BeamNGMultiEnv.HALF_TRACK_WIDTH, slot.current_pos, 0.0
         )
-        np.testing.assert_allclose(obs[-4:-2], expected_body, atol=1e-6)
-        np.testing.assert_allclose(obs[-2:], expected_wheel, atol=1e-6)
+        np.testing.assert_allclose(obs[-8:-6], expected_body, atol=1e-6)
+        np.testing.assert_allclose(obs[-6:], expected_road, atol=1e-6)
 
 
 class TestCreateSlotSensor:
@@ -367,7 +368,7 @@ class TestCreateSlotSensor:
         env = _env()
         env.bng = MagicMock()
         slot = env.slots[0]  # perception "lidar"
-        slot.wheel_terrain = False
+        slot.road_info = False
         slot.vehicle = MagicMock()
         slot.vehicle.state = {"pos": (0.0, 0.0, 0.0), "dir": (1.0, 0.0, 0.0)}
         slot.vehicle.get_bbox.return_value = {
@@ -392,7 +393,7 @@ class TestCreateSlotSensor:
         env.bng = MagicMock()
         slot = env.slots[0]
         slot.sensor = "camera"
-        slot.wheel_terrain = False
+        slot.road_info = False
         slot.vehicle = MagicMock()
 
         with (
@@ -409,11 +410,11 @@ class TestCreateSlotSensor:
 class TestSlotExtraFeatures:
     def test_slot_n_states_with_flags(self):
         assert slot_n_states("lidar", body_orientation=True) == 16  # 14 + 2
-        assert slot_n_states("lidar", wheel_terrain=True) == 16  # 14 + 2
-        assert slot_n_states("lidar", body_orientation=True, wheel_terrain=True) == 18
+        assert slot_n_states("lidar", road_info=True) == 20  # 14 + 6
+        assert slot_n_states("lidar", body_orientation=True, road_info=True) == 22
         assert (
-            slot_n_states("lidar", trajectory_hints=1, body_orientation=True, wheel_terrain=True)
-            == 14 + 2 + 2 + 2
+            slot_n_states("lidar", trajectory_hints=1, body_orientation=True, road_info=True)
+            == 14 + 2 + 2 + 6
         )
 
     def test_build_slots_reads_flags(self):
@@ -425,18 +426,18 @@ class TestSlotExtraFeatures:
                 "color": "Yellow",
                 "save_path": "outputs/x.pth",
                 "body_orientation": True,
-                "wheel_terrain": True,
+                "road_info": True,
             }
         ]
         slot = build_slots(specs)[0]
         assert slot.body_orientation is True
-        assert slot.wheel_terrain is True
-        assert slot.n_states == 18
+        assert slot.road_info is True
+        assert slot.n_states == 22
 
     def test_build_slots_flags_default_off(self):
         slot = build_slots(SPECS)[0]
         assert slot.body_orientation is False
-        assert slot.wheel_terrain is False
+        assert slot.road_info is False
         assert slot.n_states == 14
 
 

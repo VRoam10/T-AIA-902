@@ -178,10 +178,10 @@ def poll_camera(camera):
 # Shared
 # --------------------------------------------------------------------------- #
 def create_roads_sensor(name: str, bng, vehicle):
-    """Create a RoadsSensor for the ``wheel_terrain`` observation flag.
+    """Create a RoadsSensor for the ``road_info`` observation flag.
 
     Note: polling this right after a teleport with no intervening step hard-freezes
-    the sim on road-dense maps, which is why ``wheel_terrain`` stays off by default
+    the sim on road-dense maps, which is why ``road_info`` stays off by default
     and is not offered in the menus.
     """
     return RoadsSensor(name, bng, vehicle)

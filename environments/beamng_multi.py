@@ -20,10 +20,10 @@ except ImportError:
 from core.trajectory import MapTrajectories, load_or_generate
 from environments import beamng_sensors, beamng_spec
 from environments.beamng import BeamNGDrivingEnv
+from environments.beamng_features import road_info_features
 from environments.beamng_geometry import (
     body_orientation_features,
     starting_grid,
-    wheel_terrain_features,
 )
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
@@ -51,7 +51,7 @@ class VehicleSlot:
     human: bool = False
     trajectory_hints: int = 0
     body_orientation: bool = False
-    wheel_terrain: bool = False
+    road_info: bool = False
     n_states: int = 14  # observation length for this vehicle's config
 
     # Sensors (assigned during scenario load)
@@ -127,7 +127,7 @@ def slot_n_states(
     sensor: str,
     trajectory_hints: int = 0,
     body_orientation: bool = False,
-    wheel_terrain: bool = False,
+    road_info: bool = False,
 ) -> int:
     """Observation length for a vehicle running the given sensor and options.
 
@@ -135,7 +135,7 @@ def slot_n_states(
     lives in :func:`environments.beamng_spec.obs_size`, which the single-vehicle
     env and the agent-sizing code also use.
     """
-    return beamng_spec.obs_size(sensor, trajectory_hints, body_orientation, wheel_terrain)
+    return beamng_spec.obs_size(sensor, trajectory_hints, body_orientation, road_info)
 
 
 # Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
@@ -161,7 +161,7 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
     """Turn a list of vehicle specs into VehicleSlots.
 
     Each spec dict: ``{"algo", "agent", "color", "save_path", "sensor",
-    "trajectory_hints", "body_orientation", "wheel_terrain"}``. ``sensor`` defaults
+    "trajectory_hints", "body_orientation", "road_info"}``. ``sensor`` defaults
     to the spec module's default; ``trajectory_hints`` to 0; the two observation
     flags to False.
 
@@ -174,7 +174,7 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
         sensor = spec.get("sensor", beamng_spec.DEFAULT_SENSOR)
         trajectory_hints = spec.get("trajectory_hints", 0)
         body_orientation = spec.get("body_orientation", False)
-        wheel_terrain = spec.get("wheel_terrain", False)
+        road_info = spec.get("road_info", False)
         slots.append(
             VehicleSlot(
                 name=f"ego_{i}",
@@ -185,8 +185,8 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
                 output=beamng_spec.output_for_algo(spec["algo"]),
                 trajectory_hints=trajectory_hints,
                 body_orientation=body_orientation,
-                wheel_terrain=wheel_terrain,
-                n_states=slot_n_states(sensor, trajectory_hints, body_orientation, wheel_terrain),
+                road_info=road_info,
+                n_states=slot_n_states(sensor, trajectory_hints, body_orientation, road_info),
             )
         )
     return slots
@@ -369,7 +369,7 @@ class BeamNGMultiEnv:
                 ),
                 perception,
                 waypoint_hints,
-                self._slot_extra_features(slot, state),
+                self._slot_extra_features(slot, state, pos, vehicle_heading),
             ]
         )
 
@@ -385,10 +385,10 @@ class BeamNGMultiEnv:
         )
         return block
 
-    def _slot_extra_features(self, slot, state) -> np.ndarray:
-        """Optional observation tail for a slot (body orientation / wheel terrain).
+    def _slot_extra_features(self, slot, state, pos, heading) -> np.ndarray:
+        """Optional observation tail for a slot (body orientation / road position).
 
-        Calls the shared geometry helpers; empty when both flags are off.
+        Calls the shared feature helpers; empty when both flags are off.
         """
         state = state or {}
         blocks = []
@@ -398,9 +398,9 @@ class BeamNGMultiEnv:
                     state.get("dir", (0.0, 1.0, 0.0)), state.get("up", (0.0, 0.0, 1.0))
                 )
             )
-        if slot.wheel_terrain:
+        if slot.road_info:
             payload = slot.roads_sensor.poll() if slot.roads_sensor is not None else None
-            blocks.append(wheel_terrain_features(payload, self.HALF_TRACK_WIDTH))
+            blocks.append(road_info_features(payload, self.HALF_TRACK_WIDTH, pos, heading))
         if not blocks:
             return np.empty(0, dtype=np.float32)
         return np.concatenate(blocks)
@@ -595,7 +595,7 @@ class BeamNGMultiEnv:
         dashcam; LiDAR slots get a LiDAR sized for their sensor plus a cached ego
         bbox, used both for self-hit filtering and to place the roof mount.
         """
-        if slot.wheel_terrain:
+        if slot.road_info:
             slot.roads_sensor = beamng_sensors.create_roads_sensor(
                 f"roads_{slot.name}", self.bng, slot.vehicle
             )
