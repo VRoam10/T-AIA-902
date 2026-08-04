@@ -83,10 +83,11 @@ class VehicleSlot:
     current_dist: float = 0.0
     current_pos: tuple = (0.0, 0.0, 0.0)
     path_pos: Any = None
-    # cos(heading - path tangent), set once per observation alongside path_pos so
-    # the reward reads the same heading/tangent the observation was built from.
-    # None before the first observation (or without a guide line), so the reward
-    # falls back to the checkpoint bearing instead of reading a stale value.
+    # cos(velocity heading - path tangent), set once per observation alongside
+    # path_pos so the reward reads the same tangent the observation was built
+    # from. None before the first observation, or without a guide line, so the
+    # reward falls back to the checkpoint bearing instead of reading a stale or
+    # meaningless value.
     path_alignment: float | None = None
     checkpoint_hit: bool = False
     invuln_steps: int = 0  # damage-immune steps remaining (granted on checkpoint hit)
@@ -388,9 +389,18 @@ class BeamNGMultiEnv:
 
         slot.current_pos = pos
         slot.path_pos = project_onto_path(slot.guide_line, pos)
-        # Same heading and tangent the observation is built from, so the reward
-        # cannot drift from what the policy actually saw.
-        slot.path_alignment = float(np.cos(vehicle_heading - slot.path_pos.tangent_rad))
+        # Same tangent the observation is built from, and the same *velocity*
+        # heading the fallback's heading_err uses (not vehicle_heading above,
+        # which is the nose direction) — so this is exactly the signed velocity
+        # component along the path, matching "speed projected onto the
+        # direction we want to be going". None without a guide line, so a slot
+        # that never got one falls back to the checkpoint bearing instead of
+        # reading cos(nose heading) against an arbitrary tangent_rad=0.
+        if slot.guide_line:
+            vel_heading = float(np.arctan2(vel[1], vel[0]))
+            slot.path_alignment = float(np.cos(vel_heading - slot.path_pos.tangent_rad))
+        else:
+            slot.path_alignment = None
 
         waypoint_hints = self._waypoint_hints(slot, pos, vehicle_heading)
 
@@ -737,6 +747,7 @@ class BeamNGMultiEnv:
         for slot in self.slots:
             slot.last_obs = self.observe(slot)
             slot.last_dist = slot.current_dist
+            slot.last_progress_m = self.progress_of(slot)
             self._update_slot_marker(slot)
 
     def reset_vehicle(self, slot: VehicleSlot):
@@ -762,6 +773,7 @@ class BeamNGMultiEnv:
         if slot.lidar is not None or slot.electrics is not None:
             slot.last_obs = self.observe(slot)
             slot.last_dist = slot.current_dist
+            slot.last_progress_m = self.progress_of(slot)
         self._update_slot_marker(slot)
 
     def step_physics(self):

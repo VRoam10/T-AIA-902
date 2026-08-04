@@ -101,12 +101,24 @@ class TestSegmentTimeBonus:
         assert out.reward > beamng_reward.CHECKPOINT_BONUS
 
     def test_the_bonus_does_not_grow_with_track_length(self):
-        # The scale trap: on italy highway1 (1064 m average) a par-relative bonus
-        # must stay worth about half a checkpoint, not ten times one.
-        short = _reward(checkpoint_hit=True, steps_since_checkpoint=1, segment_len_m=25.0).reward
-        long = _reward(checkpoint_hit=True, steps_since_checkpoint=1, segment_len_m=1000.0).reward
-        assert long == pytest.approx(short, abs=1e-3)
+        # Same relative pace on both (par / steps_since_checkpoint, after the
+        # in-function +1): par is 7 steps for 25 m and 250 for 1000 m, so 106
+        # steps on the long segment matches the same ratio as 2 steps on the
+        # short one (250/107 ~= 7/3). Deliberately not proportional-by-distance
+        # (2 : 80 looks equivalent at 25 m/1000 m, but that ignores the +1 and
+        # overshoots the tolerance below by ~1.1 — the short segment's par is
+        # small enough that +1 is a much bigger fraction of it).
+        short = _reward(checkpoint_hit=True, steps_since_checkpoint=2, segment_len_m=25.0).reward
+        long = _reward(checkpoint_hit=True, steps_since_checkpoint=106, segment_len_m=1000.0).reward
+        assert long == pytest.approx(short, abs=1.0)  # spread is par's ceil() on 25 m
         assert long <= beamng_reward.CHECKPOINT_BONUS + beamng_reward.SEGMENT_TIME_BONUS + 1.0
+
+    def test_the_bonus_still_discriminates_at_race_pace(self):
+        # The trap a naive ratio-past-par shape falls into: flat above 2x par, so
+        # no gradient anywhere a 682 hp car actually drives.
+        fast = _reward(checkpoint_hit=True, steps_since_checkpoint=60, segment_len_m=1000.0).reward
+        faster = _reward(checkpoint_hit=True, steps_since_checkpoint=50, segment_len_m=1000.0).reward
+        assert faster > fast
 
     def test_missing_par_floors_the_bonus_at_zero(self):
         out = _reward(checkpoint_hit=True, steps_since_checkpoint=9999, segment_len_m=25.0)

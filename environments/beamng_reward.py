@@ -63,18 +63,25 @@ CHECKPOINT_BONUS = 50.0  # flat, per checkpoint reached
 # SEGMENT_TIME_BONUS, miss it and it floors at zero. Par is derived per segment
 # from the geometry actually being driven — a constant par (it used to be
 # SPARSE_SPACING_M, 25 m) is unmeetable on a game track, where 30 of the 44
-# shipped sprint/lap tracks have gaps over 300 m.
+# shipped sprint/lap tracks have gaps over 300 m. Because par scales with the
+# segment's own length, `steps_since_checkpoint / par` is a pace ratio (equal to
+# SEGMENT_PAR_SPEED_MS / actual average speed) and the bonus stays scale-free:
+# the same relative pace pays the same on a 25 m segment and a 1000 m one, to
+# within par's ceil() rounding on short segments.
 #
-# "Beat par" is expressed as a *ratio* (par steps / steps actually taken), not a
-# step-count difference, so it stays scale-free: a segment driven in half its par
-# time pays the same whether that segment is 25 m or 1000 m. The ramp runs from
-# 0 at exactly par to the full bonus at 2x par speed (clip(ratio - 1, 0, 1)), so
-# average driving pays nothing and only genuinely quick segments pay out.
+# The target speed is deliberately modest so the bonus stays a usable gradient
+# across the pace a car actually drives, rather than saturating at the cap the
+# moment it is going reasonably fast. That rules out the tempting-looking
+# alternative of comparing par to steps as a *ratio past 1* (par / steps, capped
+# at 2x par speed): on this segment length range a 682 hp car clears 2x par speed
+# (24 m/s, 86 km/h) on nearly every segment, so that shape is flat — no
+# gradient — across the entire operating regime, which is arithmetically the
+# same as folding it into a bigger CHECKPOINT_BONUS.
 #
-# What this replaces — "(par - steps) * a coefficient" — is not scale-free: on
-# italy's highway1 (1064 m average segment, par ~266 steps at SEGMENT_PAR_SPEED_MS),
-# a 40 m/s run takes ~80 steps and that shape would pay ~744, more than the
-# checkpoint and finish bonuses combined.
+# What this replaces — "(par - steps) x a coefficient" with a *fixed* par — is
+# not scale-free at all: on italy's highway1 (1064 m average segment, par ~266
+# steps at SEGMENT_PAR_SPEED_MS), a 40 m/s run takes ~80 steps and that shape
+# would have paid ~744, more than the checkpoint and finish bonuses combined.
 SEGMENT_PAR_SPEED_MS = 12.0
 SEGMENT_TIME_BONUS = 25.0  # half a checkpoint bonus for a perfect segment
 FINISH_BONUS = 300.0  # for completing the path
@@ -247,17 +254,17 @@ def compute_race_reward(
     # 7. Checkpoint: a flat bonus plus a relative bonus for beating the segment's
     #    own par. `par` is the step count for covering this segment's real length
     #    at SEGMENT_PAR_SPEED_MS (falling back to SPARSE_SPACING_M without a
-    #    measured length); `par / steps_since_checkpoint` is a dimensionless speed
-    #    ratio, so a near-perfect 25 m segment and a near-perfect 1000 m segment
-    #    pay the same instead of one dwarfing the other.
+    #    measured length); `steps_since_checkpoint / par` is a pace ratio, so a
+    #    near-perfect 25 m segment and a near-perfect 1000 m segment pay the same
+    #    instead of one dwarfing the other, and the bonus still has a gradient at
+    #    race pace instead of saturating the moment a car is going reasonably fast.
     steps_since_checkpoint += 1
     if checkpoint_hit:
         reward += CHECKPOINT_BONUS
         par = beamng_spec.steps_for_distance(
             float(segment_len_m) if segment_len_m else SPARSE_SPACING_M, SEGMENT_PAR_SPEED_MS
         )
-        speed_ratio = par / steps_since_checkpoint
-        reward += SEGMENT_TIME_BONUS * float(np.clip(speed_ratio - 1.0, 0.0, 1.0))
+        reward += SEGMENT_TIME_BONUS * float(np.clip(1.0 - steps_since_checkpoint / par, 0.0, 1.0))
         steps_since_checkpoint = 0
         checkpoint_hit = False
 

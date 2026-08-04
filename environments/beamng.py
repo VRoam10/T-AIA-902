@@ -212,11 +212,12 @@ class BeamNGDrivingEnv:
         self._guide_line: list[tuple[float, float, float]] = []
         self._path_pos: PathPosition = NEUTRAL_PATH_POS
         self._last_progress_m = 0.0
-        # cos(heading - path tangent), computed once per observation alongside
-        # `_path_pos` so the reward reads the same heading/tangent the observation
-        # was built from. None before any observation, so a reward computed first
-        # (see tests/test_beamng_reward.py) falls back to the checkpoint bearing
-        # instead of reading a stale value.
+        # cos(velocity heading - path tangent), computed once per observation
+        # alongside `_path_pos` so the reward reads the same tangent the
+        # observation was built from. None before any observation, or without a
+        # guide line (see tests/test_beamng_reward.py) — either way a reward
+        # computed from it falls back to the checkpoint bearing instead of
+        # reading a stale or meaningless value.
         self._path_alignment: float | None = None
 
         # Measured once per scenario load: how far the cached spawn heights sit
@@ -780,9 +781,18 @@ class BeamNGDrivingEnv:
 
         heading_err, dist = self._path_errors(pos, state)
         self._path_pos = self._project(pos)
-        # Same heading and tangent the observation is built from, so the reward
-        # cannot drift from what the policy actually saw.
-        self._path_alignment = float(np.cos(vehicle_heading - self._path_pos.tangent_rad))
+        # Same tangent the observation is built from, and the same *velocity*
+        # heading the fallback's heading_err uses (not vehicle_heading above,
+        # which is the nose direction) — so this is exactly the signed velocity
+        # component along the path, matching "speed projected onto the
+        # direction we want to be going". None without a guide line, so a slot
+        # that never got one falls back to the checkpoint bearing instead of
+        # reading cos(nose heading) against an arbitrary tangent_rad=0.
+        if self._guide_line:
+            vel_heading = float(np.arctan2(vel[1], vel[0]))
+            self._path_alignment = float(np.cos(vel_heading - self._path_pos.tangent_rad))
+        else:
+            self._path_alignment = None
 
         perception = self._perceive(pos, vehicle_heading)
 
