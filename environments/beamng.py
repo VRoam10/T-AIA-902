@@ -253,6 +253,11 @@ class BeamNGDrivingEnv:
         if self.bng is None:
             self._launch()
         else:
+            # Both branches below reposition the vehicle (teleport or
+            # scenario.restart()), so close the gate once here rather than only
+            # under random_path — that left the restart() branch relying on
+            # lucky call order, exactly what this gate exists to replace.
+            self._road_pollable = False
             if self.random_path:
                 # Teleport (reset=True) repositions AND resets the vehicle to the
                 # newly chosen path's spawn. Do NOT call scenario.restart() here:
@@ -265,7 +270,6 @@ class BeamNGDrivingEnv:
                     rot_quat=self.trajectory.spawn_rot,
                     reset=True,
                 )
-                self._road_pollable = False
             else:
                 self.bng.scenario.restart()
             # Waypoint density can flip between episodes (dense warm-up ->

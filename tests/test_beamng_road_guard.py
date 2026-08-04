@@ -111,3 +111,47 @@ class TestRealtimeGateStaysOpen:
         env._reset_human_episode()
 
         assert env._road_pollable is True
+
+
+class TestResetClosesTheGateOnBothBranches:
+    """reset()'s random_path branch (teleport) closed the gate; the other
+    branch (scenario.restart(), which repositions the car just as a teleport
+    does) did not — a lucky-order gap inside the very function meant to
+    replace lucky ordering. A line inserted later between restart() and the
+    reset's own _advance(5) (a debug observe, a logging poll) would pass on
+    gridmap and only surface the seventh-issue freeze on a road-dense map.
+    """
+
+    def test_restart_branch_leaves_the_gate_closed_until_advance_reopens_it(self, monkeypatch):
+        env = BeamNGDrivingEnv(beamng_home="unused", map_name="italy", road_info=True)
+        env.trajectory = SimpleNamespace(
+            spawn_pos=(0.0, 0.0, 0.0),
+            spawn_rot=(0.0, 0.0, 0.0, 1.0),
+            sparse_waypoints=[(10.0, 0.0, 0.0)],
+            dense_waypoints=[(10.0, 0.0, 0.0)],
+        )
+        env.bng = MagicMock()
+        env.vehicle = MagicMock()
+        env.roads_sensor = _CountingRoads()
+        env._road_pollable = True  # leftover open from the end of the previous episode
+        assert env.random_path is False  # exercising the scenario.restart() branch
+
+        # Simulate a poll landing right after restart(), before reset()'s own
+        # _advance(5) — exactly the gap a future debug/observe line could exploit.
+        env.bng.scenario.restart.side_effect = lambda: env._road_info_features(
+            (0.0, 0.0, 0.0), 0.0
+        )
+
+        monkeypatch.setattr(env, "_update_active_marker", lambda idx: None)
+
+        def fake_observe():
+            env._current_dist = 0.0
+            return [0.0]
+
+        monkeypatch.setattr(env, "_observe", fake_observe)
+
+        env.reset()
+
+        env.bng.scenario.restart.assert_called_once()
+        assert env.roads_sensor.polls == 0  # the simulated poll right after restart() was blocked
+        assert env._road_pollable is True  # reopened by reset()'s own _advance(5)
