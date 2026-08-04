@@ -5,11 +5,11 @@ behaviour whether it trains alone, alongside others, or against a rival.
 
 What it rewards, and why:
 
-  * **Speed, not just arrival.** Dense progress toward the next waypoint (x3),
-    speed projected onto the target direction (x3), a flat checkpoint bonus, a
-    bonus for reaching each checkpoint *quickly*, a finish bonus that scales with
-    how much of the step budget is left — and a penalty on every step. Time
-    pressure is the point: the reward this replaced paid
+  * **Speed, not just arrival.** Dense progress along the path (x3), speed
+    projected onto the target direction (x3), a flat checkpoint bonus, a relative
+    bonus for beating the segment's own par, a finish bonus that scales with how
+    much of the step budget is left — and a penalty on every step. Time pressure
+    is the point: the reward this replaced paid
     ``CHECKPOINT_BONUS_PER_IDX * waypoint_idx`` with no time term at all, so a slow
     clean run scored the same as a fast one over the same path.
   * **Being ahead.** In a race, a telescoping gap term pays for metres gained on
@@ -59,16 +59,24 @@ STEP_PENALTY = 0.5  # charged every step — this is what makes "fast" beat "slo
 
 CHECKPOINT_BONUS = 50.0  # flat, per checkpoint reached
 
-# "Par" for one checkpoint segment, derived from the real geometry rather than
-# guessed: sparse checkpoints sit SPARSE_SPACING_M apart and one env step lasts
-# SECONDS_PER_ENV_STEP, so par is the step count for covering that gap at
-# SEGMENT_PAR_SPEED_MS. Beat par and the segment-time bonus pays; miss it and it
-# floors at zero. The target speed is deliberately modest so the bonus stays a
-# usable gradient early in training instead of saturating.
+# The segment-time bonus is *relative*: beat par and it pays up to
+# SEGMENT_TIME_BONUS, miss it and it floors at zero. Par is derived per segment
+# from the geometry actually being driven — a constant par (it used to be
+# SPARSE_SPACING_M, 25 m) is unmeetable on a game track, where 30 of the 44
+# shipped sprint/lap tracks have gaps over 300 m.
+#
+# "Beat par" is expressed as a *ratio* (par steps / steps actually taken), not a
+# step-count difference, so it stays scale-free: a segment driven in half its par
+# time pays the same whether that segment is 25 m or 1000 m. The ramp runs from
+# 0 at exactly par to the full bonus at 2x par speed (clip(ratio - 1, 0, 1)), so
+# average driving pays nothing and only genuinely quick segments pay out.
+#
+# What this replaces — "(par - steps) * a coefficient" — is not scale-free: on
+# italy's highway1 (1064 m average segment, par ~266 steps at SEGMENT_PAR_SPEED_MS),
+# a 40 m/s run takes ~80 steps and that shape would pay ~744, more than the
+# checkpoint and finish bonuses combined.
 SEGMENT_PAR_SPEED_MS = 12.0
-SEGMENT_TARGET_STEPS = beamng_spec.steps_for_distance(SPARSE_SPACING_M, SEGMENT_PAR_SPEED_MS)
-# Scaled so a near-perfect segment is worth roughly half a checkpoint bonus.
-SEGMENT_TIME_COEF = 4.0
+SEGMENT_TIME_BONUS = 25.0  # half a checkpoint bonus for a perfect segment
 FINISH_BONUS = 300.0  # for completing the path
 FINISH_TIME_COEF = 1.0  # bonus per unused step at the finish
 
@@ -113,6 +121,7 @@ class RewardOutcome:
     waypoint_idx: int
     steps_since_checkpoint: int
     finished: bool = False
+    progress_m: float = 0.0
 
 
 def compute_race_reward(
@@ -134,6 +143,8 @@ def compute_race_reward(
     laps: int = 1,
     progress_m: float | None = None,
     last_progress_m: float | None = None,
+    path_alignment: float | None = None,
+    segment_len_m: float | None = None,
     rival_progress_m: float | None = None,
     last_rival_progress_m: float | None = None,
     rival_finished: bool = False,
@@ -147,9 +158,15 @@ def compute_race_reward(
     not be read here. `perception` selects whether the block is treated as LiDAR
     ranges for the obstacle penalty.
 
-    The four ``*_progress_m`` arguments enable the racing gap term; pass none of
-    them (the default) for solo running and the term contributes exactly nothing.
-    `rival_finished` settles the win/lose bonus when the other car got there first.
+    ``progress_m``/``last_progress_m`` are one measurement doing two jobs: the
+    pace term reads the metres gained along the path directly (falling back to
+    straight-line closure when the caller has no projection), and the same pair
+    feeds the racing gap term together with the two ``rival_*`` arguments — pass
+    none of the rival ones (the default) for solo running and the gap term
+    contributes exactly nothing. `path_alignment` overrides the checkpoint-bearing
+    alignment with cos(heading - path tangent); `segment_len_m` overrides the
+    segment-time bonus's par distance. `rival_finished` settles the win/lose bonus
+    when the other car got there first.
 
     All other arguments are the caller's current episode state; the returned
     `RewardOutcome` holds the updated values to write back.
@@ -157,8 +174,15 @@ def compute_race_reward(
     speed, _steering, heading_err, _lateral_err, damage_norm = obs[:5]
     perception_bins = obs[6 : 6 + n_perception]
     damage = damage_norm * 1000.0
-    # heading_err is normalized by pi in the observation; undo it for cos().
-    alignment = float(np.cos(heading_err * np.pi))
+    # Speed is projected onto the direction we want to be going. With a path
+    # tangent that is where the road goes; without one it falls back to the
+    # bearing to the next checkpoint (heading_err is normalized by pi in the
+    # observation; undo it for cos()) — the same thing only while checkpoints
+    # are close.
+    if path_alignment is None:
+        alignment = float(np.cos(heading_err * np.pi))
+    else:
+        alignment = float(np.clip(path_alignment, -1.0, 1.0))
 
     done = False
     finished = False
@@ -172,11 +196,16 @@ def compute_race_reward(
     if invulnerable:
         invuln_steps -= 1
 
-    # 1. Progress toward the waypoint (telescoping). Zeroed on the hit step so
-    #    the target switching to the next, far waypoint is not counted as
-    #    backward progress.
-    dist_delta = 0.0 if checkpoint_hit else (last_dist - current_dist)
-    reward += dist_delta * PROGRESS_COEF
+    # 1. Progress. Metres gained *along the path* when the caller measures it,
+    #    which is continuous across a checkpoint and cannot read a bend as going
+    #    backwards. Falling back to straight-line closure keeps the old
+    #    behaviour — including zeroing the hit step, where the target jumping to
+    #    the next waypoint would otherwise look like a large step backwards.
+    if progress_m is not None and last_progress_m is not None:
+        reward += (float(progress_m) - float(last_progress_m)) * PROGRESS_COEF
+    else:
+        dist_delta = 0.0 if checkpoint_hit else (last_dist - current_dist)
+        reward += dist_delta * PROGRESS_COEF
     last_dist = current_dist
 
     # 2. Speed projected onto the target direction (driving toward it = good).
@@ -215,11 +244,20 @@ def compute_race_reward(
     if steps >= max_steps:
         done = True
 
-    # 7. Checkpoint: a flat bonus plus a bonus for getting there quickly.
+    # 7. Checkpoint: a flat bonus plus a relative bonus for beating the segment's
+    #    own par. `par` is the step count for covering this segment's real length
+    #    at SEGMENT_PAR_SPEED_MS (falling back to SPARSE_SPACING_M without a
+    #    measured length); `par / steps_since_checkpoint` is a dimensionless speed
+    #    ratio, so a near-perfect 25 m segment and a near-perfect 1000 m segment
+    #    pay the same instead of one dwarfing the other.
     steps_since_checkpoint += 1
     if checkpoint_hit:
         reward += CHECKPOINT_BONUS
-        reward += max(0.0, SEGMENT_TARGET_STEPS - steps_since_checkpoint) * SEGMENT_TIME_COEF
+        par = beamng_spec.steps_for_distance(
+            float(segment_len_m) if segment_len_m else SPARSE_SPACING_M, SEGMENT_PAR_SPEED_MS
+        )
+        speed_ratio = par / steps_since_checkpoint
+        reward += SEGMENT_TIME_BONUS * float(np.clip(speed_ratio - 1.0, 0.0, 1.0))
         steps_since_checkpoint = 0
         checkpoint_hit = False
 
@@ -256,4 +294,5 @@ def compute_race_reward(
         waypoint_idx=waypoint_idx,
         steps_since_checkpoint=int(steps_since_checkpoint),
         finished=finished,
+        progress_m=float(progress_m) if progress_m is not None else 0.0,
     )

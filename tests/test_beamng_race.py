@@ -208,13 +208,22 @@ class TestGapReward:
         lost, _ = behind.compute_race_reward_for(behind.slots[0], obs)
 
         assert gained > lost
-        # And the difference is symmetric: +20 m of gap one way, -20 m the other.
-        assert gained - lost == pytest.approx(2 * 20.0 * 5.0, abs=1.0)
+        # The gap swing is symmetric: +20 m of gap one way, -20 m the other
+        # (2 * 20.0 * GAP_COEF). "ahead" also banks its own 20 m of path progress
+        # via the pace term (PROGRESS_COEF) — "lost" does not, because there the
+        # ego car itself never moves, only the rival does — so the two scenarios
+        # are not otherwise symmetric.
+        assert gained - lost == pytest.approx(2 * 20.0 * 5.0 + 20.0 * 3.0, abs=1.0)
 
     def test_a_lone_entrant_gets_no_gap_term(self):
         env = _env(1)
         _wire(env.slots[0], pos=(10.0, 0.0, 0.0), waypoint_idx=1)
         env.slots[0].last_dist = env.slots[0].current_dist = 10.0
+        # No movement yet this "episode": baseline last_progress_m at the wired
+        # position, same as a real reset syncing it right after the first
+        # observation. Otherwise the pace term (progress_of=10, last=0 default)
+        # would bank a 10 m windfall unrelated to what this test checks.
+        env.slots[0].last_progress_m = env.progress_of(env.slots[0])
         obs = np.zeros(14, dtype=np.float32)
         obs[0] = 0.5
         obs[6:] = 1.0

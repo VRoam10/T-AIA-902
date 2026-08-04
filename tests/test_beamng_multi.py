@@ -273,6 +273,12 @@ class TestPathErrorsAndReward:
         slot = env.slots[1]  # reward_mode "ddpg"
         slot.last_dist = 50.0
         slot.current_dist = 40.0  # got 10 m closer
+        # The pace term now reads path progress, not last_dist/current_dist (which
+        # compute_reward no longer consults once a guide_line is present): 30 m in
+        # along the same 10 m the dist fields describe, so the two terms agree.
+        slot.guide_line = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        slot.current_pos = (40.0, 0.0, 0.0)
+        slot.last_progress_m = 30.0
         obs = np.zeros(slot.n_states, dtype=np.float32)
         obs[0] = 0.4  # speed
         reward, done = env.compute_reward(slot, obs)

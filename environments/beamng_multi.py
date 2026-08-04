@@ -83,6 +83,11 @@ class VehicleSlot:
     current_dist: float = 0.0
     current_pos: tuple = (0.0, 0.0, 0.0)
     path_pos: Any = None
+    # cos(heading - path tangent), set once per observation alongside path_pos so
+    # the reward reads the same heading/tangent the observation was built from.
+    # None before the first observation (or without a guide line), so the reward
+    # falls back to the checkpoint bearing instead of reading a stale value.
+    path_alignment: float | None = None
     checkpoint_hit: bool = False
     invuln_steps: int = 0  # damage-immune steps remaining (granted on checkpoint hit)
     steps_since_checkpoint: int = 0  # drives the segment-time bonus
@@ -123,6 +128,7 @@ class VehicleSlot:
         self.last_progress_m = 0.0
         self.last_rival_progress_m = 0.0
         self.path_pos = None
+        self.path_alignment = None
         self.ep_reward = 0.0
         self.ep_losses = []
         self.ep_speeds = []
@@ -324,7 +330,10 @@ class BeamNGMultiEnv:
 
         Training vehicles run on separate paths and never meet, so no rival
         arguments are passed and the gap term contributes nothing. The race env
-        forwards its gap/rival keywords through ``race_kwargs``.
+        forwards its gap/rival keywords through ``race_kwargs`` — progress_m and
+        last_progress_m are supplied here, not by the race env, so there is one
+        definition of "how far along am I" for both the pace term and the race's
+        gap term.
         """
         outcome = compute_race_reward(
             obs,
@@ -341,6 +350,10 @@ class BeamNGMultiEnv:
             steps_since_checkpoint=slot.steps_since_checkpoint,
             max_steps=self.MAX_STEPS,
             max_damage=self.MAX_DAMAGE,
+            progress_m=self.progress_of(slot),
+            last_progress_m=slot.last_progress_m,
+            path_alignment=slot.path_alignment,
+            segment_len_m=slot.path_pos.segment_len_m if slot.path_pos else None,
             **race_kwargs,
         )
         slot.last_dist = outcome.last_dist
@@ -350,6 +363,7 @@ class BeamNGMultiEnv:
         slot.waypoint_idx = outcome.waypoint_idx
         slot.steps_since_checkpoint = outcome.steps_since_checkpoint
         slot.finished = outcome.finished
+        slot.last_progress_m = outcome.progress_m
         return outcome.reward, outcome.done
 
     def observe(self, slot: VehicleSlot) -> np.ndarray:
@@ -374,6 +388,9 @@ class BeamNGMultiEnv:
 
         slot.current_pos = pos
         slot.path_pos = project_onto_path(slot.guide_line, pos)
+        # Same heading and tangent the observation is built from, so the reward
+        # cannot drift from what the policy actually saw.
+        slot.path_alignment = float(np.cos(vehicle_heading - slot.path_pos.tangent_rad))
 
         waypoint_hints = self._waypoint_hints(slot, pos, vehicle_heading)
 

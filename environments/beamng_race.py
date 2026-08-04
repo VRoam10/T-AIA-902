@@ -188,8 +188,11 @@ class BeamNGRaceEnv(BeamNGMultiEnv):
             slot,
             obs,
             laps=self.laps,
-            progress_m=self.progress_of(slot),
-            last_progress_m=slot.last_progress_m,
+            # progress_m / last_progress_m are not passed here: compute_reward
+            # (the base env's) now supplies them itself, from the same
+            # progress_of/last_progress_m the pace term reads. Passing them again
+            # here would collide with that (TypeError: multiple values for
+            # keyword argument).
             rival_progress_m=self.progress_of(best_rival),
             last_rival_progress_m=slot.last_rival_progress_m,
             rival_finished=any(s.finished for s in rivals),

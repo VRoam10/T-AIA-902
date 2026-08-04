@@ -95,9 +95,13 @@ class TestCheckpointBonus:
         assert quick > slow
 
     def test_segment_bonus_floors_at_zero_past_par(self):
-        at_par = _reward(
-            checkpoint_hit=True, steps_since_checkpoint=reward_mod.SEGMENT_TARGET_STEPS
-        ).reward
+        # SEGMENT_TARGET_STEPS/SEGMENT_TIME_COEF are gone (the segment bonus is now
+        # relative, see TestSegmentTimeBonus in test_beamng_reward_path.py); this
+        # computes the same "steps for the fallback 25 m segment" par live.
+        par = reward_mod.beamng_spec.steps_for_distance(
+            reward_mod.SPARSE_SPACING_M, reward_mod.SEGMENT_PAR_SPEED_MS
+        )
+        at_par = _reward(checkpoint_hit=True, steps_since_checkpoint=par).reward
         way_over = _reward(checkpoint_hit=True, steps_since_checkpoint=500).reward
         assert at_par == pytest.approx(way_over)
 
@@ -150,13 +154,18 @@ class TestGapTerm:
         assert _reward().reward == pytest.approx(CLEAN)
 
     def test_gaining_ground_is_rewarded(self):
+        # progress_m/last_progress_m are one measurement doing two jobs (see
+        # beamng_reward's docstring): the 10 m of own progress also pays the pace
+        # term, on top of the 10 m of gap gained on a rival that did not move.
         out = _reward(
             progress_m=110.0,
             last_progress_m=100.0,
             rival_progress_m=100.0,
             last_rival_progress_m=100.0,
         )
-        assert out.reward == pytest.approx(CLEAN + 10.0 * reward_mod.GAP_COEF)
+        assert out.reward == pytest.approx(
+            CLEAN + 10.0 * reward_mod.PROGRESS_COEF + 10.0 * reward_mod.GAP_COEF
+        )
 
     def test_losing_ground_is_penalised(self):
         out = _reward(
@@ -169,18 +178,22 @@ class TestGapTerm:
 
     def test_matching_the_rival_pace_is_neutral(self):
         """Defending is worth as much as attacking: both cars gaining equally leaves
-        the gap term at zero."""
+        the gap term at zero. (The pace term still pays for the 20 m actually
+        covered — it is the GAP contribution, not the total reward, that is
+        neutral here.)"""
         out = _reward(
             progress_m=120.0,
             last_progress_m=100.0,
             rival_progress_m=120.0,
             last_rival_progress_m=100.0,
         )
-        assert out.reward == pytest.approx(CLEAN)
+        assert out.reward == pytest.approx(CLEAN + 20.0 * reward_mod.PROGRESS_COEF)
 
     def test_telescopes_to_the_final_gap(self):
-        """Summed over an episode the term equals GAP_COEF x the final gap, so it
-        cannot be farmed by oscillating alongside the rival."""
+        """Summed over an episode the GAP term equals GAP_COEF x the final gap, so
+        it cannot be farmed by oscillating alongside the rival. The pace term
+        telescopes the same way over the same progress_m readings, to
+        PROGRESS_COEF x the total distance covered."""
         mine = [0.0, 10.0, 15.0, 12.0, 40.0]
         theirs = [0.0, 12.0, 14.0, 20.0, 25.0]
         total = 0.0
@@ -193,7 +206,10 @@ class TestGapTerm:
             )
             total += out.reward - CLEAN
         final_gap = (mine[-1] - theirs[-1]) - (mine[0] - theirs[0])
-        assert total == pytest.approx(final_gap * reward_mod.GAP_COEF)
+        own_progress = mine[-1] - mine[0]
+        assert total == pytest.approx(
+            final_gap * reward_mod.GAP_COEF + own_progress * reward_mod.PROGRESS_COEF
+        )
 
     def test_rival_finishing_first_ends_the_race_with_a_penalty(self):
         out = _reward(
@@ -219,9 +235,12 @@ class TestGapTerm:
         assert won == pytest.approx(solo + reward_mod.WIN_BONUS)
 
     def test_partial_progress_arguments_do_not_half_apply_the_term(self):
-        # Missing one of the four means the gap is unknowable; it must be skipped
-        # rather than computed against a None-as-zero.
-        assert _reward(progress_m=110.0, last_progress_m=100.0).reward == pytest.approx(CLEAN)
+        # Missing the two rival_* arguments means the GAP is unknowable; it must
+        # be skipped rather than computed against a None-as-zero. progress_m and
+        # last_progress_m are supplied here, though, so the pace term still fires
+        # on its own — it does not need a rival to mean something.
+        out = _reward(progress_m=110.0, last_progress_m=100.0)
+        assert out.reward == pytest.approx(CLEAN + 10.0 * reward_mod.PROGRESS_COEF)
 
 
 class TestNoOffTrackRule:

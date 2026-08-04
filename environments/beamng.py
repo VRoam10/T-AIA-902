@@ -212,6 +212,12 @@ class BeamNGDrivingEnv:
         self._guide_line: list[tuple[float, float, float]] = []
         self._path_pos: PathPosition = NEUTRAL_PATH_POS
         self._last_progress_m = 0.0
+        # cos(heading - path tangent), computed once per observation alongside
+        # `_path_pos` so the reward reads the same heading/tangent the observation
+        # was built from. None before any observation, so a reward computed first
+        # (see tests/test_beamng_reward.py) falls back to the checkpoint bearing
+        # instead of reading a stale value.
+        self._path_alignment: float | None = None
 
         # Measured once per scenario load: how far the cached spawn heights sit
         # above where the car actually rests. Teleports add it so a reset places
@@ -774,6 +780,9 @@ class BeamNGDrivingEnv:
 
         heading_err, dist = self._path_errors(pos, state)
         self._path_pos = self._project(pos)
+        # Same heading and tangent the observation is built from, so the reward
+        # cannot drift from what the policy actually saw.
+        self._path_alignment = float(np.cos(vehicle_heading - self._path_pos.tangent_rad))
 
         perception = self._perceive(pos, vehicle_heading)
 
@@ -1006,6 +1015,10 @@ class BeamNGDrivingEnv:
             steps_since_checkpoint=self._steps_since_checkpoint,
             max_steps=self.MAX_STEPS,
             max_damage=self.MAX_DAMAGE,
+            progress_m=self.progress_m(),
+            last_progress_m=self._last_progress_m,
+            path_alignment=self._path_alignment,
+            segment_len_m=self._path_pos.segment_len_m,
         )
         self._last_dist = outcome.last_dist
         self._last_damage = outcome.last_damage
@@ -1013,6 +1026,7 @@ class BeamNGDrivingEnv:
         self._checkpoint_hit = outcome.checkpoint_hit
         self._waypoint_idx = outcome.waypoint_idx
         self._steps_since_checkpoint = outcome.steps_since_checkpoint
+        self._last_progress_m = outcome.progress_m
         return outcome.reward, outcome.done
 
     def _update_active_marker(self, idx: int):
