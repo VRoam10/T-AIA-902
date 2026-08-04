@@ -27,7 +27,6 @@ input from us, because the player is driving it.
 import numpy as np
 
 from environments import beamng_spec
-from environments.beamng_geometry import track_progress_m
 from environments.beamng_multi import BeamNGMultiEnv, VehicleSlot
 
 
@@ -164,10 +163,8 @@ class BeamNGRaceEnv(BeamNGMultiEnv):
     # ------------------------------------------------------------------
     # Progress and the gap-aware reward
     # ------------------------------------------------------------------
-
-    def progress_of(self, slot: VehicleSlot) -> float:
-        """How far along the shared path this slot is, in metres."""
-        return track_progress_m(slot.waypoints, slot.waypoint_idx, slot.current_pos)
+    # progress_of is inherited from BeamNGMultiEnv — one definition of "how far
+    # along am I", shared by training's pace reward and this env's gap term.
 
     def leader(self) -> VehicleSlot | None:
         """The slot furthest along the path, or None when there are no slots."""

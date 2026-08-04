@@ -193,48 +193,6 @@ def process_lidar(point_cloud, vehicle_pos, vehicle_heading, ego_extents, cfg):
     return distances, debug
 
 
-def track_progress_m(waypoints, waypoint_idx: int, pos) -> float:
-    """Distance travelled along the waypoint polyline, in metres.
-
-    Defined as ``(arc length from waypoint 0 to the current target) minus (straight
-    line distance still to cover to that target)``. Two vehicles on the same
-    waypoint list can therefore be ordered along the track by comparing this
-    number, which is what the race reward's gap term needs.
-
-    The subtraction is what makes it usable as a *telescoping* signal: at the
-    instant a checkpoint is reached, the arc term jumps forward by one segment
-    while the remaining term jumps from ~0 to that same segment length, so the
-    result is continuous. A naive "arc length of the last checkpoint" would step
-    discontinuously and inject a spurious one-off gap into the reward.
-
-    Returns the full polyline length once every waypoint is cleared, and 0.0 for an
-    empty waypoint list.
-
-    Assumes ``waypoint_idx`` points at the next *unreached* waypoint — the invariant
-    the envs maintain, since ``_path_errors`` advances the index as soon as the car
-    is within ``WAYPOINT_RADIUS``. Called with a stale index (a position already past
-    its target) the result decreases as the car drives on, because "remaining
-    distance to target" starts growing again.
-    """
-    if not waypoints:
-        return 0.0
-
-    pts = np.asarray(waypoints, dtype=np.float64)[:, :2]
-    if len(pts) == 1:
-        seg_cum = np.zeros(1)
-    else:
-        seg = np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1]))
-        seg_cum = np.concatenate([[0.0], np.cumsum(seg)])
-
-    # Past the final checkpoint the lap is done; report the whole polyline.
-    if waypoint_idx >= len(pts):
-        return float(seg_cum[-1])
-
-    target = pts[waypoint_idx]
-    remaining = float(np.hypot(pos[0] - target[0], pos[1] - target[1]))
-    return float(seg_cum[waypoint_idx] - remaining)
-
-
 def starting_grid(
     spawn_pos,
     spawn_rot,

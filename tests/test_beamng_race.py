@@ -78,6 +78,7 @@ def _wire(slot, *, pos, waypoint_idx=0, damage=0.0, speed=10.0):
     slot.lidar.poll.return_value = {"pointCloud": None}
     slot.ego_local_extents = None
     slot.waypoints = list(STRAIGHT)
+    slot.guide_line = [tuple(slot.spawn_pos), *slot.waypoints]
     slot.waypoint_idx = waypoint_idx
     slot.current_pos = pos
 

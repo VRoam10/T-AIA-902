@@ -18,6 +18,8 @@ from core.trajectory import TrajectoryData, load_or_generate
 from environments import beamng_sensors, beamng_spec
 from environments.beamng_features import road_info_features, wheel_info_features
 from environments.beamng_geometry import body_orientation_features
+from environments.beamng_path import NEUTRAL as NEUTRAL_PATH_POS
+from environments.beamng_path import PathPosition, path_length, project_onto_path
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
@@ -203,6 +205,14 @@ class BeamNGDrivingEnv:
         self.waypoints: list[tuple[float, float, float]] = []
         self._current_pos = (0.0, 0.0, 0.0)
 
+        # The polyline the observation and the reward measure against: the spawn
+        # followed by every checkpoint. The spawn is what makes the first segment
+        # count — `waypoints` starts after it, so projecting onto that alone would
+        # report zero progress until checkpoint 0 was behind the car.
+        self._guide_line: list[tuple[float, float, float]] = []
+        self._path_pos: PathPosition = NEUTRAL_PATH_POS
+        self._last_progress_m = 0.0
+
         # Measured once per scenario load: how far the cached spawn heights sit
         # above where the car actually rests. Teleports add it so a reset places
         # the car on the road instead of dropping it (see environments.beamng_spawn).
@@ -237,6 +247,22 @@ class BeamNGDrivingEnv:
         if self.dense_episodes > 0 and self._episode_idx <= self.dense_episodes:
             return list(self.trajectory.dense_waypoints)
         return list(self.trajectory.sparse_waypoints)
+
+    def _rebuild_guide_line(self) -> None:
+        """Refresh the guide polyline from the current trajectory + waypoints."""
+        if self.trajectory is None:
+            self._guide_line = []
+            return
+        self._guide_line = [tuple(self.trajectory.spawn_pos), *self.waypoints]
+
+    def _project(self, pos) -> PathPosition:
+        """Where ``pos`` sits on the guide polyline."""
+        return project_onto_path(self._guide_line, pos)
+
+    def progress_m(self) -> float:
+        """Metres covered along the path, laps included."""
+        laps_done = self._waypoint_idx // len(self.waypoints) if self.waypoints else 0
+        return self._path_pos.progress_m + laps_done * path_length(self._guide_line)
 
     def _advance(self, steps: int) -> None:
         """Advance the simulation and mark the road sensor pollable again."""
@@ -276,6 +302,7 @@ class BeamNGDrivingEnv:
             # sparse curriculum), so re-select every reset. Redundant but
             # harmless right after _pick_episode_path on the random-path branch.
             self.waypoints = self._select_waypoints()
+            self._rebuild_guide_line()
             self._update_active_marker(0)
 
         self._waypoint_idx = 0
@@ -293,6 +320,7 @@ class BeamNGDrivingEnv:
         obs = self._observe()
         # Initialize last_dist after first observe so progress reward starts at 0
         self._last_dist = self._current_dist
+        self._last_progress_m = self.progress_m()
         return obs
 
     def controls_for(self, action) -> tuple[float, float, float]:
@@ -501,6 +529,7 @@ class BeamNGDrivingEnv:
         # when random_path is off, so the default first path is kept.
         self._pick_episode_path()
         self.waypoints = self._select_waypoints()
+        self._rebuild_guide_line()
         self._current_pos = self.trajectory.spawn_pos
         self._load_scenario(human_control=human_control)
 
@@ -552,6 +581,7 @@ class BeamNGDrivingEnv:
             return
         self.trajectory = random.choice(self._paths)
         self.waypoints = self._select_waypoints()
+        self._rebuild_guide_line()
 
     def _reset_human_episode(self) -> None:
         """Teleport to a (possibly new random) path's spawn and reset checkpoints.
@@ -735,7 +765,8 @@ class BeamNGDrivingEnv:
         dir_vec = state.get("dir", vel)
         vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
-        heading_err, lateral_err, dist = self._path_errors(pos, state)
+        heading_err, dist = self._path_errors(pos, state)
+        self._path_pos = self._project(pos)
 
         perception = self._perceive(pos, vehicle_heading)
 
@@ -748,7 +779,7 @@ class BeamNGDrivingEnv:
                 np.clip(speed / 50.0, -1.0, 1.0),
                 np.clip(steering, -1.0, 1.0),
                 np.clip(heading_err / np.pi, -1.0, 1.0),
-                np.clip(lateral_err / 5.0, -1.0, 1.0),
+                np.clip(self._path_pos.cross_track_m / 5.0, -1.0, 1.0),
                 np.clip(damage / 1000.0, 0.0, 1.0),
                 np.clip(dist / self.CHECKPOINT_DIST_NORM_M, 0.0, 2.0),
             ],
@@ -911,13 +942,17 @@ class BeamNGDrivingEnv:
         return np.concatenate(blocks)
 
     def _path_errors(self, pos, state):
-        """Return (heading_error_rad, lateral_error_m, dist) relative to next waypoint.
+        """Return (heading_error_rad, dist) for the next waypoint; advance on arrival.
+
+        Cross-track error no longer comes from here: ``dist * sin(heading_err)`` is a
+        function of the two values this returns, so it carried no information. The
+        observation uses the guide-line projection instead.
 
         Also stores self._current_dist for progress reward computation.
         """
         if not self.waypoints or not state:
             self._current_dist = 0.0
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0
 
         target = self.waypoints[self._waypoint_idx % len(self.waypoints)]
         dx = target[0] - pos[0]
@@ -941,8 +976,7 @@ class BeamNGDrivingEnv:
         target_heading = np.arctan2(dy, dx)
         heading_err = (target_heading - vehicle_heading + np.pi) % (2 * np.pi) - np.pi
 
-        lateral_err = dist * np.sin(heading_err)
-        return float(heading_err), float(lateral_err), dist
+        return float(heading_err), dist
 
     def _compute_reward(self, obs):
         """Racing reward, shared with the multi/race envs via beamng_reward.

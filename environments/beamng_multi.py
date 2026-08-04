@@ -25,6 +25,7 @@ from environments.beamng_geometry import (
     body_orientation_features,
     starting_grid,
 )
+from environments.beamng_path import path_length, project_onto_path
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
@@ -73,6 +74,7 @@ class VehicleSlot:
     spawn_z_correction: float = 0.0
     path_idx: int = 0
     waypoints: list = field(default_factory=list)
+    guide_line: list = field(default_factory=list)
 
     # Episode state
     waypoint_idx: int = 0
@@ -80,6 +82,7 @@ class VehicleSlot:
     last_dist: float = 0.0
     current_dist: float = 0.0
     current_pos: tuple = (0.0, 0.0, 0.0)
+    path_pos: Any = None
     checkpoint_hit: bool = False
     invuln_steps: int = 0  # damage-immune steps remaining (granted on checkpoint hit)
     steps_since_checkpoint: int = 0  # drives the segment-time bonus
@@ -119,6 +122,7 @@ class VehicleSlot:
         self.finished = False
         self.last_progress_m = 0.0
         self.last_rival_progress_m = 0.0
+        self.path_pos = None
         self.ep_reward = 0.0
         self.ep_losses = []
         self.ep_speeds = []
@@ -283,13 +287,17 @@ class BeamNGMultiEnv:
         slot.vehicle.control(throttle=throttle, steering=steering, brake=brake)
 
     def _path_errors(self, slot, pos, state):
-        """Heading/lateral error to slot's current waypoint; advances on arrival.
+        """Heading error and dist to slot's current waypoint; advances on arrival.
+
+        Cross-track error no longer comes from here: ``dist * sin(heading_err)`` is a
+        function of the two values this returns, so it carried no information. The
+        observation uses the guide-line projection instead.
 
         Sets slot.current_dist for the DDPG progress reward.
         """
         if not slot.waypoints or not state:
             slot.current_dist = 0.0
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0
 
         target = slot.waypoints[slot.waypoint_idx % len(slot.waypoints)]
         dx = target[0] - pos[0]
@@ -309,8 +317,7 @@ class BeamNGMultiEnv:
         vehicle_heading = np.arctan2(vel[1], vel[0])
         target_heading = np.arctan2(dy, dx)
         heading_err = (target_heading - vehicle_heading + np.pi) % (2 * np.pi) - np.pi
-        lateral_err = dist * np.sin(heading_err)
-        return float(heading_err), float(lateral_err), dist
+        return float(heading_err), dist
 
     def compute_reward(self, slot, obs, **race_kwargs):
         """Racing reward, shared with the single-vehicle env via beamng_reward.
@@ -361,11 +368,12 @@ class BeamNGMultiEnv:
         dir_vec = state.get("dir", vel)
         vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
-        heading_err, lateral_err, dist = self._path_errors(slot, pos, state)
+        heading_err, dist = self._path_errors(slot, pos, state)
 
         perception = self._perceive(slot, pos, vehicle_heading)
 
         slot.current_pos = pos
+        slot.path_pos = project_onto_path(slot.guide_line, pos)
 
         waypoint_hints = self._waypoint_hints(slot, pos, vehicle_heading)
 
@@ -376,7 +384,7 @@ class BeamNGMultiEnv:
                         np.clip(speed / 50.0, -1.0, 1.0),
                         np.clip(steering, -1.0, 1.0),
                         np.clip(heading_err / np.pi, -1.0, 1.0),
-                        np.clip(lateral_err / 5.0, -1.0, 1.0),
+                        np.clip(slot.path_pos.cross_track_m / 5.0, -1.0, 1.0),
                         np.clip(damage / 1000.0, 0.0, 1.0),
                         np.clip(dist / self.CHECKPOINT_DIST_NORM_M, 0.0, 2.0),
                     ],
@@ -451,6 +459,19 @@ class BeamNGMultiEnv:
             hints.append(float(np.clip(local_y / NORM, -1.0, 1.0)))
         return np.array(hints, dtype=np.float32)
 
+    def progress_of(self, slot: VehicleSlot) -> float:
+        """How far along its path a slot is, in metres, laps included.
+
+        Lives here rather than in the race env because the pace reward needs it in
+        training too — one definition of "how far along am I", shared by pace and by
+        the race gap term.
+        """
+        if not slot.guide_line:
+            return 0.0
+        pos = project_onto_path(slot.guide_line, slot.current_pos)
+        laps_done = slot.waypoint_idx // len(slot.waypoints) if slot.waypoints else 0
+        return pos.progress_m + laps_done * path_length(slot.guide_line)
+
     def launch(self):
         """Start BeamNG, resolve all map paths, and load the multi-vehicle scenario."""
         self.bng = BeamNGpy(
@@ -495,6 +516,7 @@ class BeamNGMultiEnv:
         slot.waypoints = list(path.sparse_waypoints)
         slot.spawn_pos = path.spawn_pos
         slot.spawn_rot = path.spawn_rot
+        slot.guide_line = [tuple(slot.spawn_pos), *slot.waypoints]
 
     def _assign_shared_path(self, path, path_idx: int = 0) -> None:
         """Put every slot on one path, spread across a starting grid.
@@ -514,6 +536,7 @@ class BeamNGMultiEnv:
             slot.path_idx = path_idx
             self._apply_path(slot, path)
             slot.spawn_pos = pos  # the grid slot, not the shared centreline spawn
+            slot.guide_line = [tuple(slot.spawn_pos), *slot.waypoints]
 
     def _pick_distinct_path_idx(self, slot) -> int:
         """A random path index not currently held by any other slot."""
