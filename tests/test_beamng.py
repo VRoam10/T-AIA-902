@@ -185,6 +185,22 @@ class TestExtraFeatures:
         base = _bare_env().n_states
         assert _bare_env(road_info=True).n_states == base + 6
 
+    def test_wheel_block_is_neutral_without_sensors(self):
+        env = _bare_env(wheel_info=True)
+        out = env._wheel_info_features({}, {"vel": (0.0, 0.0, 0.0), "dir": (1.0, 0.0, 0.0)})
+        assert out.shape == (4,)
+        np.testing.assert_allclose(out, [0.0] * 4, atol=1e-6)
+
+    def test_extra_features_order_is_orientation_then_road_then_wheel(self):
+        env = _bare_env(body_orientation=True, road_info=True, wheel_info=True)
+        state = {"dir": (0.0, 1.0, 0.0), "up": (0.0, 0.0, 1.0), "vel": (0.0, 0.0, 0.0)}
+        out = env._extra_features(state, (0.0, 0.0, 0.0), 0.0)
+        assert out.shape == (12,)
+
+    def test_n_states_counts_both_new_blocks(self):
+        base = _bare_env().n_states
+        assert _bare_env(road_info=True, wheel_info=True).n_states == base + 10
+
 
 class TestCloseWaitsForSimShutdown:
     """close(kill_sim=True) must not return while the sim port still accepts

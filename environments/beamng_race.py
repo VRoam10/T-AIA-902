@@ -35,10 +35,10 @@ def build_race_slots(specs: list[dict]) -> list[VehicleSlot]:
     """Build the entrants' slots, including an optional human.
 
     Each spec: ``{"algo", "agent", "color", "save_path", "sensor",
-    "trajectory_hints", "body_orientation", "road_info", "human"}``. A spec with
-    ``human=True`` needs no algorithm or agent — the player drives it, so it has no
-    observation to size and no action head. Every other spec goes through the same
-    sizing as multi-agent training.
+    "trajectory_hints", "body_orientation", "road_info", "wheel_info", "human"}``.
+    A spec with ``human=True`` needs no algorithm or agent — the player drives it,
+    so it has no observation to size and no action head. Every other spec goes
+    through the same sizing as multi-agent training.
     """
     from environments.beamng_multi import slot_n_states
 
@@ -59,6 +59,7 @@ def build_race_slots(specs: list[dict]) -> list[VehicleSlot]:
         hints = spec.get("trajectory_hints", 0)
         body = spec.get("body_orientation", False)
         road = spec.get("road_info", False)
+        wheel = spec.get("wheel_info", False)
         slots.append(
             VehicleSlot(
                 name=f"racer_{i}",
@@ -70,7 +71,8 @@ def build_race_slots(specs: list[dict]) -> list[VehicleSlot]:
                 trajectory_hints=hints,
                 body_orientation=body,
                 road_info=road,
-                n_states=slot_n_states(sensor, hints, body, road),
+                wheel_info=wheel,
+                n_states=slot_n_states(sensor, hints, body, road, wheel),
             )
         )
     return slots

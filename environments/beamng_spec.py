@@ -34,6 +34,9 @@ KINEMATIC_FEATURES = 6
 # road:  [edge_left, edge_right, road_heading, curvature, ahead_fwd, ahead_left]
 ROAD_FEATURES = 6
 
+# wheel: [long_slip, slip_angle, abs_active, lat_g]
+WHEEL_FEATURES = 4
+
 # Horizontal azimuth bins, shared by both lidar sensors.
 LIDAR_RAYS = 8
 # Values stored per cell (currently just distance).
@@ -139,12 +142,13 @@ def obs_size(
     trajectory_hints: int = 0,
     body_orientation: bool = False,
     road_info: bool = False,
+    wheel_info: bool = False,
 ) -> int:
     """Observation length for a sensor plus the optional observation flags.
 
     Layout (blocks appended in this order, matching ``_observe``):
 
-        kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | road(6)?
+        kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | road(6)? | wheel(4)?
     """
     return (
         KINEMATIC_FEATURES
@@ -152,6 +156,7 @@ def obs_size(
         + 2 * int(trajectory_hints)
         + (2 if body_orientation else 0)
         + (ROAD_FEATURES if road_info else 0)
+        + (WHEEL_FEATURES if wheel_info else 0)
     )
 
 

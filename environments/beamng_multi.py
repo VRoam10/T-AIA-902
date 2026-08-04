@@ -13,14 +13,14 @@ import numpy as np
 
 try:
     from beamngpy import BeamNGpy, Scenario, Vehicle
-    from beamngpy.sensors import Damage, Electrics
+    from beamngpy.sensors import Damage, Electrics, GForces
 except ImportError:
-    BeamNGpy = Scenario = Vehicle = Damage = Electrics = None
+    BeamNGpy = Scenario = Vehicle = Damage = Electrics = GForces = None
 
 from core.trajectory import MapTrajectories, load_or_generate
 from environments import beamng_sensors, beamng_spec
 from environments.beamng import BeamNGDrivingEnv
-from environments.beamng_features import road_info_features
+from environments.beamng_features import road_info_features, wheel_info_features
 from environments.beamng_geometry import (
     body_orientation_features,
     starting_grid,
@@ -52,6 +52,7 @@ class VehicleSlot:
     trajectory_hints: int = 0
     body_orientation: bool = False
     road_info: bool = False
+    wheel_info: bool = False
     n_states: int = 14  # observation length for this vehicle's config
 
     # Sensors (assigned during scenario load)
@@ -61,6 +62,7 @@ class VehicleSlot:
     lidar: Any = None
     camera: Any = None
     roads_sensor: Any = None
+    gforces: Any = None
 
     # Per-vehicle starting-grid pose (assigned during scenario load)
     spawn_pos: tuple = (0.0, 0.0, 0.0)
@@ -128,6 +130,7 @@ def slot_n_states(
     trajectory_hints: int = 0,
     body_orientation: bool = False,
     road_info: bool = False,
+    wheel_info: bool = False,
 ) -> int:
     """Observation length for a vehicle running the given sensor and options.
 
@@ -135,7 +138,7 @@ def slot_n_states(
     lives in :func:`environments.beamng_spec.obs_size`, which the single-vehicle
     env and the agent-sizing code also use.
     """
-    return beamng_spec.obs_size(sensor, trajectory_hints, body_orientation, road_info)
+    return beamng_spec.obs_size(sensor, trajectory_hints, body_orientation, road_info, wheel_info)
 
 
 # Vehicle-colour names -> target-marker RGBA, so each vehicle's waypoint sphere
@@ -161,9 +164,9 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
     """Turn a list of vehicle specs into VehicleSlots.
 
     Each spec dict: ``{"algo", "agent", "color", "save_path", "sensor",
-    "trajectory_hints", "body_orientation", "road_info"}``. ``sensor`` defaults
-    to the spec module's default; ``trajectory_hints`` to 0; the two observation
-    flags to False.
+    "trajectory_hints", "body_orientation", "road_info", "wheel_info"}``.
+    ``sensor`` defaults to the spec module's default; ``trajectory_hints`` to 0;
+    the observation flags to False.
 
     The output axis is derived from the algorithm rather than carried in the spec —
     a DQN head cannot emit continuous controls and DDPG/TD3 emit nothing else, so
@@ -175,6 +178,7 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
         trajectory_hints = spec.get("trajectory_hints", 0)
         body_orientation = spec.get("body_orientation", False)
         road_info = spec.get("road_info", False)
+        wheel_info = spec.get("wheel_info", False)
         slots.append(
             VehicleSlot(
                 name=f"ego_{i}",
@@ -186,7 +190,10 @@ def build_slots(specs: list[dict]) -> list[VehicleSlot]:
                 trajectory_hints=trajectory_hints,
                 body_orientation=body_orientation,
                 road_info=road_info,
-                n_states=slot_n_states(sensor, trajectory_hints, body_orientation, road_info),
+                wheel_info=wheel_info,
+                n_states=slot_n_states(
+                    sensor, trajectory_hints, body_orientation, road_info, wheel_info
+                ),
             )
         )
     return slots
@@ -369,7 +376,7 @@ class BeamNGMultiEnv:
                 ),
                 perception,
                 waypoint_hints,
-                self._slot_extra_features(slot, state, pos, vehicle_heading),
+                self._slot_extra_features(slot, state, pos, vehicle_heading, elec),
             ]
         )
 
@@ -385,10 +392,10 @@ class BeamNGMultiEnv:
         )
         return block
 
-    def _slot_extra_features(self, slot, state, pos, heading) -> np.ndarray:
-        """Optional observation tail for a slot (body orientation / road position).
+    def _slot_extra_features(self, slot, state, pos, heading, elec=None) -> np.ndarray:
+        """Optional observation tail for a slot (body orientation / road / wheel).
 
-        Calls the shared feature helpers; empty when both flags are off.
+        Calls the shared feature helpers; empty when all flags are off.
         """
         state = state or {}
         blocks = []
@@ -401,6 +408,16 @@ class BeamNGMultiEnv:
         if slot.road_info:
             payload = slot.roads_sensor.poll() if slot.roads_sensor is not None else None
             blocks.append(road_info_features(payload, self.HALF_TRACK_WIDTH, pos, heading))
+        if slot.wheel_info:
+            forces = slot.gforces.data if slot.gforces is not None else None
+            blocks.append(
+                wheel_info_features(
+                    elec or {},
+                    forces,
+                    state.get("vel", (0.0, 0.0, 0.0)),
+                    state.get("dir", (1.0, 0.0, 0.0)),
+                )
+            )
         if not blocks:
             return np.empty(0, dtype=np.float32)
         return np.concatenate(blocks)
@@ -551,6 +568,9 @@ class BeamNGMultiEnv:
             slot.damage_sensor = Damage()
             slot.vehicle.attach_sensor("electrics", slot.electrics)
             slot.vehicle.attach_sensor("damage", slot.damage_sensor)
+            if slot.wheel_info:
+                slot.gforces = GForces()
+                slot.vehicle.attach_sensor("gforces", slot.gforces)
             self.scenario.add_vehicle(
                 slot.vehicle,
                 pos=slot.spawn_pos,

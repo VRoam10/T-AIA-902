@@ -76,6 +76,14 @@ class TestRoadInfoSizing:
             obs_size("lidar", wheel_terrain=True)
 
 
+class TestWheelInfoSizing:
+    def test_wheel_info_adds_four(self):
+        assert obs_size("lidar", wheel_info=True) == obs_size("lidar") + 4
+
+    def test_both_new_blocks_stack_after_the_old_tails(self):
+        assert obs_size("camera", 3, True, True, True) == 6 + 256 + 6 + 2 + 6 + 4
+
+
 class TestPerceptionFeatures:
     def test_every_sensor_has_a_feature_count(self):
         assert set(SENSORS) == set(PERCEPTION_FEATURES)

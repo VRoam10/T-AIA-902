@@ -86,6 +86,7 @@ class BeamNGOptions:
     trajectory_hints: int = 0
     body_orientation: bool = False
     road_info: bool = False
+    wheel_info: bool = False
     random_path: bool = False
     dense_episodes: int = 0
     # One of the game's own race tracks (a core.quickrace key), or "" for the
@@ -168,6 +169,7 @@ class RacerSpec:
     trajectory_hints: int = 0
     body_orientation: bool = False
     road_info: bool = False
+    wheel_info: bool = False
     human: bool = False
 
 
@@ -280,6 +282,7 @@ def build_agent(
         options.trajectory_hints,
         options.body_orientation,
         options.road_info,
+        options.wheel_info,
     )
     params["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(algo_name))
     params["state_type"] = env_metadata.get("state_type", "continuous")
@@ -309,6 +312,7 @@ def _beamng_kwargs(
         "trajectory_hints": beamng.trajectory_hints,
         "body_orientation": beamng.body_orientation,
         "road_info": beamng.road_info,
+        "wheel_info": beamng.wheel_info,
     }
     if beamng.track:
         # A chosen game track replaces the generated paths entirely, so
@@ -452,7 +456,11 @@ def _benchmark_env(request: BenchmarkRequest, algo_name: str | None = None):
     beamng = request.beamng or BeamNGOptions()
     kwargs = _beamng_kwargs(beamng, algo_name, with_random_path=False)
     metadata["n_states"] = beamng_spec.obs_size(
-        beamng.sensor, beamng.trajectory_hints, beamng.body_orientation, beamng.road_info
+        beamng.sensor,
+        beamng.trajectory_hints,
+        beamng.body_orientation,
+        beamng.road_info,
+        beamng.wheel_info,
     )
     if algo_name is not None:
         metadata["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(algo_name))
@@ -649,6 +657,7 @@ def build_multi_session(
             spec.get("trajectory_hints", 0),
             spec.get("body_orientation", False),
             spec.get("road_info", False),
+            spec.get("wheel_info", False),
         )
         cfg["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(spec["algo"]))
         cfg.pop("state_type", None)
@@ -706,7 +715,11 @@ def build_course_session(request: CourseRequest):
         algo_info = registry.get_algorithm(racer.algo)
         cfg = dict(algo_info["default_config"])
         cfg["n_states"] = beamng_spec.obs_size(
-            racer.sensor, racer.trajectory_hints, racer.body_orientation, racer.road_info
+            racer.sensor,
+            racer.trajectory_hints,
+            racer.body_orientation,
+            racer.road_info,
+            racer.wheel_info,
         )
         cfg["n_actions"] = beamng_spec.action_size(beamng_spec.output_for_algo(racer.algo))
         cfg.pop("state_type", None)
@@ -728,6 +741,7 @@ def build_course_session(request: CourseRequest):
                 "trajectory_hints": racer.trajectory_hints,
                 "body_orientation": racer.body_orientation,
                 "road_info": racer.road_info,
+                "wheel_info": racer.wheel_info,
             }
         )
 

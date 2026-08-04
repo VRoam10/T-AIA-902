@@ -8,15 +8,15 @@ import numpy as np
 
 try:
     from beamngpy import BeamNGpy, Scenario, Vehicle
-    from beamngpy.sensors import Camera, Damage, Electrics, Lidar, RoadsSensor
+    from beamngpy.sensors import Camera, Damage, Electrics, GForces, Lidar, RoadsSensor
 except ImportError:
-    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = Lidar = RoadsSensor = None
+    BeamNGpy = Scenario = Vehicle = Camera = Damage = Electrics = GForces = Lidar = RoadsSensor = None
 
 from config import LOG_CAMERA, LOG_CHECKPOINT_HIT, LOG_LIDAR
 from core.stop_signal import stop_requested
 from core.trajectory import TrajectoryData, load_or_generate
 from environments import beamng_sensors, beamng_spec
-from environments.beamng_features import road_info_features
+from environments.beamng_features import road_info_features, wheel_info_features
 from environments.beamng_geometry import body_orientation_features
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
@@ -120,6 +120,7 @@ class BeamNGDrivingEnv:
         trajectory_hints: int = 0,
         body_orientation: bool = False,
         road_info: bool = False,
+        wheel_info: bool = False,
         random_path: bool = False,
         dense_episodes: int = 0,
         track: str | None = None,
@@ -159,6 +160,7 @@ class BeamNGDrivingEnv:
         self.lidar: Lidar = None
         self.camera: Camera = None
         self.roads_sensor: RoadsSensor = None
+        self.gforces: GForces = None
 
         self.sensor = sensor
         self.output = output
@@ -179,13 +181,14 @@ class BeamNGDrivingEnv:
         self.trajectory_hints = trajectory_hints
         self.body_orientation = body_orientation
         self.road_info = road_info
+        self.wheel_info = wheel_info
         self.random_path = random_path
         self.dense_episodes = dense_episodes
         self.track = track
         self._episode_idx = 0  # incremented on each reset(); drives the waypoint curriculum
 
         self.n_states = beamng_spec.obs_size(
-            sensor, trajectory_hints, body_orientation, road_info
+            sensor, trajectory_hints, body_orientation, road_info, wheel_info
         )
         self.n_actions = beamng_spec.action_size(output)
 
@@ -596,6 +599,11 @@ class BeamNGDrivingEnv:
         self.damage_sensor = Damage()
         self.vehicle.attach_sensor("electrics", self.electrics)
         self.vehicle.attach_sensor("damage", self.damage_sensor)
+        if self.wheel_info:
+            # A classic sensor, so it rides the poll_sensors() round-trip the env
+            # already makes rather than costing one of its own.
+            self.gforces = GForces()
+            self.vehicle.attach_sensor("gforces", self.gforces)
 
         self.scenario.add_vehicle(
             self.vehicle,
@@ -714,7 +722,7 @@ class BeamNGDrivingEnv:
             ],
             dtype=np.float32,
         )
-        extra = self._extra_features(state, pos, vehicle_heading)
+        extra = self._extra_features(state, pos, vehicle_heading, elec)
         obs = np.concatenate([kin, perception, waypoint_hints, extra])
 
         self._log_observation(kin, perception, waypoint_hints, extra)
@@ -775,6 +783,8 @@ class BeamNGDrivingEnv:
                 labels += ["pitch", "roll"]
             if self.road_info:
                 labels += ["edgeL", "edgeR", "rdhead", "curv", "aheadF", "aheadL"]
+            if self.wheel_info:
+                labels += ["slip", "slipang", "abs", "latg"]
             while len(labels) < extra.size:
                 labels.append(f"x{len(labels)}")
             body = " ".join(f"{labels[k]}={extra[k]:+.2f}" for k in range(extra.size))
@@ -842,10 +852,17 @@ class BeamNGDrivingEnv:
         payload = self.roads_sensor.poll() if self.roads_sensor is not None else None
         return road_info_features(payload, self.HALF_TRACK_WIDTH, pos, heading)
 
-    def _extra_features(self, state, pos, heading) -> np.ndarray:
-        """Optional observation tail: body orientation and/or road position.
+    def _wheel_info_features(self, elec, state) -> np.ndarray:
+        """The four grip features (neutral without a GForces sensor)."""
+        forces = self.gforces.data if self.gforces is not None else None
+        return wheel_info_features(
+            elec, forces, state.get("vel", (0.0, 0.0, 0.0)), state.get("dir", (1.0, 0.0, 0.0))
+        )
 
-        Appended after the waypoint hints. Empty array when both flags are off, so
+    def _extra_features(self, state, pos, heading, elec=None) -> np.ndarray:
+        """Optional observation tail: body orientation, road position, wheel grip.
+
+        Appended after the waypoint hints. Empty array when all flags are off, so
         a flag-off observation is byte-for-byte what it was.
         """
         blocks = []
@@ -853,6 +870,8 @@ class BeamNGDrivingEnv:
             blocks.append(self._body_orientation_features(state))
         if self.road_info:
             blocks.append(self._road_info_features(pos, heading))
+        if self.wheel_info:
+            blocks.append(self._wheel_info_features(elec or {}, state))
         if not blocks:
             return np.empty(0, dtype=np.float32)
         return np.concatenate(blocks)

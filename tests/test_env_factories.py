@@ -100,6 +100,7 @@ def test_factory_forwards_every_beamng_option_it_accepts():
         "trajectory_hints": 3,
         "body_orientation": True,
         "road_info": True,
+        "wheel_info": True,
         "random_path": True,
         "dense_episodes": 7,
         "track": "mixedCircuit1",
