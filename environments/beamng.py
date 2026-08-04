@@ -173,6 +173,11 @@ class BeamNGDrivingEnv:
         self._invuln_steps = 0  # damage-immune steps remaining (granted on checkpoint hit)
         self._steps_since_checkpoint = 0  # drives the segment-time bonus
         self._checkpoint_hit = False
+        # Whether the RoadsSensor may be polled: False from a teleport or a scenario
+        # load until the simulator has advanced at least one physics step. Polling in
+        # between hangs the sensor's game-engine side on road-dense maps and blocks
+        # Python in the socket recv (docs/romain.md, seventh issue).
+        self._road_pollable = False
         self._active_marker_id: str | None = None
         self._log_obs = False  # human play enables obs logging; training leaves it off
         self._obs_log_stdout = False  # human play also echoes the obs to the terminal
@@ -233,6 +238,11 @@ class BeamNGDrivingEnv:
             return list(self.trajectory.dense_waypoints)
         return list(self.trajectory.sparse_waypoints)
 
+    def _advance(self, steps: int) -> None:
+        """Advance the simulation and mark the road sensor pollable again."""
+        self.bng.step(steps)
+        self._road_pollable = True
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -255,6 +265,7 @@ class BeamNGDrivingEnv:
                     rot_quat=self.trajectory.spawn_rot,
                     reset=True,
                 )
+                self._road_pollable = False
             else:
                 self.bng.scenario.restart()
             # Waypoint density can flip between episodes (dense warm-up ->
@@ -273,7 +284,7 @@ class BeamNGDrivingEnv:
 
         # Hold still for a moment so physics settle
         self.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
-        self.bng.step(5)
+        self._advance(5)
 
         obs = self._observe()
         # Initialize last_dist after first observe so progress reward starts at 0
@@ -312,7 +323,7 @@ class BeamNGDrivingEnv:
         # 1/PHYSICS_STEPS_PER_SECOND, so this advances SECONDS_PER_ENV_STEP
         # (~333 ms) of sim time — a ~3 Hz control rate, not the ~10 Hz a
         # long-standing comment here claimed. See beamng_spec for the numbers.
-        self.bng.step(beamng_spec.PHYSICS_STEPS_PER_ENV_STEP)
+        self._advance(beamng_spec.PHYSICS_STEPS_PER_ENV_STEP)
         self._steps += 1
 
         obs = self._observe()
@@ -343,6 +354,12 @@ class BeamNGDrivingEnv:
         self._obs_log_stdout = not camera_view
 
         self.bng.resume()
+        # Realtime session: the sim now advances continuously on its own (the
+        # observe loop's time.sleep(0.1) below is several physics steps), so the
+        # road sensor is always safe to poll here. Unlike the lockstep reset/step
+        # paths, nothing ever calls _advance() again in this session, so the gate
+        # must be opened explicitly rather than waiting for a step that never comes.
+        self._road_pollable = True
         print(
             f"[BeamNGDrivingEnv] Human control active ({self.sensor}) — "
             "drive in-game. Press Ctrl+C to stop."
@@ -545,6 +562,11 @@ class BeamNGDrivingEnv:
             rot_quat=self.trajectory.spawn_rot,
             reset=True,
         )
+        # Realtime path (human play only): the session stays resumed and the sim
+        # keeps advancing on its own through this teleport, so the gate stays open
+        # — closing it here would leave it dead for the rest of the session, since
+        # nothing calls _advance() again to reopen it (docs/romain.md, seventh issue).
+        self._road_pollable = True
         self._waypoint_idx = 0
         self._last_damage = 0.0
         self._update_active_marker(0)
@@ -643,6 +665,12 @@ class BeamNGDrivingEnv:
         # Draw the initial active-waypoint marker
         self._update_active_marker(0)
         self._attach_roads_sensor()
+
+        # A scenario load places every vehicle fresh, unsettled, at spawn — not
+        # safe to poll the road sensor until the sim has advanced (docs/romain.md,
+        # seventh issue). reset()/step() reopen this via _advance(); human_play
+        # reopens it explicitly right after resume() since it never steps at all.
+        self._road_pollable = False
 
     def _create_perception_sensor(self, human_control: bool = False):
         """Attach this env's perception sensor. Must run after the scenario starts.
@@ -848,8 +876,10 @@ class BeamNGDrivingEnv:
         )
 
     def _road_info_features(self, pos, heading) -> np.ndarray:
-        """The six road-relative features (neutral without a RoadsSensor)."""
-        payload = self.roads_sensor.poll() if self.roads_sensor is not None else None
+        """The six road-relative features (neutral without a sensor or before a step)."""
+        payload = None
+        if self.roads_sensor is not None and self._road_pollable:
+            payload = self.roads_sensor.poll()
         return road_info_features(payload, self.HALF_TRACK_WIDTH, pos, heading)
 
     def _wheel_info_features(self, elec, state) -> np.ndarray:

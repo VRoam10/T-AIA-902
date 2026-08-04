@@ -253,6 +253,14 @@ class BeamNGMultiEnv:
         self.scenario: Scenario = None
         self.trajectories: MapTrajectories | None = None
 
+        # Whether the RoadsSensor(s) may be polled: False from a teleport or a
+        # scenario load until the simulator has advanced at least one physics step.
+        # Shared across all slots — every reset/step here moves the whole field in
+        # lockstep, so one flag is enough. Polling in between hangs the sensor's
+        # game-engine side on road-dense maps and blocks Python in the socket recv
+        # (docs/romain.md, seventh issue).
+        self._road_pollable = False
+
     def apply_action(self, slot: VehicleSlot, action) -> None:
         """Map an agent action to vehicle controls. Does not step physics.
 
@@ -406,7 +414,9 @@ class BeamNGMultiEnv:
                 )
             )
         if slot.road_info:
-            payload = slot.roads_sensor.poll() if slot.roads_sensor is not None else None
+            payload = None
+            if slot.roads_sensor is not None and self._road_pollable:
+                payload = slot.roads_sensor.poll()
             blocks.append(road_info_features(payload, self.HALF_TRACK_WIDTH, pos, heading))
         if slot.wheel_info:
             forces = slot.gforces.data if slot.gforces is not None else None
@@ -608,6 +618,11 @@ class BeamNGMultiEnv:
             self._create_slot_sensor(slot)
             self._update_slot_marker(slot)
 
+        # A scenario load places every vehicle fresh, unsettled, at spawn — not
+        # safe to poll the road sensor until the sim has advanced (docs/romain.md,
+        # seventh issue). reset_all/reset_vehicle/step_physics reopen this.
+        self._road_pollable = False
+
     def _create_slot_sensor(self, slot: VehicleSlot):
         """Attach the perception sensor (LiDAR or camera) for one slot.
 
@@ -669,8 +684,10 @@ class BeamNGMultiEnv:
                 rot_quat=slot.spawn_rot,
                 reset=True,
             )
+            self._road_pollable = False
             slot.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
         self.bng.step(5)
+        self._road_pollable = True
         for slot in self.slots:
             slot.last_obs = self.observe(slot)
             slot.last_dist = slot.current_dist
@@ -686,13 +703,16 @@ class BeamNGMultiEnv:
             rot_quat=slot.spawn_rot,
             reset=True,
         )
+        self._road_pollable = False
         slot.reset_episode()
         # Let the teleport/repair land before the priming poll: sensors polled
         # with no intervening step still report the pre-teleport pose/damage,
         # which seeds last_dist with a huge fake progress delta and triggers an
-        # instant fake crash on the first reward step of the new episode.
+        # instant fake crash on the first reward step of the new episode. It is
+        # also the road sensor's freeze condition (docs/romain.md, seventh issue).
         if self.bng is not None:
             self.bng.step(5)
+            self._road_pollable = True
         if slot.lidar is not None or slot.electrics is not None:
             slot.last_obs = self.observe(slot)
             slot.last_dist = slot.current_dist
@@ -705,6 +725,7 @@ class BeamNGMultiEnv:
         and contact stays symmetric.
         """
         self.bng.step(beamng_spec.PHYSICS_STEPS_PER_ENV_STEP)
+        self._road_pollable = True
 
     def close(self):
         if self.bng is None:

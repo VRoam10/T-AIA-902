@@ -534,6 +534,76 @@ class TestLifecycle:
         assert env.bng is None
 
 
+class TestRoadPollGuard:
+    """The RoadsSensor must not be polled between a teleport/scenario load and the
+    next physics step (docs/romain.md, seventh issue) — same invariant as the
+    single-vehicle env, but the flag is shared across the whole field since every
+    reset/step here moves everyone in lockstep.
+    """
+
+    def test_a_fresh_env_starts_with_the_gate_closed(self):
+        assert _env()._road_pollable is False
+
+    def test_step_physics_opens_the_gate(self):
+        env = _env()
+        env.bng = MagicMock()
+        env._road_pollable = False
+        env.step_physics()
+        assert env._road_pollable is True
+
+    def test_reset_all_opens_the_gate(self):
+        env = _env()
+        env.bng = MagicMock()
+        env.observe = lambda slot: np.zeros(slot.n_states, dtype=np.float32)
+        env._road_pollable = True  # leftover from the previous episode
+        for slot in env.slots:
+            slot.vehicle = MagicMock()
+        env.reset_all()
+        assert env._road_pollable is True
+
+    def test_reset_vehicle_opens_the_gate(self):
+        env = _env()
+        env.bng = MagicMock()
+        slot = env.slots[0]
+        slot.vehicle = MagicMock()
+        env._road_pollable = False
+        env.reset_vehicle(slot)
+        assert env._road_pollable is True
+
+    def test_reset_vehicle_without_a_live_bng_leaves_the_gate_closed(self):
+        # No simulator to step, so nothing can make polling safe again.
+        env = _env()
+        env.bng = None
+        slot = env.slots[0]
+        slot.vehicle = MagicMock()
+        env._road_pollable = True
+        env.reset_vehicle(slot)
+        assert env._road_pollable is False
+
+    def test_no_poll_while_the_gate_is_closed(self):
+        env = _env()
+        slot = env.slots[0]
+        slot.road_info = True
+        slot.roads_sensor = MagicMock()
+        env._road_pollable = False
+        env._slot_extra_features(slot, {}, (0.0, 0.0, 0.0), 0.0)
+        slot.roads_sensor.poll.assert_not_called()
+
+    def test_polls_once_the_gate_is_open(self):
+        env = _env()
+        slot = env.slots[0]
+        slot.road_info = True
+        slot.roads_sensor = MagicMock()
+        slot.roads_sensor.poll.return_value = {
+            "halfWidth": 4.0,
+            "dist2Left": 4.0,
+            "dist2Right": 4.0,
+        }
+        env._road_pollable = True
+        env._slot_extra_features(slot, {}, (0.0, 0.0, 0.0), 0.0)
+        slot.roads_sensor.poll.assert_called_once()
+
+
 class TestPathAssignment:
     def _mt(self, n_paths):
         from core.trajectory import MapTrajectories, TrajectoryData

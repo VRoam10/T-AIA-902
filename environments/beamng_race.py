@@ -285,6 +285,12 @@ class BeamNGRaceEnv(BeamNGMultiEnv):
         if not self._resumed:
             self.bng.resume()
             self._resumed = True
+            # Realtime race: resuming lets the sim advance continuously on its own
+            # from here on, so the road sensor is always safe to poll — the same
+            # reasoning as BeamNGDrivingEnv.human_play (docs/romain.md, seventh
+            # issue). Nothing else in a race ever calls step_physics() to reopen
+            # this once realtime, so it must be opened explicitly here.
+            self._road_pollable = True
 
     def observe_all(self) -> dict[str, np.ndarray]:
         """Poll **every** entrant, returning observations for the driven ones only.

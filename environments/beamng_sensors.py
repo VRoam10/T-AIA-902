@@ -178,11 +178,12 @@ def poll_camera(camera):
 # Shared
 # --------------------------------------------------------------------------- #
 def create_roads_sensor(name: str, bng, vehicle):
-    """Create a RoadsSensor for the ``road_info`` observation flag.
+    """Create a RoadsSensor for the ``road_info`` observation block.
 
-    Note: polling this right after a teleport with no intervening step hard-freezes
-    the sim on road-dense maps, which is why ``road_info`` stays off by default
-    and is not offered in the menus.
+    Callers must not poll it between a teleport and the next physics step: the
+    sensor's game-engine side never answers on road-dense maps and the caller
+    blocks forever in the socket recv (docs/romain.md, seventh issue). Both envs
+    enforce that with a ``_road_pollable`` gate.
     """
     return RoadsSensor(name, bng, vehicle)
 

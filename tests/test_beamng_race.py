@@ -323,3 +323,19 @@ class TestAdvance:
         env.advance()
         env.bng.resume.assert_called_once()
         env.bng.step.assert_not_called()
+
+    def test_realtime_resume_opens_the_road_gate(self):
+        # Realtime races never call step_physics(), so nothing else would ever
+        # reopen the gate (docs/romain.md, seventh issue) — resume() must.
+        env = _env(2, realtime=True)
+        env.bng = MagicMock()
+        env._road_pollable = False
+        env.advance()
+        assert env._road_pollable is True
+
+    def test_lockstep_advance_opens_the_road_gate(self):
+        env = _env(2, realtime=False)
+        env.bng = MagicMock()
+        env._road_pollable = False
+        env.advance()
+        assert env._road_pollable is True
