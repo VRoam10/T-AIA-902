@@ -155,8 +155,21 @@ describe("train payload", () => {
 describe("human-play payload", () => {
   test("passes map / sensor / random_path through", () => {
     expect(
-      buildHumanPlayPayload({ map_name: "italy", sensor: "adv_lidar", random_path: true }),
-    ).toEqual({ map_name: "italy", sensor: "adv_lidar", random_path: true, track: "" });
+      buildHumanPlayPayload({
+        map_name: "italy",
+        sensor: "adv_lidar",
+        random_path: true,
+        road_info: false,
+        wheel_info: false,
+      }),
+    ).toEqual({
+      map_name: "italy",
+      sensor: "adv_lidar",
+      random_path: true,
+      track: "",
+      road_info: false,
+      wheel_info: false,
+    });
   });
 
   test("an unset track means the generated paths", () => {
@@ -164,6 +177,8 @@ describe("human-play payload", () => {
       map_name: "italy",
       sensor: "lidar",
       random_path: false,
+      road_info: false,
+      wheel_info: false,
     });
     expect(payload.track).toBe("");
   });
@@ -174,8 +189,22 @@ describe("human-play payload", () => {
       sensor: "lidar",
       random_path: false,
       track: "mixedCircuit1",
+      road_info: false,
+      wheel_info: false,
     });
     expect(payload.track).toBe("mixedCircuit1");
+  });
+
+  test("road_info and wheel_info are forwarded through", () => {
+    const payload = buildHumanPlayPayload({
+      map_name: "italy",
+      sensor: "lidar",
+      random_path: false,
+      road_info: true,
+      wheel_info: true,
+    });
+    expect(payload.road_info).toBe(true);
+    expect(payload.wheel_info).toBe(true);
   });
 });
 
@@ -227,7 +256,8 @@ describe("multi-train payload", () => {
       save_path: "outputs/multi-agents/dqn_lidar_0.pth",
       trajectory_hints: 0,
       body_orientation: false,
-      wheel_terrain: false,
+      road_info: false,
+      wheel_info: false,
     };
     const state: MultiTrainState = {
       map_name: "gridmap_v2",
@@ -255,6 +285,8 @@ describe("course payload", () => {
     color: "Red",
     trajectory_hints: 0,
     body_orientation: false,
+    road_info: false,
+    wheel_info: false,
     ...overrides,
   });
 
@@ -325,5 +357,117 @@ describe("course payload", () => {
 
   test("the two liveries are distinct so the cars are tellable apart", () => {
     expect(RACE_COLORS[0]).not.toBe(RACE_COLORS[1]);
+  });
+});
+
+describe("beamngPathSuffix with the new observation flags", () => {
+  test("road_info and wheel_info each add a token", () => {
+    expect(beamngPathSuffix({ trajectory_hints: 0, body_orientation: false, road_info: true, wheel_info: false }))
+      .toBe("_road");
+    expect(beamngPathSuffix({ trajectory_hints: 0, body_orientation: false, road_info: false, wheel_info: true }))
+      .toBe("_whl");
+  });
+
+  test("tokens keep their order regardless of how the flags arrive", () => {
+    expect(
+      beamngPathSuffix({ trajectory_hints: 3, body_orientation: true, road_info: true, wheel_info: true }),
+    ).toBe("_h3_ori_road_whl");
+  });
+
+  test("train save path carries both tokens", () => {
+    expect(
+      trainSavePath("td3", "camera", {
+        trajectory_hints: 0,
+        body_orientation: false,
+        road_info: true,
+        wheel_info: true,
+      }),
+    ).toBe("outputs/td3_camera_road_whl.pth");
+  });
+
+  test("flags off leave the path untouched", () => {
+    expect(trainSavePath("dqn", "lidar", BEAMNG_DEFAULTS)).toBe("outputs/dqn_lidar.pth");
+  });
+});
+
+// Nothing bridges the TypeScript payload builders and the Python dataclasses
+// they feed (core.tui_backend does `BeamNGOptions(**raw)`), so a field rename
+// on one side silently breaks the other at runtime — that is exactly how a
+// since-dropped BeamNGOptions field kept being sent by the TUI long after it
+// stopped existing on the Python side. These assertions are the cheap half of
+// that contract: they can't verify the Python field names, but pinning the
+// exact key set on the TS side means a stray legacy key cannot creep back in
+// unnoticed, whatever it might be called.
+describe("beamng payload key sets are exactly what the python dataclasses expect", () => {
+  test("train payload's beamng block", () => {
+    const payload = buildTrainPayload(EMPTY_CATALOG, {
+      algo_name: "dqn",
+      n_episodes: 500,
+      agent_params: {},
+      checkpoint_policy: "resume",
+    }) as { beamng: Record<string, unknown> };
+    expect(Object.keys(payload.beamng).sort()).toEqual(
+      ["map_name", "sensor", "trajectory_hints", "body_orientation", "road_info", "wheel_info", "random_path", "track"].sort(),
+    );
+  });
+
+  test("multi-train spec payload", () => {
+    const spec = {
+      algo: "dqn",
+      sensor: "lidar",
+      color: "Yellow",
+      save_path: "outputs/multi-agents/dqn_lidar_0.pth",
+      trajectory_hints: 0,
+      body_orientation: false,
+      road_info: false,
+      wheel_info: false,
+    };
+    const p = buildMultiTrainPayload(EMPTY_CATALOG, {
+      map_name: "gridmap_v2",
+      random_path: false,
+      n_episodes: 500,
+      time_limit_minutes: 0,
+      checkpoint_policy: "resume",
+      specs: [spec],
+    }) as { specs: Record<string, unknown>[] };
+    expect(Object.keys(p.specs[0]).sort()).toEqual(Object.keys(spec).sort());
+  });
+
+  test("course racer payload", () => {
+    const racer = (overrides: Partial<RacerState> = {}): RacerState => ({
+      algo: "dqn",
+      sensor: "lidar",
+      model_path: "outputs/dqn_lidar.pth",
+      color: "Red",
+      trajectory_hints: 0,
+      body_orientation: false,
+      road_info: false,
+      wheel_info: false,
+      ...overrides,
+    });
+    const p = buildCoursePayload({
+      map_name: "gridmap_v2",
+      opponent: "algo",
+      laps: 1,
+      races: 1,
+      learning: false,
+      racers: [racer(), racer({ algo: "td3" })],
+    }) as { racers: Record<string, unknown>[] };
+    expect(Object.keys(p.racers[0]).sort()).toEqual(
+      ["algo", "sensor", "model_path", "color", "trajectory_hints", "body_orientation", "road_info", "wheel_info"].sort(),
+    );
+  });
+
+  test("human-play payload", () => {
+    const payload = buildHumanPlayPayload({
+      map_name: "italy",
+      sensor: "lidar",
+      random_path: false,
+      road_info: false,
+      wheel_info: false,
+    });
+    expect(Object.keys(payload).sort()).toEqual(
+      ["map_name", "sensor", "random_path", "track", "road_info", "wheel_info"].sort(),
+    );
   });
 });

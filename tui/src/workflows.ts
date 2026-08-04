@@ -49,7 +49,8 @@ export interface BeamNGFields {
   sensor: string;
   trajectory_hints: number;
   body_orientation: boolean;
-  wheel_terrain: boolean;
+  road_info: boolean;
+  wheel_info: boolean;
   random_path?: boolean;
   dense_episodes?: number;
   // A game-track key, or "" for the generated paths.
@@ -61,7 +62,8 @@ export const BEAMNG_DEFAULTS: BeamNGFields = {
   sensor: "lidar",
   trajectory_hints: 0,
   body_orientation: false,
-  wheel_terrain: false,
+  road_info: false,
+  wheel_info: false,
   track: "",
 };
 
@@ -99,6 +101,8 @@ export interface HumanPlayState {
   map_name: string;
   sensor: string;
   random_path: boolean;
+  road_info: boolean;
+  wheel_info: boolean;
   track?: string;
 }
 
@@ -116,7 +120,8 @@ export interface MultiSpecState {
   save_path: string;
   trajectory_hints: number;
   body_orientation: boolean;
-  wheel_terrain: boolean;
+  road_info: boolean;
+  wheel_info: boolean;
 }
 
 export interface MultiTrainState {
@@ -136,6 +141,8 @@ export interface RacerState {
   color: string;
   trajectory_hints: number;
   body_orientation: boolean;
+  road_info: boolean;
+  wheel_info: boolean;
   human?: boolean;
 }
 
@@ -149,14 +156,22 @@ export interface CourseState {
   track?: string;
 }
 
-// Encode the beamng options that change what a checkpoint represents into the
-// file name, so different configs don't overwrite each other: "_h<n>" for
-// checkpoint hints (>0) and "_ori" when body orientation is on.
-export function beamngPathSuffix(beamng?: { trajectory_hints: number; body_orientation: boolean }): string {
+// Encode the beamng options that change what a checkpoint represents into the file
+// name, so different configs cannot overwrite each other: "_h<n>" for checkpoint
+// hints (>0), "_ori" for body orientation, "_road" for road position, "_whl" for
+// wheel performance. The order is fixed so a path is reproducible.
+export function beamngPathSuffix(beamng?: {
+  trajectory_hints: number;
+  body_orientation: boolean;
+  road_info?: boolean;
+  wheel_info?: boolean;
+}): string {
   if (!beamng) return "";
   let suffix = "";
   if (beamng.trajectory_hints > 0) suffix += `_h${beamng.trajectory_hints}`;
   if (beamng.body_orientation) suffix += "_ori";
+  if (beamng.road_info) suffix += "_road";
+  if (beamng.wheel_info) suffix += "_whl";
   return suffix;
 }
 
@@ -165,7 +180,12 @@ export function beamngPathSuffix(beamng?: { trajectory_hints: number; body_orien
 export function trainSavePath(
   algoName: string,
   sensor: string,
-  beamng?: { trajectory_hints: number; body_orientation: boolean },
+  beamng?: {
+    trajectory_hints: number;
+    body_orientation: boolean;
+    road_info?: boolean;
+    wheel_info?: boolean;
+  },
 ): string {
   return `outputs/${algoName}_${sensor}${beamngPathSuffix(beamng)}.pth`;
 }
@@ -190,6 +210,8 @@ export function buildHumanPlayPayload(state: HumanPlayState): Record<string, unk
     sensor: state.sensor,
     random_path: state.random_path,
     track: state.track ?? "",
+    road_info: state.road_info,
+    wheel_info: state.wheel_info,
   };
 }
 
@@ -226,6 +248,8 @@ export function buildCoursePayload(state: CourseState): Record<string, unknown> 
       color: r.color,
       trajectory_hints: r.trajectory_hints,
       body_orientation: r.body_orientation,
+      road_info: r.road_info,
+      wheel_info: r.wheel_info,
     };
   });
 

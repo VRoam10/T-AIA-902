@@ -135,6 +135,8 @@ class HumanPlayRequest:
     sensor: str = beamng_spec.DEFAULT_SENSOR
     random_path: bool = False
     track: str = ""
+    road_info: bool = False
+    wheel_info: bool = False
 
 
 @dataclass
@@ -578,6 +580,8 @@ def run_human_play(request: HumanPlayRequest) -> None:
             # A game track is one fixed line, so there is no random path to deal.
             random_path=request.random_path and not request.track,
             track=request.track or None,
+            road_info=request.road_info,
+            wheel_info=request.wheel_info,
         )
         env.human_play()
     finally:

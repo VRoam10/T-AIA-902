@@ -101,6 +101,8 @@ def _cmd_human_play(payload: dict) -> None:
         sensor=payload.get("sensor", beamng_spec.DEFAULT_SENSOR),
         random_path=payload.get("random_path", False),
         track=payload.get("track", ""),
+        road_info=payload.get("road_info", False),
+        wheel_info=payload.get("wheel_info", False),
     )
     run_human_play(req)
     _emit_result({"status": "stopped"})

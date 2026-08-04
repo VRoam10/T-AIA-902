@@ -82,12 +82,25 @@ export function onChoiceChanged(ctx: Ctx, f: Field): void {
   }
   // Sensor and body orientation feed the derived checkpoint path but leave the
   // field set alone, so update the path in place rather than rebuilding.
-  if (wf === "train" && (f.key === "sensor" || f.key === "body_orientation")) {
+  if (
+    wf === "train" &&
+    (f.key === "sensor" ||
+      f.key === "body_orientation" ||
+      f.key === "road_info" ||
+      f.key === "wheel_info")
+  ) {
     refreshDerivedPaths(ctx);
     updateBreadcrumb(ctx);
     return;
   }
-  if (wf === "course" && (f.key.endsWith("_algo") || f.key.endsWith("_sensor") || f.key.endsWith("_body_orientation"))) {
+  if (
+    wf === "course" &&
+    (f.key.endsWith("_algo") ||
+      f.key.endsWith("_sensor") ||
+      f.key.endsWith("_body_orientation") ||
+      f.key.endsWith("_road_info") ||
+      f.key.endsWith("_wheel_info"))
+  ) {
     refreshRacerPaths(ctx);
     return;
   }

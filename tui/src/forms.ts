@@ -47,7 +47,8 @@ function beamngFieldsFrom(
     sensor: (values.sensor as string) ?? BEAMNG_DEFAULTS.sensor,
     trajectory_hints: num(values.trajectory_hints, 0),
     body_orientation: bool(values.body_orientation),
-    wheel_terrain: bool(values.wheel_terrain),
+    road_info: bool(values.road_info),
+    wheel_info: bool(values.wheel_info),
     track: catalog
       ? resolveTrack(catalog, map_name, values.track_kind as string, values.track as string)
       : "",
@@ -96,9 +97,11 @@ function addBeamngFields(ctx: Ctx, withRandom: boolean): void {
   // so editing them refreshes the derived save/model path.
   addInput(ctx, "trajectory_hints", "Checkpoint hints", "0", vNonNegNumber, () => refreshDerivedPaths(ctx));
   addChoice(ctx, "body_orientation", "Body orientation", ["false", "true"]);
-  // wheel_terrain is intentionally NOT offered: polling the RoadsSensor in the
-  // unstepped reset path hard-freezes training on road-dense maps. The payload
-  // still sends it as false (see BEAMNG_DEFAULTS / beamngFieldsFrom).
+  // Road position (edges, road-relative heading, curvature, look-ahead) and wheel
+  // performance (slip, slide, ABS, lateral g). Both change the observation width, so
+  // both feed the derived save path — see controller.onChoiceChanged.
+  addChoice(ctx, "road_info", "Road position", ["false", "true"]);
+  addChoice(ctx, "wheel_info", "Wheel performance", ["false", "true"]);
   if (withRandom) {
     addChoice(ctx, "random_path", "Randomize path", ["false", "true"]);
     // Curriculum warm-up: dense checkpoints (8 m) for the first N episodes,
@@ -187,6 +190,8 @@ function buildHumanPlayForm(ctx: Ctx): void {
   // The sensor picks which observation readout is shown while you drive.
   addChoice(ctx, "sensor", "Sensor", [...BEAMNG_SENSORS]);
   addChoice(ctx, "random_path", "Randomize path", ["false", "true"]);
+  addChoice(ctx, "road_info", "Road position", ["false", "true"]);
+  addChoice(ctx, "wheel_info", "Wheel performance", ["false", "true"]);
   addAction(ctx, "Launch human play", "run", undefined, { primary: true });
 
   state.runAction = () => {
@@ -195,6 +200,8 @@ function buildHumanPlayForm(ctx: Ctx): void {
       map_name: v.map_name as string,
       sensor: v.sensor as string,
       random_path: bool(v.random_path),
+      road_info: bool(v.road_info),
+      wheel_info: bool(v.wheel_info),
       track: resolveTrack(ctx.catalog, v.map_name as string, v.track_kind as string, v.track as string),
     };
     startRun(ctx, "human-play", buildHumanPlayPayload(playState), "Human play");
@@ -219,8 +226,10 @@ function addMultiSpec(ctx: Ctx): void {
   const sensor = (v.multi_sensor as string) || BEAMNG_DEFAULTS.sensor;
   const trajectory_hints = num(v.multi_hints, 0);
   const body_orientation = bool(v.multi_body_orientation);
+  const road_info = bool(v.multi_road_info);
+  const wheel_info = bool(v.multi_wheel_info);
   const color = MULTI_COLORS[index % MULTI_COLORS.length];
-  const suffix = beamngPathSuffix({ trajectory_hints, body_orientation });
+  const suffix = beamngPathSuffix({ trajectory_hints, body_orientation, road_info, wheel_info });
   state.multiSpecs.push({
     algo,
     sensor,
@@ -228,7 +237,8 @@ function addMultiSpec(ctx: Ctx): void {
     save_path: `outputs/multi-agents/${algo}_${sensor}${suffix}_${index}.pth`,
     trajectory_hints,
     body_orientation,
-    wheel_terrain: false, // never offered (freezes training); see addBeamngFields
+    road_info,
+    wheel_info,
   });
   appendLog(ctx, `${GLYPH.dot} Added vehicle ${index}: ${algo} / ${sensor} (${color})`);
 }
@@ -247,7 +257,12 @@ function addMultiSpecList(ctx: Ctx): void {
     return;
   }
   state.multiSpecs.forEach((s, i) => {
-    const opts = [s.trajectory_hints > 0 ? `h${s.trajectory_hints}` : "", s.body_orientation ? "ori" : ""]
+    const opts = [
+      s.trajectory_hints > 0 ? `h${s.trajectory_hints}` : "",
+      s.body_orientation ? "ori" : "",
+      s.road_info ? "road" : "",
+      s.wheel_info ? "whl" : "",
+    ]
       .filter(Boolean)
       .join(" ");
     const tail = opts ? `  ${opts}` : "";
@@ -275,6 +290,8 @@ function buildMultiTrainForm(ctx: Ctx): void {
   addChoice(ctx, "multi_sensor", "Sensor", [...BEAMNG_SENSORS]);
   addInput(ctx, "multi_hints", "Checkpoint hints", "0", vNonNegNumber);
   addChoice(ctx, "multi_body_orientation", "Body orientation", ["false", "true"]);
+  addChoice(ctx, "multi_road_info", "Road position", ["false", "true"]);
+  addChoice(ctx, "multi_wheel_info", "Wheel performance", ["false", "true"]);
   addAction(ctx, "Add vehicle", "add", () => {
     addMultiSpec(ctx);
     ctx.rebuildActiveForm("multi_algo");
@@ -323,6 +340,8 @@ function addRacerFields(ctx: Ctx, index: number, algos: string[], defaultAlgo: s
   addChoice(ctx, `r${n}_sensor`, "Sensor", [...BEAMNG_SENSORS]);
   addInput(ctx, `r${n}_hints`, "Checkpoint hints", "0", vNonNegNumber, () => refreshRacerPaths(ctx));
   addChoice(ctx, `r${n}_body_orientation`, "Body orientation", ["false", "true"]);
+  addChoice(ctx, `r${n}_road_info`, "Road position", ["false", "true"]);
+  addChoice(ctx, `r${n}_wheel_info`, "Wheel performance", ["false", "true"]);
   addInput(ctx, `r${n}_model_path`, "Checkpoint", trainSavePath(defaultAlgo, BEAMNG_DEFAULTS.sensor));
 }
 
@@ -337,6 +356,8 @@ export function refreshRacerPaths(ctx: Ctx): void {
     const next = trainSavePath(v[`r${n}_algo`] as string, v[`r${n}_sensor`] as string, {
       trajectory_hints: num(v[`r${n}_hints`], 0),
       body_orientation: bool(v[`r${n}_body_orientation`]),
+      road_info: bool(v[`r${n}_road_info`]),
+      wheel_info: bool(v[`r${n}_wheel_info`]),
     });
     if (field.input.value !== next) field.input.value = next;
   }
@@ -352,6 +373,8 @@ function racerFrom(values: Record<string, unknown>, index: number): RacerState {
     color: RACE_COLORS[index % RACE_COLORS.length],
     trajectory_hints: num(values[`r${n}_hints`], 0),
     body_orientation: bool(values[`r${n}_body_orientation`]),
+    road_info: bool(values[`r${n}_road_info`]),
+    wheel_info: bool(values[`r${n}_wheel_info`]),
   };
 }
 

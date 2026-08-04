@@ -172,7 +172,8 @@ describe("bug 3: multi-agent training can select a per-vehicle algorithm", () =>
     const keys = ctx.state.fields.map((f) => f.key);
     expect(keys).toContain("multi_hints");
     expect(keys).toContain("multi_body_orientation");
-    expect(keys).not.toContain("multi_wheel_terrain");
+    expect(keys).toContain("multi_road_info");
+    expect(keys).toContain("multi_wheel_info");
 
     setInput(ctx, "multi_hints", "2");
     focusKey(ctx, "multi_body_orientation");
@@ -180,18 +181,20 @@ describe("bug 3: multi-agent training can select a per-vehicle algorithm", () =>
     ctx.state.fields.find((f) => f.key === "add")!.onAction!();
     expect(ctx.state.multiSpecs[0].trajectory_hints).toBe(2);
     expect(ctx.state.multiSpecs[0].body_orientation).toBe(true);
-    expect(ctx.state.multiSpecs[0].wheel_terrain).toBe(false);
+    expect(ctx.state.multiSpecs[0].road_info).toBe(false);
+    expect(ctx.state.multiSpecs[0].wheel_info).toBe(false);
     expect(ctx.state.multiSpecs[0].save_path).toContain("_h2_ori_0.pth");
   });
 });
 
-describe("wheel_terrain is removed from the beamng menus (it freezes training)", () => {
-  test("the train form offers no wheel_terrain choice", async () => {
+describe("road_info and wheel_info are offered in the beamng menus (the freeze that kept road_info out is fixed)", () => {
+  test("the train form offers both choices", async () => {
     const { ctx } = await makeCtx();
     openWorkflow(ctx, "train");
     const keys = ctx.state.fields.map((f) => f.key);
     expect(keys).toContain("body_orientation"); // sanity: beamng options are present
-    expect(keys).not.toContain("wheel_terrain");
+    expect(keys).toContain("road_info");
+    expect(keys).toContain("wheel_info");
   });
 });
 
