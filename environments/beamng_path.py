@@ -52,8 +52,10 @@ def project_onto_path(polyline, pos) -> PathPosition:
     Returns :data:`NEUTRAL` for an empty or single-point polyline.
 
     Caveat for closed circuits: a track that passes close to itself can project
-    onto the wrong lap of the same geometry. Laps are 1 today; lap counting belongs
-    to the caller, which adds ``laps_done * path_length(polyline)``.
+    onto the wrong lap of the same geometry. Laps are 1 today; a real lap counter
+    would need a lap-crossing *event* (not derivable from this projection alone),
+    since adding ``laps_done * path_length(polyline)`` to progress on every
+    ``waypoint_idx`` wraparound double-counts the finish of a single lap.
     """
     pts = np.asarray(polyline, dtype=np.float64)
     if pts.ndim != 2 or len(pts) < 2:

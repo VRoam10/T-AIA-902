@@ -63,7 +63,7 @@ A flat `float32` array, all values normalized to approximately `[-1, 1]` or `[0,
 Blocks are concatenated in this order:
 
 ```
-kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | [edgeL, edgeR]?
+kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | road(6)? | wheel(4)?
 ```
 
 | Index | Name | Raw source | Normalization |
@@ -71,30 +71,40 @@ kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | [edgeL, edgeR]?
 | 0 | `speed` | `electrics.wheelspeed` (m/s) | `/ 50.0`, clipped to `[-1, 1]` |
 | 1 | `steering` | `electrics.steering` | clipped to `[-1, 1]` (already normalized) |
 | 2 | `heading_error` | angle between heading and next waypoint (rad) | `/ π`, clipped |
-| 3 | `lateral_error` | perpendicular distance from the path (m) | `/ 5.0`, clipped |
+| 3 | `lateral_error` | signed cross-track distance from the guide polyline (m), + = left of travel | `/ 5.0`, clipped |
 | 4 | `damage` | `damage_sensor.damage` (cumulative) | `/ 1000.0`, clipped to `[0, 1]` |
 | 5 | `dist` | distance to the target checkpoint (m) | `/ CHECKPOINT_WARN_DIST`, clipped to `[0, 2]` |
 | 6.. | perception | the sensor's block | see the table above |
 
-Optional tails, both off by default:
+The guide polyline is the spawn point followed by every checkpoint. Its projection
+(`environments/beamng_path.project_onto_path`) is a function of the car's position
+alone, so index 3 does not jump when the target checkpoint advances. The value this
+replaced, `dist * sin(heading_err)`, was itself a function of indices 2 and 5 and so
+carried no information; width and normalization are unchanged, so existing checkpoints
+still load.
+
+Optional tails, all off by default:
 
 - `trajectory_hints=H` — vehicle-local `(forward, left)` of the next `H` waypoints,
-  normalized over 100 m. **+2H** dims.
+  normalized over 100 m. **+2H** dims. Saturates on game tracks, whose checkpoints are
+  far further apart than the 100 m norm.
 - `body_orientation` — `[pitch, roll]` from the vehicle's forward/up vectors. **+2**.
-- `wheel_terrain` — `[left, right]` road-edge position from a `RoadsSensor`. **+2**.
-  **Not offered in the menus**: polling the sensor in the unstepped reset path
-  hard-freezes training on road-dense maps.
+- `road_info` — `[edge_left, edge_right, road_heading, curvature, ahead_fwd, ahead_left]`
+  from a `RoadsSensor`. **+6**. Road-relative, so it does not care how far away the next
+  checkpoint is.
+- `wheel_info` — `[long_slip, slip_angle, abs_active, lat_g]` from Electrics, the vehicle
+  state and a `GForces` sensor. **+4**.
 
-`beamng_spec.obs_size(sensor, hints, body_orientation, wheel_terrain)` is the only
-place this arithmetic lives.
+`beamng_spec.obs_size(sensor, hints, body_orientation, road_info, wheel_info)` is the
+only place this arithmetic lives.
 
 ---
 
 ## Action space (`output: fixed`)
 
-Throttle falls sharply as steering rises. The car is a mid-engine RWD with far more
-power than grip, so the previous taxi-era table (0.4 throttle at 0.6 steering) spun it
-on most corner entries.
+Throttle falls sharply as steering rises. The car — an AWD Cherrier Vivace Hillclimb —
+still has far more power than grip, so the previous taxi-era table (0.4 throttle at 0.6
+steering) spun it on most corner entries.
 
 | Index | Description | Throttle | Steering | Brake |
 |---|---|---|---|---|
@@ -126,11 +136,11 @@ multi and race envs, so a policy is rewarded for the same behaviour everywhere.
 
 | Term | Delta |
 |---|---|
-| Progress toward the waypoint (telescoping) | `+(last_dist - dist) × PROGRESS_COEF` |
-| Speed projected on the target direction | `+speed × cos(heading_err) × SPEED_ALIGN_COEF` |
+| Progress along the path (telescoping) | `+(progress_m - last_progress_m) × PROGRESS_COEF`, from a polyline projection that depends on position alone; falls back to straight-line closure to the checkpoint when no projection is supplied |
+| Speed projected onto the path tangent | `+speed × cos(velocity_heading - tangent) × SPEED_ALIGN_COEF`; falls back to bearing-to-checkpoint alignment without a tangent |
 | **Every step** | `-STEP_PENALTY` |
 | Checkpoint reached | `+CHECKPOINT_BONUS` (flat) |
-| Checkpoint reached quickly | `+max(0, SEGMENT_TARGET_STEPS - steps_since_cp) × SEGMENT_TIME_COEF` |
+| Checkpoint reached, relative to the segment's own par | `+SEGMENT_TIME_BONUS × clip(1 - steps_since_checkpoint / par, 0, 1)`, where `par = steps_for_distance(segment_len_m, SEGMENT_PAR_SPEED_MS)` is derived from the segment actually driven |
 | Path completed | `+FINISH_BONUS + (max_steps - steps) × FINISH_TIME_COEF` |
 
 The step penalty and the two time bonuses are what make *fast* beat *clean but slow*.
@@ -141,6 +151,13 @@ goes, not *how quickly*.
 The checkpoint bonus is deliberately **flat**. The reward this replaced paid
 `100 × waypoint_idx`, which made late-path reward an order of magnitude larger than
 early-path reward for identical driving — enough to destabilise the value function.
+
+The segment-time bonus is **scale-free**: because `par` scales with the segment's own
+length, `steps_since_checkpoint / par` is a pace ratio, so a near-perfect 25 m segment
+and a near-perfect 1000 m segment pay the same instead of one dwarfing the other. This
+replaced a *fixed* par (`SPARSE_SPACING_M`, 25 m), which is unmeetable on a game
+track — 30 of the 44 shipped sprint/lap tracks have a gap over 300 m, and italy's
+`highway1` averages 1064 m. `SEGMENT_TARGET_STEPS`/`SEGMENT_TIME_COEF` no longer exist.
 
 ### Contact and track limits
 
@@ -172,10 +189,16 @@ bookkeeping, and impossible to farm by oscillating alongside the rival. Plus
 does. Passing none of the progress arguments — the solo default — contributes exactly
 zero, so single-car training is unaffected.
 
-Progress is measured by `beamng_geometry.track_progress_m`: arc length along the
-waypoint polyline to the current target, minus the straight-line distance still to
-cover. The subtraction is what keeps it continuous across a checkpoint transition,
-which a telescoping term requires.
+Progress is measured by `beamng_path.project_onto_path`: arc length along the guide
+polyline (the spawn point followed by every checkpoint) to the perpendicular
+projection of the car's current position. Being a function of position alone rather
+than the target checkpoint, it is already continuous across a checkpoint
+transition — which a telescoping term requires — and following the road round a bend
+can never read as backward progress. There is no lap offset: a term that added
+`laps_done * path_length(polyline)` was tried and removed, because `waypoint_idx`
+wraps at the end of every run (not only a second lap), so it added a full path length
+to progress at the finish even at `laps=1`. A real lap counter needs a lap-crossing
+event, not an index; `laps != 1` still raises.
 
 ---
 

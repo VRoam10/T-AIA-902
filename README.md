@@ -458,8 +458,13 @@ d'observation sont inchangees par rapport aux anciennes classes par-capteur :
 | `camera`    | dashcam 16 x 16 en niveaux de gris | 262                   |
 
 ```
-kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | [edgeL, edgeR]?
+kinematic(6) | perception(P) | hints(2*H) | [pitch, roll]? | road(6)? | wheel(4)?
 ```
+
+- `road_info` — `[edge_left, edge_right, road_heading, curvature, ahead_fwd, ahead_left]`
+  depuis un `RoadsSensor`. **+6**, relatif a la route.
+- `wheel_info` — `[long_slip, slip_angle, abs_active, lat_g]` depuis Electrics, l'etat
+  vehicule et un capteur `GForces`. **+4**.
 
 Les tailles viennent toutes de `environments/beamng_spec.py` (`obs_size`,
 `action_size`, `output_for_algo`) — une seule source de verite, au lieu des trois

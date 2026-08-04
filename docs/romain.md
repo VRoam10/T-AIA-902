@@ -56,9 +56,17 @@ answers instantly and never hangs.
 It is NOT the teleport itself (human quick-travel play works), NOT a GPU TDR (no
 D3D11 error in the log), and NOT CUDA (reproduced with the agents on CPU).
 
-Fix for now: removed the "per-wheel road position" (`wheel_terrain`) option from
-the training menus so it can't be enabled and trigger the freeze. The feature
-code is still present (eval/human-play and tests), just not offered for training.
+Fix: the sensor is now only ever polled through a gate (`_road_pollable`) that is
+closed the instant a teleport or scenario load repositions the vehicle, and reopened
+only once the simulation has actually advanced since — `reset()`/`step()`'s
+`_advance()` in training, and (since nothing there ever calls `_advance()` again)
+an explicit open right after `resume()` in the two realtime paths, human play and a
+realtime race. A `RoadsSensor` poll while the gate is shut returns the neutral
+reading instead of touching beamngpy. The option is back in the menus, renamed
+`road_info`, and it now carries six features instead of two:
+`[edge_left, edge_right, road_heading, curvature, ahead_fwd, ahead_left]` — the extra
+four (heading, curvature, look-ahead) came along for free once the freeze was fixed
+properly instead of worked around.
 
 Eighth issue:
 Multi-path generation could emit paths with too few checkpoints. Each teleport
@@ -77,3 +85,33 @@ following the current heading) up to `MIN_PATH_LENGTH_M`, then resampled at the
 normal 25 m spacing. So a teleport on a short road still yields a long path with
 well-spaced checkpoints. Genuinely isolated dead-end roads keep the default
 spacing and simply carry fewer checkpoints rather than crammed ones.
+
+Ninth issue:
+Game tracks (quickrace sprint/lap) space their checkpoints far more sparsely than the
+generated paths' 25 m — some gaps run past a kilometre (italy's `highway1` averages
+1064 m). Two of the reward's pace terms had baked in the 25 m assumption and broke on
+those tracks:
+
+- progress was straight-line distance closed to the next checkpoint, which punishes
+  following the road: rounding a bend can increase the straight-line distance to a
+  checkpoint that far away, so a car driving the racing line correctly reads as going
+  backward.
+- the checkpoint-time bonus compared `steps_since_checkpoint` against a par fixed at
+  `SPARSE_SPACING_M` (25 m) worth of steps. On a 1000 m segment that par is unmeetable,
+  so the bonus floors at zero for the whole segment no matter how well it is driven.
+
+Fix: progress and the speed-alignment term now come from projecting the car's position
+onto a guide polyline (spawn point + every checkpoint) — `beamng_path.project_onto_path`,
+a function of position alone, so it cannot read a bend as backward progress and does
+not care how far away the next checkpoint is. The checkpoint-time bonus's par is now
+derived from the segment actually being driven
+(`steps_for_distance(segment_len_m, SEGMENT_PAR_SPEED_MS)`), so
+`steps_since_checkpoint / par` is a pace ratio: a 25 m segment and a 1000 m segment
+driven at the same multiple of par speed pay the same, instead of one being trivial
+and the other impossible.
+
+Also dropped, discovered while wiring this up: the plan had progress add
+`laps_completed * path_length` for closed circuits. `waypoint_idx` wraps at the end of
+every run, not only a second lap, so that term added a full path length to progress at
+the finish of every episode — even at `laps=1`. A real lap counter needs a
+lap-crossing event, not an index division, so it stayed out; `laps != 1` still raises.
