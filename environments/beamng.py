@@ -41,12 +41,13 @@ class BeamNGDrivingEnv:
         speed          - wheel speed normalized to 50 m/s
         steering        - current steering angle (-1 to 1)
         heading_error  - angle between vehicle heading and next waypoint direction
-        lateral_error  - perpendicular distance from path (normalized to 5 m)
+        lateral_error  - signed cross-track distance from the guide polyline
+                         (normalized to 5 m), + = left of travel
         damage         - cumulative vehicle damage (normalized)
         dist           - distance to the target checkpoint
         perception[..] - the sensor's feature block
         hints[..]      - optional vehicle-local coords of upcoming waypoints
-        extra[..]      - optional [pitch, roll] and/or [edgeL, edgeR]
+        extra[..]      - optional [pitch, roll]? then road(6)? then wheel(4)?
 
     ``n_states`` is always ``beamng_spec.obs_size(...)`` for the active config.
     """

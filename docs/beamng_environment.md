@@ -93,7 +93,9 @@ Optional tails, all off by default:
   from a `RoadsSensor`. **+6**. Road-relative, so it does not care how far away the next
   checkpoint is.
 - `wheel_info` — `[long_slip, slip_angle, abs_active, lat_g]` from Electrics, the vehicle
-  state and a `GForces` sensor. **+4**.
+  state and a `GForces` sensor. **+4**. `lat_g`'s lateral axis is read as `gx2` then
+  `gx`, on the reasoning that this project's vehicle frame has forward = -Y — a
+  hypothesis not yet confirmed in-sim.
 
 `beamng_spec.obs_size(sensor, hints, body_orientation, road_info, wheel_info)` is the
 only place this arithmetic lives.

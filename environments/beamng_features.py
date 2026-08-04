@@ -193,6 +193,8 @@ def wheel_info_features(electrics, gforces, vel, dir_vec) -> np.ndarray:
     * lat_g: lateral load over ``LAT_G_NORM``. GForces is a raw passthrough with no
       documented keys, so the lateral axis is read as ``gx2`` then ``gx``; this
       project's vehicle frame has forward = -Y, which makes x the lateral axis.
+      That reasoning, and the resulting sign, is **not yet confirmed in-sim** —
+      nobody has watched ``lat_g`` swing through a real corner to check it.
     """
     elec = electrics or {}
     forces = gforces or {}
