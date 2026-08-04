@@ -25,7 +25,7 @@ from environments.beamng_geometry import (
     body_orientation_features,
     starting_grid,
 )
-from environments.beamng_path import path_length, project_onto_path
+from environments.beamng_path import project_onto_path
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
@@ -460,7 +460,15 @@ class BeamNGMultiEnv:
         return np.array(hints, dtype=np.float32)
 
     def progress_of(self, slot: VehicleSlot) -> float:
-        """How far along its path a slot is, in metres, laps included.
+        """How far along its path a slot is, in metres — the projection's arc
+        length alone.
+
+        Not lap-aware: ``slot.waypoint_idx`` crosses ``len(slot.waypoints)`` at the
+        finish of every run, not only on a second lap of a closed circuit, so a
+        term keyed off that crossing (``waypoint_idx // len(waypoints)``) is not a
+        lap counter — it added a full path length to progress on every finish,
+        even at laps=1. A real lap counter needs a lap-crossing *event*, not this
+        index. Progress must stay a function of position alone.
 
         Lives here rather than in the race env because the pace reward needs it in
         training too — one definition of "how far along am I", shared by pace and by
@@ -468,9 +476,7 @@ class BeamNGMultiEnv:
         """
         if not slot.guide_line:
             return 0.0
-        pos = project_onto_path(slot.guide_line, slot.current_pos)
-        laps_done = slot.waypoint_idx // len(slot.waypoints) if slot.waypoints else 0
-        return pos.progress_m + laps_done * path_length(slot.guide_line)
+        return project_onto_path(slot.guide_line, slot.current_pos).progress_m
 
     def launch(self):
         """Start BeamNG, resolve all map paths, and load the multi-vehicle scenario."""

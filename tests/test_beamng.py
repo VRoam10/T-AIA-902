@@ -146,6 +146,40 @@ class TestSpawnHeight:
         assert pos[2] == pytest.approx(52.28)
 
 
+class TestObserveCrossTrack:
+    """The observation's lateral slot must come from the guide-line projection,
+    not the old ``dist * sin(heading_err)`` — the two only coincide when the car
+    sits exactly on the line, which cannot tell "wired" from "silently broken"."""
+
+    def test_lateral_error_carries_the_projection_cross_track(self):
+        env = _bare_env()
+        env.trajectory = TrajectoryData(
+            spawn_pos=(0.0, 0.0, 0.0),
+            spawn_rot=(0.0, 0.0, 0.0, 1.0),
+            sparse_waypoints=[(100.0, 0.0, 0.0)],
+            dense_waypoints=[(100.0, 0.0, 0.0)],
+            map_name="gridmap_v2",
+            generated_at="2026-08-04T00:00:00+00:00",
+            source="test",
+        )
+        env.waypoints = list(env.trajectory.sparse_waypoints)
+        env._rebuild_guide_line()
+
+        env.vehicle = MagicMock()
+        env.vehicle.state = {
+            "pos": (40.0, 3.0, 0.0),  # 3 m left of the line, heading east
+            "vel": (1.0, 0.0, 0.0),
+            "dir": (1.0, 0.0, 0.0),
+        }
+        env.electrics = MagicMock()
+        env.electrics.data = {"wheelspeed": 10.0, "steering": 0.0}
+        env.damage_sensor = MagicMock()
+        env.damage_sensor.data = {"damage": 0.0}
+
+        obs = env._observe()
+        assert obs[3] == pytest.approx(3.0 / 5.0)
+
+
 class TestExtraFeatures:
     def test_flags_default_off_no_extra(self):
         env = BeamNGDrivingEnv(beamng_home="unused")

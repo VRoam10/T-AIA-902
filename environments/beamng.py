@@ -19,7 +19,7 @@ from environments import beamng_sensors, beamng_spec
 from environments.beamng_features import road_info_features, wheel_info_features
 from environments.beamng_geometry import body_orientation_features
 from environments.beamng_path import NEUTRAL as NEUTRAL_PATH_POS
-from environments.beamng_path import PathPosition, path_length, project_onto_path
+from environments.beamng_path import PathPosition, project_onto_path
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
@@ -260,9 +260,16 @@ class BeamNGDrivingEnv:
         return project_onto_path(self._guide_line, pos)
 
     def progress_m(self) -> float:
-        """Metres covered along the path, laps included."""
-        laps_done = self._waypoint_idx // len(self.waypoints) if self.waypoints else 0
-        return self._path_pos.progress_m + laps_done * path_length(self._guide_line)
+        """Metres covered along the path — the projection's arc length alone.
+
+        Not lap-aware: ``_waypoint_idx`` crosses ``len(waypoints)`` at the finish
+        of every run, not only on a second lap of a closed circuit, so a term
+        keyed off that crossing (``waypoint_idx // len(waypoints)``) is not a lap
+        counter — it added a full path length to progress on every finish, even
+        at laps=1. A real lap counter needs a lap-crossing *event*, not this
+        index. Progress must stay a function of position alone.
+        """
+        return self._path_pos.progress_m
 
     def _advance(self, steps: int) -> None:
         """Advance the simulation and mark the road sensor pollable again."""

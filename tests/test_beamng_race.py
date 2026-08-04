@@ -126,6 +126,19 @@ class TestSharedPathAndGrid:
             for b in positions[i + 1 :]:
                 assert np.hypot(a[0] - b[0], a[1] - b[1]) > 2.0
 
+    def test_guide_line_starts_at_each_slots_own_grid_spawn(self):
+        # _assign_shared_path overrides spawn_pos with the grid slot *after*
+        # _apply_path already built a guide line from the shared centreline spawn,
+        # so the guide line must be rebuilt again — each slot's own spawn, not the
+        # shared one, or a dropped rebuild here would still pass every other test.
+        env = _env(3)
+        env._assign_paths()
+        for slot in env.slots:
+            assert slot.guide_line[0] == slot.spawn_pos
+            assert slot.guide_line == [slot.spawn_pos, *slot.waypoints]
+        # And the grid gave each slot a distinct spawn, so the guide lines differ.
+        assert len({tuple(s.guide_line[0]) for s in env.slots}) == 3
+
     def test_all_entrants_face_the_same_way(self):
         env = _env(2)
         env._assign_paths()

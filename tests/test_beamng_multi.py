@@ -308,6 +308,44 @@ class TestObserve:
         assert obs.shape == (slot.n_states,)
         assert obs[0] == pytest.approx(0.2, abs=1e-3)
 
+    def test_lateral_error_carries_the_projection_cross_track(self):
+        # On the line (heading_err == 0 too) old dist*sin(heading_err) and the new
+        # cross_track_m both read 0.0 — that case cannot tell "wired" from
+        # "silently broken". Placing the car genuinely off the line is what proves
+        # slot.path_pos.cross_track_m actually reaches the observation.
+        env = _env()
+        slot = env.slots[0]
+        slot.waypoints = [(100.0, 0.0, 0.0)]
+        slot.spawn_pos = (0.0, 0.0, 0.0)
+        slot.guide_line = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        self._wire_slot_sensors(
+            slot,
+            speed=10.0,
+            steering=0.0,
+            damage=0.0,
+            pos=(40.0, 3.0, 0.0),  # 3 m left of the line, heading east
+            vel=(1.0, 0.0, 0.0),
+            lidar_points=None,
+        )
+        obs = env.observe(slot)
+        assert obs[3] == pytest.approx(3.0 / 5.0)
+
+        slot2 = env.slots[1]
+        slot2.waypoints = [(100.0, 0.0, 0.0)]
+        slot2.spawn_pos = (0.0, 0.0, 0.0)
+        slot2.guide_line = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        self._wire_slot_sensors(
+            slot2,
+            speed=10.0,
+            steering=0.0,
+            damage=0.0,
+            pos=(40.0, -3.0, 0.0),  # 3 m right of the line: sign flips
+            vel=(1.0, 0.0, 0.0),
+            lidar_points=None,
+        )
+        obs2 = env.observe(slot2)
+        assert obs2[3] == pytest.approx(-3.0 / 5.0)
+
     def test_observe_polls_each_slot_sensor(self):
         env = _env()
         slot = env.slots[0]
@@ -635,6 +673,12 @@ class TestPathAssignment:
         assert env.slots[1].waypoints[0] == (100.0, 10.0, 0.0)
         # Distinct spawns -> no shared start line.
         assert len({s.spawn_pos for s in env.slots}) == 3
+        # _apply_path must (re)build the guide line: spawn first, then waypoints.
+        # This would still pass if that assignment were dropped from _apply_path
+        # unless it is checked explicitly — nothing else in this test touches it.
+        for slot in env.slots:
+            assert slot.guide_line[0] == slot.spawn_pos
+            assert slot.guide_line == [slot.spawn_pos, *slot.waypoints]
 
     def test_more_vehicles_than_paths_raises(self):
         env = _env()  # 3 slots

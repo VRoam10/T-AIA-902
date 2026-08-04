@@ -1,6 +1,5 @@
 """The envs' guide polyline: spawn-first, and the source of cross-track + progress."""
 
-import numpy as np
 import pytest
 
 from core.trajectory import TrajectoryData
@@ -81,3 +80,42 @@ class TestTrackProgressIsGone:
         import environments.beamng_geometry as geometry
 
         assert not hasattr(geometry, "track_progress_m")
+
+
+class TestProgressHasNoLapOffset:
+    """Boundary case: waypoint_idx crosses len(waypoints) at the finish of every
+    run — not only on a second lap of a closed circuit — so a term keyed off that
+    crossing (``waypoint_idx // len(waypoints)``) is not a lap counter. Progress
+    must be a function of position alone: unmoved between two readings, it must
+    read the same before and after the index advances past the end.
+    """
+
+    def test_single_env_progress_does_not_jump_when_the_index_crosses_the_end(self):
+        env = _env()
+        end_pos = WAYPOINTS[-1]  # sitting exactly at the last checkpoint
+
+        env._waypoint_idx = len(WAYPOINTS) - 1  # about to arrive
+        env._path_pos = env._project(end_pos)
+        before = env.progress_m()
+
+        env._waypoint_idx = len(WAYPOINTS)  # _path_errors just advanced it on arrival
+        env._path_pos = env._project(end_pos)  # position did not move
+        after = env.progress_m()
+
+        assert after == pytest.approx(before)
+
+    def test_multi_env_progress_of_does_not_jump_when_the_index_crosses_the_end(self):
+        slot = VehicleSlot(name="ego_0", color="White", agent=None, save_path="")
+        slot.waypoints = list(WAYPOINTS)
+        slot.spawn_pos = SPAWN
+        slot.guide_line = [SPAWN, *WAYPOINTS]
+        slot.current_pos = WAYPOINTS[-1]  # sitting exactly at the last checkpoint
+        env = BeamNGMultiEnv(slots=[slot], beamng_home="unused")
+
+        slot.waypoint_idx = len(WAYPOINTS) - 1  # about to arrive
+        before = env.progress_of(slot)
+
+        slot.waypoint_idx = len(WAYPOINTS)  # advanced past the end; position unchanged
+        after = env.progress_of(slot)
+
+        assert after == pytest.approx(before)
