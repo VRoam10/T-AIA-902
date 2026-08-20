@@ -115,3 +115,50 @@ Also dropped, discovered while wiring this up: the plan had progress add
 every run, not only a second lap, so that term added a full path length to progress at
 the finish of every episode — even at `laps=1`. A real lap counter needs a
 lap-crossing event, not an index division, so it stayed out; `laps != 1` still raises.
+
+Tenth issue: training reported ~6000 reward per episode while the car only span
+and crashed. Diagnosed offline, by replaying the cached paths through
+`compute_race_reward` with no simulator, and reproduced exactly: 14 steps,
++6122, against the reported 14 steps and 6072-6080.
+
+The reward was 87% participation trophy. `FINISH_BONUS + (MAX_STEPS - steps) x
+FINISH_TIME_COEF` with `MAX_STEPS` a constant 5000 pays ~5000 for completing
+*anything*, and the generated paths run from 65 m to 10.7 km — so finishing
+east_coast_usa's 75.5 m path paid 5285 of a 6104-point episode (81 reward per
+metre) against 1.3 per metre for driving gridmap_v2's 1767 m path well. A critic
+learning from one terminal spike 700x the size of the per-step signal has nothing
+left to distinguish a clean lap from donuts, which is what the training showed.
+The finish's time bonus is now relative to par over the distance actually
+covered, exactly like the segment bonus it was rewritten alongside — the same
+class of error, missed in the same commit.
+
+Three more, all measured on the shipped caches rather than argued:
+
+- a car **parked** at the spawn banked +56 over 12 steps. `SPAWN_CLEARANCE_M`
+  (2 m) puts checkpoint 0 inside the old 8 m arrival radius before the car moves,
+  and `DENSE_SPACING_M` (8 m) equals that radius, so every next checkpoint on the
+  dense chain was already inside the current one's — 100% of dense gaps on 8 of
+  44 paths. It now loses 6 (the step penalty).
+- the same proximity rule failed the other way at racing speed: above ~24 m/s the
+  car passes 8 m markers between control steps without ever sampling inside one,
+  and the chain stalls for good. west_coast_usa path 4 could not be finished in
+  90 steps; it now finishes in 25. So the old gate handed out free checkpoints
+  when slow and refused earned ones when fast.
+- a path that closes on its own start made the progress term pay 3 x the path
+  length for standing still, because the projection took the globally nearest
+  segment: at the start/finish line that is either arc 0 or a full lap. Worst
+  single-step jump for a car circling near its spawn, over all cached paths:
+  1767 m -> 0.8 m on gridmap_v2 path 0 (the default training path), 1363.7 -> 0.8
+  on path 3, 185.7 -> 1.9 on west_coast_usa path 10, removing 5299, 4089 and 551
+  points of free reward. The projection is now seeded with the previous step's
+  arc length. Every other cached path projects identically seeded or not.
+
+Why none of this was visible: the finish sets `waypoint_idx = 0`, and every
+caller builds its metrics *after* the reward — so the checkpoint count read 0 on
+exactly the episodes that completed a path. That is why the training plot's
+checkpoint panel was blank while the car was finishing a 75 m path every 14
+steps. The count is now carried separately (`checkpoints_reached`).
+
+Residual, not chased: italy path 2 has a genuine 42 m arc discontinuity near its
+spawn (worth ~127 points), which is real geometry rather than a self-approach
+ambiguity — the seeded search returns the same answer.

@@ -143,7 +143,8 @@ multi and race envs, so a policy is rewarded for the same behaviour everywhere.
 | **Every step** | `-STEP_PENALTY` |
 | Checkpoint reached | `+CHECKPOINT_BONUS` (flat) |
 | Checkpoint reached, relative to the segment's own par | `+SEGMENT_TIME_BONUS × clip(1 - steps_since_checkpoint / par, 0, 1)`, where `par = steps_for_distance(segment_len_m, SEGMENT_PAR_SPEED_MS)` is derived from the segment actually driven |
-| Path completed | `+FINISH_BONUS + (max_steps - steps) × FINISH_TIME_COEF` |
+| Path completed | `+FINISH_BONUS` (flat) |
+| Path completed, relative to the path's own par | `+FINISH_TIME_BONUS × clip(1 - steps / par, 0, 1)`, where `par = steps_for_distance(path_length_m × laps, SEGMENT_PAR_SPEED_MS)` is derived from the distance actually covered |
 
 The step penalty and the two time bonuses are what make *fast* beat *clean but slow*.
 They matter more than they look: the progress and speed-alignment terms both integrate
@@ -160,6 +161,19 @@ and a near-perfect 1000 m segment pay the same instead of one dwarfing the other
 replaced a *fixed* par (`SPARSE_SPACING_M`, 25 m), which is unmeetable on a game
 track — 30 of the 44 shipped sprint/lap tracks have a gap over 300 m, and italy's
 `highway1` averages 1064 m. `SEGMENT_TARGET_STEPS`/`SEGMENT_TIME_COEF` no longer exist.
+
+**The finish bonus is scale-free for the same reason**, and was left absolute when the
+segment term was rewritten. It paid `1.0 × (max_steps - steps)`, and `MAX_STEPS` is a
+constant 5000 while the generated paths run from 65 m to 10.7 km — so "unused steps"
+was a flat ~5000 for completing *anything*. Replaying the shipped caches through
+`compute_race_reward` measured it at **5285 of a 6104-point episode** on
+east_coast_usa's 75.5 m path (87% of the total, 81 reward per metre) against **1.3 per
+metre** for driving gridmap_v2's 1767 m path well. The shortest path in the pool was
+therefore the whole game, and the per-step driving signal (7–90) was invisible beside
+one terminal spike — which is all a critic has to learn from. After the fix the same
+episode pays 1113, of which 405 is the finish; per-metre rates across three path
+lengths sit at 15.2 / 13.5 / 10.8, and the residual slope is just the flat
+`FINISH_BONUS` amortised over a shorter path. `FINISH_TIME_COEF` no longer exists.
 
 ### Contact and track limits
 
@@ -200,15 +214,44 @@ wraps at the end of every run (not only a second lap), so it added a full path l
 to progress at the finish even at `laps=1`. A real lap counter needs a lap-crossing
 event, not an index; `laps != 1` still raises.
 
+The projection is **seeded** with the previous step's arc length (`near_m`), which
+restricts the search to `SEARCH_WINDOW_M` (60 m) either side of it. Without a seed it
+takes the globally nearest segment, so a path that passes close to itself projects onto
+whichever pass happens to be nearer — and on a path that closes on its own start, a car
+sitting at the line reads either arc 0 or a full lap. Since the term pays
+`PROGRESS_COEF ×` the *change*, that ambiguity was worth 3 × the path length in one
+step. Measured across the cached paths, the worst single-step jump a car circling near
+its spawn could produce fell from **1767 m to 0.8 m** on gridmap_v2 path 0 (the default
+training path), 1363.7 → 0.8 on path 3 and 185.7 → 1.9 on west_coast_usa path 10 —
+removing 5299, 4089 and 551 points of free reward. Every other cached path projects
+identically seeded or not, so the window does not perturb ordinary geometry. The window
+is wider than one step at the car's top speed (81 m/s × 0.333 s = 27 m) so a fast car
+cannot outrun its own seed; a seed that leaves the car further from the windowed stretch
+than the window is wide is treated as stale and the search falls back to global.
+
 ---
 
 ## Waypoints and track
 
 Paths are generated per map from the road network and cached in
 `outputs/trajectories/<map>.json` (`core/trajectory.py`), created on first launch. Each
-path carries a spawn pose plus sparse (`SPARSE_SPACING_M` = 25 m) and dense (8 m)
-waypoint lists. A waypoint is "hit" when the vehicle centre comes within
-`WAYPOINT_RADIUS` (8 m).
+path carries a spawn pose plus sparse (`SPARSE_SPACING_M` = 25 m) and dense
+(`DENSE_SPACING_M` = 8 m) waypoint lists.
+
+A waypoint is "reached" when the car's **arc length along the guide line** passes the
+arc length that waypoint sits at (`beamng_path.waypoint_arcs`). Proximity used to be
+the rule — `dist < WAYPOINT_RADIUS`, 8 m — and three constants made it free rather than
+earned: `SPAWN_CLEARANCE_M` (2 m) puts checkpoint 0 inside the ring before the car
+moves, `DENSE_SPACING_M` equals the radius so the next checkpoint on the dense chain is
+already inside the current one's, and the radius is wide enough that a settling car
+drifts through one. Measured: a car **parked** at east_coast_usa's spawn banked +56 over
+12 steps of nothing (it now loses 6, the step penalty), and 8 of the 44 cached paths
+have *every* dense gap under the radius. The same rule also failed in the opposite
+direction at speed — above ~24 m/s a car flew past 8 m markers between control steps
+without ever sampling inside one, stalling the chain permanently: west_coast_usa path 4
+could not be completed in 90 steps and now finishes in 25. Several checkpoints can fall
+inside one step, and all of them count (the flat bonus is still paid once per step;
+the distance is already paid for by the progress term).
 
 - `random_path` deals a new path each episode (training and human play).
 - `dense_episodes=N` is a curriculum warm-up: dense waypoints for the first N
