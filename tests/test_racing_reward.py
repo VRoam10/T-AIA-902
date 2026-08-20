@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import environments.beamng_reward as reward_mod
+from environments import beamng_spec
 from environments.beamng_reward import compute_race_reward
 
 
@@ -119,9 +120,9 @@ class TestFinish:
         assert out.done is True
         assert out.reward > reward_mod.FINISH_BONUS
 
-    def test_finishing_with_more_budget_left_pays_more(self):
-        early = _reward(waypoint_idx=10, waypoints_len=10, steps=100).reward
-        late = _reward(waypoint_idx=10, waypoints_len=10, steps=400).reward
+    def test_finishing_sooner_pays_more(self):
+        early = _reward(waypoint_idx=10, waypoints_len=10, steps=20, path_length_m=500.0).reward
+        late = _reward(waypoint_idx=10, waypoints_len=10, steps=100, path_length_m=500.0).reward
         assert early > late
 
     def test_not_finished_before_the_last_checkpoint(self):
@@ -131,6 +132,112 @@ class TestFinish:
         # laps stays 1 until closed circuits land, but the arithmetic is already here.
         assert _reward(waypoint_idx=10, waypoints_len=10, laps=2).finished is False
         assert _reward(waypoint_idx=20, waypoints_len=10, laps=2).finished is True
+
+
+class TestFinishPaceIsScaleFree:
+    """The finish's time bonus was ``1.0 x (max_steps - steps)``, and max_steps is a
+    constant 5000 while shipped paths run 65 m to 10.7 km — so it paid a flat ~5000
+    for completing *anything*. Replaying the caches through this function measured
+    it at 5285 of a 6104-point episode on a 75.5 m path (87%), 81 reward per metre,
+    against 1.3 per metre for driving a 1767 m path well. Par now comes from the
+    distance actually covered, so relative pace is what pays.
+    """
+
+    def _finish(self, *, length_m, steps, **kw):
+        return _reward(
+            waypoint_idx=10,
+            waypoints_len=10,
+            steps=steps,
+            max_steps=5000,
+            path_length_m=length_m,
+            **kw,
+        )
+
+    def _par(self, metres):
+        return beamng_spec.steps_for_distance(metres, reward_mod.SEGMENT_PAR_SPEED_MS)
+
+    def test_a_short_path_no_longer_pays_thousands(self):
+        # The reproduced episode: east_coast_usa's 75.5 m path, finished in 15 steps.
+        out = self._finish(length_m=75.5, steps=15)
+        assert out.finished is True
+        assert out.reward < 500  # was 5285 + shaping
+
+    def test_the_same_relative_pace_pays_the_same_on_any_length(self):
+        # Two cars, each finishing its own path at twice par speed: 75 m and 1767 m.
+        short_par, long_par = self._par(75.5), self._par(1767.0)
+        short = self._finish(length_m=75.5, steps=short_par // 2)
+        long_ = self._finish(length_m=1767.0, steps=long_par // 2)
+        # Equal to within par's ceil() rounding — one step in 19 on the short path
+        # against one in 442 on the long one. Same caveat the segment bonus carries,
+        # and the reason this is approx rather than exact; the tolerance is the worth
+        # of a single step of the coarser par, not a number picked to pass.
+        assert short.reward == pytest.approx(
+            long_.reward, abs=reward_mod.FINISH_TIME_BONUS / short_par
+        )
+
+    def test_par_pace_earns_the_completion_bonus_and_no_pace_bonus(self):
+        at_par = self._finish(length_m=500.0, steps=self._par(500.0))
+        assert at_par.reward == pytest.approx(reward_mod.FINISH_BONUS + CLEAN)
+
+    def test_slower_than_par_floors_at_zero_instead_of_going_negative(self):
+        crawl = self._finish(length_m=500.0, steps=self._par(500.0) * 10)
+        assert crawl.reward == pytest.approx(reward_mod.FINISH_BONUS + CLEAN)
+
+    def test_the_bonus_is_capped_however_fast_the_car_was(self):
+        instant = self._finish(length_m=500.0, steps=1)
+        cap = reward_mod.FINISH_BONUS + reward_mod.FINISH_TIME_BONUS + CLEAN
+        assert instant.reward <= cap + 1e-6
+
+    def test_laps_scale_par_with_the_distance_actually_driven(self):
+        # Two laps of a 500 m circuit is 1000 m of driving. Without the lap factor
+        # the same wall-clock would be scored against a single lap's par, so a
+        # two-lap race could not pay the bonus at all.
+        one_lap = self._finish(length_m=500.0, steps=100)
+        two_laps = _reward(
+            waypoint_idx=20,
+            waypoints_len=10,
+            laps=2,
+            steps=100,
+            max_steps=5000,
+            path_length_m=500.0,
+        )
+        assert two_laps.reward > one_lap.reward
+
+    def test_without_a_measured_length_par_falls_back_to_checkpoint_spacing(self):
+        # Callers that cannot measure the polyline still get a bounded bonus rather
+        # than the old step-budget windfall.
+        out = _reward(waypoint_idx=10, waypoints_len=10, steps=1, max_steps=5000)
+        assert out.finished is True
+        assert out.reward < 500
+
+    def test_the_step_budget_no_longer_sets_the_payout(self):
+        # The defect in one line: max_steps is a cap on episode length, not a purse.
+        small = self._finish(length_m=500.0, steps=60)
+        big = _reward(
+            waypoint_idx=10,
+            waypoints_len=10,
+            steps=60,
+            max_steps=50_000,
+            path_length_m=500.0,
+        )
+        assert small.reward == pytest.approx(big.reward)
+
+
+class TestCheckpointsReached:
+    """The finish zeroes ``waypoint_idx`` so a slot stepped again before its reset
+    cannot re-fire the bonus. Callers build their metrics *after* the reward, so
+    that zero was what got reported — blanking the checkpoint panel of the training
+    plot on exactly the episodes that completed a path, and hiding a 75 m path
+    being finished in 14 steps.
+    """
+
+    def test_the_count_survives_the_finish_zeroing(self):
+        out = _reward(waypoint_idx=10, waypoints_len=10, path_length_m=100.0)
+        assert out.waypoint_idx == 0
+        assert out.checkpoints_reached == 10
+
+    def test_mid_episode_it_is_just_the_index(self):
+        assert _reward(waypoint_idx=4).checkpoints_reached == 4
 
 
 class TestContactIsPricedNotFatal:

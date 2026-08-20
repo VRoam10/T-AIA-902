@@ -7,8 +7,8 @@ What it rewards, and why:
 
   * **Speed, not just arrival.** Dense progress along the path (x3), speed
     projected onto the target direction (x3), a flat checkpoint bonus, a relative
-    bonus for beating the segment's own par, a finish bonus that scales with how
-    much of the step budget is left — and a penalty on every step. Time pressure
+    bonus for beating the segment's own par, a finish bonus with a relative pace
+    term of the same shape — and a penalty on every step. Time pressure
     is the point: the reward this replaced paid
     ``CHECKPOINT_BONUS_PER_IDX * waypoint_idx`` with no time term at all, so a slow
     clean run scored the same as a fast one over the same path.
@@ -85,7 +85,19 @@ CHECKPOINT_BONUS = 50.0  # flat, per checkpoint reached
 SEGMENT_PAR_SPEED_MS = 12.0
 SEGMENT_TIME_BONUS = 25.0  # half a checkpoint bonus for a perfect segment
 FINISH_BONUS = 300.0  # for completing the path
-FINISH_TIME_COEF = 1.0  # bonus per unused step at the finish
+# The finish's time bonus is relative for exactly the reason the segment one is,
+# and was left absolute by oversight when the segment term was rewritten. It paid
+# ``1.0 x (max_steps - steps)``, and because max_steps is a constant 5000 while
+# the shipped paths run from 65 m to 10.7 km, "unused steps" was a flat ~5000 for
+# completing *anything*. Measured by replaying the cached paths through this
+# function: finishing east_coast_usa's 75.5 m path in 15 steps paid 5285 of a
+# 6104-point episode — 87% of it, 81 reward per metre — against 1.3 reward per
+# metre for driving gridmap_v2's 1767 m path well. So the shortest path in the
+# pool was the whole game, and the per-step driving signal (7-90) was invisible
+# beside one terminal spike, which is all a critic then has to learn from. Par
+# now comes from the path's own length, so the same relative pace pays the same
+# whatever the distance.
+FINISH_TIME_BONUS = 150.0  # sliding scale: 0 at par pace, approaching this as time -> 0
 
 # --- Contact and damage -------------------------------------------------------
 DAMAGE_DELTA_COEF = 0.15  # penalty per unit of new damage
@@ -129,6 +141,12 @@ class RewardOutcome:
     steps_since_checkpoint: int
     finished: bool = False
     progress_m: float = 0.0
+    # Checkpoints reached this episode, as it stood on entry. Report this, never
+    # ``waypoint_idx``: the finish zeroes that, and callers build their ``info``
+    # dict *after* the reward, so the metric read 0 on exactly the episodes that
+    # completed the path. That blanked the checkpoint panel of the training plot
+    # and hid a path being finished in 14 steps.
+    checkpoints_reached: int = 0
 
 
 def compute_race_reward(
@@ -152,6 +170,7 @@ def compute_race_reward(
     last_progress_m: float | None = None,
     path_alignment: float | None = None,
     segment_len_m: float | None = None,
+    path_length_m: float | None = None,
     rival_progress_m: float | None = None,
     last_rival_progress_m: float | None = None,
     rival_finished: bool = False,
@@ -171,9 +190,11 @@ def compute_race_reward(
     feeds the racing gap term together with the two ``rival_*`` arguments — pass
     none of the rival ones (the default) for solo running and the gap term
     contributes exactly nothing. `path_alignment` overrides the checkpoint-bearing
-    alignment with cos(heading - path tangent); `segment_len_m` overrides the
-    segment-time bonus's par distance. `rival_finished` settles the win/lose bonus
-    when the other car got there first.
+    alignment with cos(heading - path tangent); `segment_len_m` sets the
+    segment-time bonus's par distance and `path_length_m` the finish bonus's
+    (without the latter, par falls back to ``waypoints_len x SPARSE_SPACING_M``,
+    which is the true distance only for a generated path). `rival_finished`
+    settles the win/lose bonus when the other car got there first.
 
     All other arguments are the caller's current episode state; the returned
     `RewardOutcome` holds the updated values to write back.
@@ -194,6 +215,7 @@ def compute_race_reward(
     done = False
     finished = False
     reward = 0.0
+    checkpoints_reached = int(waypoint_idx)
 
     # Invulnerability grace: a checkpoint hit (re)starts a short window in which
     # damage is ignored. The hit step itself is covered.
@@ -268,10 +290,17 @@ def compute_race_reward(
         steps_since_checkpoint = 0
         checkpoint_hit = False
 
-    # 8. Finish: the strongest "go fast" signal — what is left of the step budget.
+    # 8. Finish: the flat completion bonus plus a *relative* pace bonus, on the
+    #    same scale-free shape as the segment bonus — par from the distance the
+    #    run actually covered (x laps), not from what is left of a constant step
+    #    budget. `waypoint_idx` is zeroed so a slot stepped again before its reset
+    #    cannot re-fire the bonus; `checkpoints_reached` keeps the count for the
+    #    caller's metrics.
     if waypoints_len and waypoint_idx >= waypoints_len * max(1, laps):
         reward += FINISH_BONUS
-        reward += max(0, max_steps - steps) * FINISH_TIME_COEF
+        driven_m = float(path_length_m) if path_length_m else waypoints_len * SPARSE_SPACING_M
+        par = beamng_spec.steps_for_distance(driven_m * max(1, laps), SEGMENT_PAR_SPEED_MS)
+        reward += FINISH_TIME_BONUS * float(np.clip(1.0 - steps / par, 0.0, 1.0))
         waypoint_idx = 0
         done = True
         finished = True
@@ -302,4 +331,5 @@ def compute_race_reward(
         steps_since_checkpoint=int(steps_since_checkpoint),
         finished=finished,
         progress_m=float(progress_m) if progress_m is not None else 0.0,
+        checkpoints_reached=checkpoints_reached,
     )
