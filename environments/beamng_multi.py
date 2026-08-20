@@ -25,7 +25,7 @@ from environments.beamng_geometry import (
     body_orientation_features,
     starting_grid,
 )
-from environments.beamng_path import project_onto_path
+from environments.beamng_path import path_length, project_onto_path, waypoint_arcs
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
@@ -90,6 +90,10 @@ class VehicleSlot:
     # meaningless value.
     path_alignment: float | None = None
     checkpoint_hit: bool = False
+    # Checkpoints reached this episode. Report this rather than waypoint_idx, which
+    # the finish zeroes so a slot stepped again before its reset cannot re-fire the
+    # bonus — reading the index instead showed 0 for every car that completed.
+    checkpoints_reached: int = 0
     invuln_steps: int = 0  # damage-immune steps remaining (granted on checkpoint hit)
     steps_since_checkpoint: int = 0  # drives the segment-time bonus
     steps: int = 0
@@ -122,6 +126,7 @@ class VehicleSlot:
         self.last_dist = 0.0
         self.current_dist = 0.0
         self.checkpoint_hit = False
+        self.checkpoints_reached = 0
         self.invuln_steps = 0
         self.steps_since_checkpoint = 0
         self.steps = 0
@@ -293,7 +298,7 @@ class BeamNGMultiEnv:
                 brake = float(max(0.0, action[2]))
         slot.vehicle.control(throttle=throttle, steering=steering, brake=brake)
 
-    def _path_errors(self, slot, pos, state):
+    def _path_errors(self, slot, pos, state, progress_m: float = 0.0):
         """Heading error and dist to slot's current waypoint; advances on arrival.
 
         Cross-track error no longer comes from here: ``dist * sin(heading_err)`` is a
@@ -312,8 +317,14 @@ class BeamNGMultiEnv:
         dist = float(np.hypot(dx, dy))
         slot.current_dist = dist
 
-        if dist < self.WAYPOINT_RADIUS:
+        # Arc length covered, not proximity — same gate as the single-vehicle env,
+        # for the same reason (see BeamNGDrivingEnv._path_errors).
+        arcs = waypoint_arcs(slot.guide_line)
+        hit = False
+        while slot.waypoint_idx < len(arcs) and progress_m >= arcs[slot.waypoint_idx]:
             slot.waypoint_idx += 1
+            hit = True
+        if hit:
             slot.checkpoint_hit = True
             self._update_slot_marker(slot)
             if slot.waypoint_idx < len(slot.waypoints):
@@ -355,6 +366,7 @@ class BeamNGMultiEnv:
             last_progress_m=slot.last_progress_m,
             path_alignment=slot.path_alignment,
             segment_len_m=slot.path_pos.segment_len_m if slot.path_pos else None,
+            path_length_m=path_length(slot.guide_line),
             **race_kwargs,
         )
         slot.last_dist = outcome.last_dist
@@ -362,6 +374,7 @@ class BeamNGMultiEnv:
         slot.invuln_steps = outcome.invuln_steps
         slot.checkpoint_hit = outcome.checkpoint_hit
         slot.waypoint_idx = outcome.waypoint_idx
+        slot.checkpoints_reached = outcome.checkpoints_reached
         slot.steps_since_checkpoint = outcome.steps_since_checkpoint
         slot.finished = outcome.finished
         slot.last_progress_m = outcome.progress_m
@@ -383,12 +396,13 @@ class BeamNGMultiEnv:
         dir_vec = state.get("dir", vel)
         vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
-        heading_err, dist = self._path_errors(slot, pos, state)
+        # Project first: the checkpoint gate asks how far along the path the car has
+        # got, so it needs this step's projection rather than the previous one's.
+        slot.current_pos = pos
+        slot.path_pos = project_onto_path(slot.guide_line, pos, near_m=slot.last_progress_m)
+        heading_err, dist = self._path_errors(slot, pos, state, slot.path_pos.progress_m)
 
         perception = self._perceive(slot, pos, vehicle_heading)
-
-        slot.current_pos = pos
-        slot.path_pos = project_onto_path(slot.guide_line, pos)
         # Same tangent the observation is built from, and the same *velocity*
         # heading the fallback's heading_err uses (not vehicle_heading above,
         # which is the nose direction) — so this is exactly the signed velocity
@@ -505,7 +519,9 @@ class BeamNGMultiEnv:
         """
         if not slot.guide_line:
             return 0.0
-        return project_onto_path(slot.guide_line, slot.current_pos).progress_m
+        return project_onto_path(
+            slot.guide_line, slot.current_pos, near_m=slot.last_progress_m
+        ).progress_m
 
     def launch(self):
         """Start BeamNG, resolve all map paths, and load the multi-vehicle scenario."""

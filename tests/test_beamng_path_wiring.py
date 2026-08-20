@@ -43,8 +43,18 @@ class TestGuideLine:
         assert env._project((40.0, 0.0, 0.0)).progress_m == pytest.approx(40.0)
 
     def test_progress_keeps_growing_round_the_corner(self):
+        # Driven step by step, as an episode does: _project seeds its search with
+        # _last_progress_m, so a single 160 m jump from a standing seed is a
+        # teleport and is deliberately not believed (see beamng_path).
         env = _env()
-        assert env._project((100.0, 60.0, 0.0)).progress_m == pytest.approx(160.0)
+        route = [(x, 0.0, 0.0) for x in range(0, 101, 20)]
+        route += [(100.0, y, 0.0) for y in range(20, 61, 20)]
+        seen = []
+        for pos in route:
+            env._last_progress_m = env._project(pos).progress_m
+            seen.append(env._last_progress_m)
+        assert seen == sorted(seen)
+        assert seen[-1] == pytest.approx(160.0)
 
     def test_no_trajectory_means_a_neutral_projection(self):
         bare = BeamNGDrivingEnv(beamng_home="unused")

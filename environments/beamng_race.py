@@ -253,7 +253,11 @@ class BeamNGRaceEnv(BeamNGMultiEnv):
                     "name": s.name,
                     "human": s.human,
                     "progress_m": round(float(self.progress_of(s)), 2),
-                    "checkpoints": s.waypoint_idx,
+                    # Whichever of the two is live: an agent's waypoint_idx is
+                    # zeroed by the finish (so the winner's own standings line read
+                    # zero checkpoints), while a human never goes through the
+                    # reward at all, leaving their checkpoints_reached at zero.
+                    "checkpoints": max(s.waypoint_idx, s.checkpoints_reached),
                     "steps": s.steps,
                     "finished": s.finished,
                 }

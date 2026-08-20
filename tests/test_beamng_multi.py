@@ -215,13 +215,22 @@ class TestApplyAction:
 
 
 class TestPathErrorsAndReward:
-    def test_path_errors_advance_waypoint_when_close(self):
+    def test_path_errors_advance_waypoint_once_its_distance_is_covered(self):
+        # Arrival is arc length covered, not proximity: sitting on top of a marker
+        # is not the same as having driven to it. See test_beamng_checkpoint_gate.
         env = _env()
         slot = env.slots[0]
-        slot.waypoints = [(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        slot.waypoints = [(50.0, 0.0, 0.0), (100.0, 0.0, 0.0)]
+        slot.spawn_pos = (0.0, 0.0, 0.0)
+        slot.guide_line = [(0.0, 0.0, 0.0), *slot.waypoints]
         slot.waypoint_idx = 0
         state = {"vel": (1.0, 0.0, 0.0)}
-        env._path_errors(slot, pos=(0.0, 0.0, 0.0), state=state)
+
+        env._path_errors(slot, pos=(49.0, 0.0, 0.0), state=state, progress_m=49.0)
+        assert slot.waypoint_idx == 0
+        assert slot.checkpoint_hit is False
+
+        env._path_errors(slot, pos=(50.0, 0.0, 0.0), state=state, progress_m=50.0)
         assert slot.waypoint_idx == 1
         assert slot.checkpoint_hit is True
 

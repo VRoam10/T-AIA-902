@@ -19,7 +19,12 @@ from environments import beamng_sensors, beamng_spec
 from environments.beamng_features import road_info_features, wheel_info_features
 from environments.beamng_geometry import body_orientation_features
 from environments.beamng_path import NEUTRAL as NEUTRAL_PATH_POS
-from environments.beamng_path import PathPosition, project_onto_path
+from environments.beamng_path import (
+    PathPosition,
+    path_length,
+    project_onto_path,
+    waypoint_arcs,
+)
 from environments.beamng_reward import compute_race_reward
 from environments.beamng_spawn import corrected_spawn, measure_spawn_z_correction
 
@@ -213,6 +218,9 @@ class BeamNGDrivingEnv:
         self._guide_line: list[tuple[float, float, float]] = []
         self._path_pos: PathPosition = NEUTRAL_PATH_POS
         self._last_progress_m = 0.0
+        # Checkpoints reached in the current episode, as reported to the runner.
+        # Kept separately from _waypoint_idx because the finish zeroes that.
+        self._checkpoints_reached = 0
         # cos(velocity heading - path tangent), computed once per observation
         # alongside `_path_pos` so the reward reads the same tangent the
         # observation was built from. None before any observation, or without a
@@ -264,8 +272,15 @@ class BeamNGDrivingEnv:
         self._guide_line = [tuple(self.trajectory.spawn_pos), *self.waypoints]
 
     def _project(self, pos) -> PathPosition:
-        """Where ``pos`` sits on the guide polyline."""
-        return project_onto_path(self._guide_line, pos)
+        """Where ``pos`` sits on the guide polyline.
+
+        Seeded with the last measured arc length so a path that passes near itself
+        cannot snap the projection to another part of it — see
+        ``beamng_path.project_onto_path``. ``_last_progress_m`` is 0.0 at the start
+        of an episode, which is where the car is by construction (the guide line
+        starts at its spawn).
+        """
+        return project_onto_path(self._guide_line, pos, near_m=self._last_progress_m)
 
     def progress_m(self) -> float:
         """Metres covered along the path — the projection's arc length alone.
@@ -327,6 +342,11 @@ class BeamNGDrivingEnv:
         self._invuln_steps = 0
         self._steps_since_checkpoint = 0
         self._checkpoint_hit = False
+        self._checkpoints_reached = 0
+        # Before the first _observe, not after: _project seeds its search with this,
+        # and on a random-path reset the previous episode's value belongs to a
+        # different polyline entirely.
+        self._last_progress_m = 0.0
 
         # Hold still for a moment so physics settle
         self.vehicle.control(throttle=0.0, steering=0.0, brake=0.0)
@@ -375,7 +395,9 @@ class BeamNGDrivingEnv:
 
         obs = self._observe()
         reward, done = self._compute_reward(obs)
-        info = {"steps": self._steps, "waypoint_idx": self._waypoint_idx}
+        # checkpoints_reached, not _waypoint_idx: the finish zeroes the index, so
+        # reporting it here read 0 on precisely the episodes that completed the path.
+        info = {"steps": self._steps, "waypoint_idx": self._checkpoints_reached}
         return obs, reward, done, info
 
     def human_play(self):
@@ -780,8 +802,10 @@ class BeamNGDrivingEnv:
         dir_vec = state.get("dir", vel)
         vehicle_heading = float(np.arctan2(dir_vec[1], dir_vec[0]))
 
-        heading_err, dist = self._path_errors(pos, state)
+        # Project first: the checkpoint gate is a question about arc length
+        # covered, so it needs this step's projection, not the previous one's.
         self._path_pos = self._project(pos)
+        heading_err, dist = self._path_errors(pos, state, self._path_pos.progress_m)
         # Same tangent the observation is built from, and the same *velocity*
         # heading the fallback's heading_err uses (not vehicle_heading above,
         # which is the nose direction) — so this is exactly the signed velocity
@@ -970,7 +994,7 @@ class BeamNGDrivingEnv:
             return np.empty(0, dtype=np.float32)
         return np.concatenate(blocks)
 
-    def _path_errors(self, pos, state):
+    def _path_errors(self, pos, state, progress_m: float = 0.0):
         """Return (heading_error_rad, dist) for the next waypoint; advance on arrival.
 
         Cross-track error no longer comes from here: ``dist * sin(heading_err)`` is a
@@ -989,9 +1013,21 @@ class BeamNGDrivingEnv:
         dist = float(np.hypot(dx, dy))
         self._current_dist = dist
 
-        # Advance waypoint when close enough
-        if dist < self.WAYPOINT_RADIUS:
+        # Arrival is "has the car got as far along the path as this checkpoint
+        # sits", not "is it near it". Proximity (dist < WAYPOINT_RADIUS, 8 m) was
+        # satisfied before the car moved: SPAWN_CLEARANCE_M puts checkpoint 0 only
+        # 2 m ahead, and DENSE_SPACING_M is 8 m, so the next checkpoint on the
+        # dense chain was always already inside the ring — a parked car banked a
+        # checkpoint bonus, and the chain drained faster than the car drove.
+        # Several checkpoints can fall inside one step at speed, so consume all of
+        # them; the flat bonus is per step, and the distance is already paid for by
+        # the progress term.
+        arcs = waypoint_arcs(self._guide_line)
+        hit = False
+        while self._waypoint_idx < len(arcs) and progress_m >= arcs[self._waypoint_idx]:
             self._waypoint_idx += 1
+            hit = True
+        if hit:
             self._checkpoint_hit = True
             self._update_active_marker(self._waypoint_idx)
             if LOG_CHECKPOINT_HIT and self.bng is not None:
@@ -1032,6 +1068,7 @@ class BeamNGDrivingEnv:
             last_progress_m=self._last_progress_m,
             path_alignment=self._path_alignment,
             segment_len_m=self._path_pos.segment_len_m,
+            path_length_m=path_length(self._guide_line),
         )
         self._last_dist = outcome.last_dist
         self._last_damage = outcome.last_damage
@@ -1040,6 +1077,7 @@ class BeamNGDrivingEnv:
         self._waypoint_idx = outcome.waypoint_idx
         self._steps_since_checkpoint = outcome.steps_since_checkpoint
         self._last_progress_m = outcome.progress_m
+        self._checkpoints_reached = outcome.checkpoints_reached
         return outcome.reward, outcome.done
 
     def _update_active_marker(self, idx: int):
