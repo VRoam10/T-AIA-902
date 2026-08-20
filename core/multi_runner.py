@@ -90,7 +90,9 @@ class MultiAgentRunner:
         slot.reward_history.append(slot.ep_reward)
         slot.steps_history.append(slot.steps)
         slot.speed_history.append(avg_speed)
-        slot.distance_history.append(slot.waypoint_idx)
+        # checkpoints_reached, not waypoint_idx: the finish zeroes the index, so a
+        # completed episode logged 0 checkpoints — which blanked the plot panel.
+        slot.distance_history.append(slot.checkpoints_reached)
         slot.agent.decay_epsilon()
         if hasattr(slot.agent, "episode"):
             slot.agent.episode = slot.episode + 1
@@ -100,7 +102,7 @@ class MultiAgentRunner:
         print(
             f"[{slot.name}] ep {slot.episode} reward={slot.ep_reward:.1f} "
             f"avg20={avg:.1f} eps={getattr(slot.agent, 'epsilon', 0.0):.3f} "
-            f"speed={avg_speed:.1f}m/s wpts={slot.waypoint_idx}"
+            f"speed={avg_speed:.1f}m/s wpts={slot.checkpoints_reached}"
         )
 
         if save_every and slot.episode % save_every == 0:
