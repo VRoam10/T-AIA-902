@@ -32,6 +32,13 @@ class PathPosition:
 # reward spell "no data", so a degenerate polyline needs no special casing upstream.
 NEUTRAL = PathPosition(0.0, 0.0, 0.0, 0, 0.0)
 
+# How far either side of the last known arc length the search looks when it is
+# seeded. It must exceed the distance a car can cover in one env step, or a fast
+# car outruns its own window and progress freezes: the race car tops out near
+# 81 m/s, and one step is beamng_spec.SECONDS_PER_ENV_STEP (0.333 s), so 27 m.
+# The rest is margin for a car that is tumbling rather than driving.
+SEARCH_WINDOW_M = 60.0
+
 
 def path_length(polyline) -> float:
     """Total XY length of a polyline. 0.0 for fewer than two points."""
@@ -41,7 +48,26 @@ def path_length(polyline) -> float:
     return float(np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1])).sum())
 
 
-def project_onto_path(polyline, pos) -> PathPosition:
+def waypoint_arcs(polyline) -> list[float]:
+    """Arc length of every vertex after the first — one entry per waypoint.
+
+    The guide line is ``[spawn, *waypoints]``, so entry k is how far along the
+    path waypoint k sits. This is what "has the car reached checkpoint k" should
+    be measured against. Proximity is not the same question: with the dense
+    waypoint spacing (8 m) equal to the old arrival radius (8 m) and four times
+    the spawn clearance (2 m), a car parked at the spawn was already inside
+    checkpoint 0's ring, and every next checkpoint on the dense chain was already
+    inside the current one's.
+
+    Empty for a degenerate polyline, so it zips with an empty waypoint list.
+    """
+    pts = np.asarray(polyline, dtype=np.float64)
+    if pts.ndim != 2 or len(pts) < 2:
+        return []
+    return [float(v) for v in np.cumsum(np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1])))]
+
+
+def project_onto_path(polyline, pos, *, near_m: float | None = None) -> PathPosition:
     """Project ``pos`` onto ``polyline`` in the XY plane and describe where it landed.
 
     The segment chosen is the one whose clamped perpendicular distance is smallest,
@@ -49,13 +75,23 @@ def project_onto_path(polyline, pos) -> PathPosition:
     earlier segment. Positions before the start or past the end clamp to the ends,
     which is what keeps progress bounded by the path length.
 
+    ``near_m`` seeds the search with the arc length the car was last measured at,
+    restricting it to :data:`SEARCH_WINDOW_M` either side. Pass it whenever a
+    previous reading exists. Without it the search is global, and a path that
+    passes close to itself projects onto whichever part happens to be nearest —
+    which on a closed circuit means a car sitting at the start/finish line reads
+    either arc 0 or a full lap. Since the reward pays ``PROGRESS_COEF`` times the
+    *change* in arc length, that ambiguity is worth 3 x the path length in a
+    single step: measured at +5301 on gridmap_v2's 1767 m default path, for a car
+    that had not moved. A seed whose window leaves the car further away than the
+    window is wide is treated as stale (a teleport, or a car off the map) and the
+    search falls back to global rather than reporting a confidently wrong arc.
+
     Returns :data:`NEUTRAL` for an empty or single-point polyline.
 
-    Caveat for closed circuits: a track that passes close to itself can project
-    onto the wrong lap of the same geometry. Laps are 1 today; a real lap counter
-    would need a lap-crossing *event* (not derivable from this projection alone),
-    since adding ``laps_done * path_length(polyline)`` to progress on every
-    ``waypoint_idx`` wraparound double-counts the finish of a single lap.
+    Still not lap-aware: progress is a function of position alone, so a second lap
+    of a circuit reads the same as the first. A real lap counter needs a
+    lap-crossing *event*, which no projection can supply.
     """
     pts = np.asarray(polyline, dtype=np.float64)
     if pts.ndim != 2 or len(pts) < 2:
@@ -74,9 +110,17 @@ def project_onto_path(polyline, pos) -> PathPosition:
         (rel[:, 0] * seg[:, 0] + rel[:, 1] * seg[:, 1]) / (safe_len * safe_len), 0.0, 1.0
     )
     foot = a + seg * t[:, None]
-    i = int(np.argmin(np.hypot(p[0] - foot[:, 0], p[1] - foot[:, 1])))
+    gap = np.hypot(p[0] - foot[:, 0], p[1] - foot[:, 1])
 
     cum = np.concatenate([[0.0], np.cumsum(seg_len)])
+    i = int(np.argmin(gap))
+    if near_m is not None:
+        in_window = (cum[1:] >= near_m - SEARCH_WINDOW_M) & (cum[:-1] <= near_m + SEARCH_WINDOW_M)
+        if in_window.any():
+            local = int(np.argmin(np.where(in_window, gap, np.inf)))
+            if gap[local] <= SEARCH_WINDOW_M:
+                i = local
+
     cross = seg[i, 0] * rel[i, 1] - seg[i, 1] * rel[i, 0]
     return PathPosition(
         progress_m=float(cum[i] + t[i] * seg_len[i]),
